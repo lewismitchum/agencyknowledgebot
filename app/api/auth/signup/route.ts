@@ -1,3 +1,4 @@
+// app/api/auth/signup/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
@@ -38,6 +39,9 @@ async function ensureUserRoleColumns(db: any) {
 }
 
 export async function POST(req: NextRequest) {
+  // keep: harmless if you already call it elsewhere; also ensures tables exist in fresh deploys
+  await ensureSchema().catch(() => {});
+
   const { name, email, password } = await readBody(req);
 
   if (!name?.trim() || !email?.trim() || !password?.trim()) {
@@ -117,19 +121,11 @@ export async function POST(req: NextRequest) {
   // Redirect to check-email screen
   const res = NextResponse.redirect(new URL("/check-email", req.url));
 
-  // ✅ Set new JWT session (owner/pending until verified)
-  // This is optional; if you’d rather not set any session until verified,
-  // just remove this call. Keeping it helps UX (you can still block app routes by status).
+  // ✅ Session cookie is identity-only (agencyId + agencyEmail). User/role/status are read server-side from DB.
   setSessionCookie(res, {
     agencyId,
     agencyEmail: normalizedEmail,
-    userId: ownerUserId,
-    role: "owner",
-    status: "pending",
   });
-
-  // (Optional) If any old code still sets "session", you can proactively clear it here
-  // res.cookies.set("session", "", { path: "/", maxAge: 0 });
 
   return res;
 }
