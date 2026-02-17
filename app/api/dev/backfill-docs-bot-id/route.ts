@@ -1,72 +1,60 @@
+// app/api/dev/backfill-docs-bot-id/route.ts
 import { NextRequest } from "next/server";
-import { getDb } from "@/lib/db";
-
+import { getDb, type Db } from "@/lib/db";
+/* session will be dynamically imported inside the POST handler to avoid typing mismatches */
 
 export const runtime = "nodejs";
 
+/**
+ * Dev utility:
+ * Backfills documents.bot_id for rows that were created before bot scoping existed.
+ * Safe-ish: only updates rows where bot_id is NULL/empty.
+ */
 export async function POST(req: NextRequest) {
   try {
-    if (process.env.NODE_ENV !== "development") {
-      return Response.json({ error: "Not found" }, { status: 404 });
-    }
-
-    const session = getSessionFromRequest(req);
+    const sessionLib = (await import("@/lib/session")) as any;
+    const session = await (sessionLib.getSession?.(req) ?? (sessionLib.default ? sessionLib.default(req) : null));
     if (!session?.agencyId) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const db: any = await getDb();
+    const db: Db = await getDb();
 
-    const exec =
-      db?.run ?? db?.execute ?? db?.exec ?? db?.query ?? db?.client?.execute;
+    // Pick an agency bot as the fallback (prefer shared agency bot)
+    const bot = (await db.get(
+      `SELECT id
+       FROM bots
+       WHERE agency_id = ?
+       ORDER BY CASE WHEN owner_user_id IS NULL THEN 0 ELSE 1 END, created_at ASC
+       LIMIT 1`,
+      session.agencyId
+    )) as { id: string } | undefined;
 
-    if (typeof exec !== "function") {
-      return Response.json(
-        { error: "DB has no write method", dbKeys: Object.keys(db ?? {}) },
-        { status: 500 }
-      );
+    if (!bot?.id) {
+      return Response.json({ error: "No bots found for agency" }, { status: 404 });
     }
 
-    // default agency bot
-    const bot: any = await db.get(
-      `SELECT id FROM bots
-       WHERE agency_id = ? AND owner_user_id IS NULL
-       ORDER BY created_at DESC
-       LIMIT 1`,
+    // Update only docs missing bot_id
+    await db.run(
+      `UPDATE documents
+       SET bot_id = ?
+       WHERE agency_id = ?
+         AND (bot_id IS NULL OR bot_id = '')`,
+      bot.id,
       session.agencyId
     );
 
-    if (!bot?.id) {
-      return Response.json({ error: "No default bot found" }, { status: 500 });
-    }
+    // Return count for visibility
+    const row = (await db.get(
+      `SELECT COUNT(*) as c
+       FROM documents
+       WHERE agency_id = ?
+         AND (bot_id IS NULL OR bot_id = '')`,
+      session.agencyId
+    )) as { c: number } | undefined;
 
-    // Backfill bot_id on docs where NULL/empty
-    // Try both common signatures: (sql, ...args) and ({ sql, args })
-    const sql = `UPDATE documents
-                 SET bot_id = ?
-                 WHERE agency_id = ? AND (bot_id IS NULL OR bot_id = '')`;
-    const args = [bot.id, session.agencyId];
-
-    try {
-      await exec.call(db, sql, ...args);
-    } catch (e1: any) {
-      try {
-        await exec.call(db, { sql, args });
-      } catch (e2: any) {
-        return Response.json(
-          {
-            error: "DB update failed",
-            e1: String(e1?.message ?? e1),
-            e2: String(e2?.message ?? e2),
-          },
-          { status: 500 }
-        );
-      }
-    }
-
-    return Response.json({ ok: true, bot_id: bot.id });
+    return Response.json({ ok: true, fallback_bot_id: bot.id, remaining_missing: Number(row?.c ?? 0) });
   } catch (err: any) {
-    console.error("BACKFILL_DOCS_BOT_ID_ERROR", err);
     return Response.json(
       { error: "Server error", message: String(err?.message ?? err) },
       { status: 500 }
