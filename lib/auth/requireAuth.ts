@@ -33,8 +33,9 @@ function normStatus(v: any): "active" | "pending" | "blocked" {
   return "pending";
 }
 
-function readSessionFromCookies(): SessionPayload | null {
-  const raw = cookies().get("louis_session")?.value || null;
+async function readSessionFromCookies(): Promise<SessionPayload | null> {
+  const jar = await cookies(); // ✅ Next.js 16 cookies() is async
+  const raw = jar.get("louis_session")?.value || null;
   if (!raw) return null;
 
   const secret = process.env.JWT_SECRET;
@@ -60,12 +61,12 @@ function readSessionFromCookies(): SessionPayload | null {
  * Throws on unauthenticated (so callers can redirect).
  */
 export async function requireAuth(): Promise<AuthedUser> {
-  const session = readSessionFromCookies();
+  const session = await readSessionFromCookies();
   if (!session) throw new Error("UNAUTHENTICATED");
 
   const db: any = await getDb();
 
-  // Confirm the user exists + belongs to the agency (avoid trusting cookie blindly)
+  // Confirm user exists + belongs to agency (don’t trust cookie blindly)
   const row = await db.get(
     `SELECT id, agency_id, email, role, status
      FROM users
