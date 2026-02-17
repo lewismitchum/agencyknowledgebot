@@ -112,13 +112,11 @@ export async function POST(req: NextRequest) {
     await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
 
     // ✅ Auto-login after accepting invite, but they’ll be blocked by requireActiveMember until approved.
+    // Session cookie is identity-only per your current session typing.
     const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
     setSessionCookie(res, {
       agencyId: agency.id,
       agencyEmail: agency.email,
-      userId,
-      role: "member",
-      status: "pending",
     });
 
     return res;
