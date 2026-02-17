@@ -1,3 +1,4 @@
+// app/api/auth/login/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
@@ -178,20 +179,19 @@ export async function POST(req: NextRequest) {
       };
     }
 
-    // Normalize role/status for cookie (don’t trust DB strings blindly)
+    // Normalize role/status (kept for DB correctness / future use)
     const role = normRole(user.role);
     const status = normStatus(user.status);
 
     const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
 
-    // ✅ Session now includes user identity (required for /api/me, billing, etc.)
+    // ✅ Session cookie is identity-only (agencyId + agencyEmail). User/role/status are read server-side from DB.
     setSessionCookie(res, {
       agencyId: agency.id,
       agencyEmail: agency.email,
-      userId: user.id,
-      role,
-      status,
     });
+
+    // (role/status computed above intentionally unused here to keep cookie typing consistent)
 
     return res;
   } catch (err: any) {
