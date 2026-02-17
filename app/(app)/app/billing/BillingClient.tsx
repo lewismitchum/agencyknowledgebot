@@ -3,7 +3,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -61,9 +60,13 @@ function normalizePlan(plan: any): PlanKey {
   return "free";
 }
 
-export default function BillingClient() {
-  const search = useSearchParams();
-
+export default function BillingClient({
+  initialSuccess,
+  initialCanceled,
+}: {
+  initialSuccess?: string;
+  initialCanceled?: string;
+}) {
   const [plan, setPlan] = useState<PlanKey>("free");
   const [role, setRole] = useState<string>("member");
   const [loading, setLoading] = useState(true);
@@ -72,17 +75,17 @@ export default function BillingClient() {
   const [busyPlan, setBusyPlan] = useState<PlanKey | null>(null);
 
   useEffect(() => {
-    const success = search.get("success");
-    const canceled = search.get("canceled");
-    if (success) {
+    if (initialSuccess) {
       setToast("Success — your checkout completed. It may take a few seconds for the plan to update.");
-      setTimeout(() => setToast(""), 5000);
-    } else if (canceled) {
-      setToast("Checkout canceled.");
-      setTimeout(() => setToast(""), 4000);
+      const t = setTimeout(() => setToast(""), 5000);
+      return () => clearTimeout(t);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (initialCanceled) {
+      setToast("Checkout canceled.");
+      const t = setTimeout(() => setToast(""), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [initialSuccess, initialCanceled]);
 
   useEffect(() => {
     (async () => {
@@ -105,11 +108,11 @@ export default function BillingClient() {
   }, []);
 
   const current = useMemo(() => PLANS.find((p) => p.key === plan)!, [plan]);
-
   const isOwner = role === "owner";
 
   async function startCheckout(target: PlanKey) {
     if (target === "free") return;
+
     if (!isOwner) {
       setToast("Owner only — ask your agency owner to upgrade.");
       setTimeout(() => setToast(""), 3500);

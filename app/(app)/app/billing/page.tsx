@@ -1,11 +1,13 @@
 // app/(app)/app/billing/page.tsx
-import { Suspense } from "react";
 import BillingClient from "./BillingClient";
 
-export default function BillingPage() {
-  return (
-    <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading billing…</div>}>
-      <BillingClient />
-    </Suspense>
-  );
+export default function BillingPage({
+  searchParams,
+}: {
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
+  const success = typeof searchParams?.success === "string" ? searchParams?.success : "";
+  const canceled = typeof searchParams?.canceled === "string" ? searchParams?.canceled : "";
+
+  return <BillingClient initialSuccess={success} initialCanceled={canceled} />;
 }
