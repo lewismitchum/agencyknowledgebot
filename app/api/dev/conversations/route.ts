@@ -1,52 +1,45 @@
+// app/api/dev/conversations/route.ts
 import { NextRequest } from "next/server";
 import { getDb } from "@/lib/db";
+import { requireActiveMember } from "@/lib/authz";
 import { getOrCreateUser } from "@/lib/users";
 
 export const runtime = "nodejs";
 
 /**
- * Development-only session extractor: reads agency info from request headers
- * 'x-agency-id' and 'x-agency-email' or from cookies 'agencyId' and 'agencyEmail'.
+ * Dev-only: list conversations for the current agency + current user.
+ * Useful for debugging summarization + message_count behavior.
  */
-async function getSession(req: NextRequest) {
-  const agencyId =
-    req.headers.get("x-agency-id") ||
-    req.cookies.get("agencyId")?.value ||
-    null;
-  const agencyEmail =
-    req.headers.get("x-agency-email") ||
-    req.cookies.get("agencyEmail")?.value ||
-    null;
-
-  if (!agencyId) return null;
-  return { agencyId, agencyEmail };
-}
-
 export async function GET(req: NextRequest) {
   try {
-    if (process.env.NODE_ENV !== "development") {
-      return Response.json({ error: "Not found" }, { status: 404 });
-    }
-
-    const session = await getSession(req);
-    if (!session?.agencyId) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const ctx = await requireActiveMember(req);
 
     const db: any = await getDb();
-    const user = await getOrCreateUser(session.agencyId, session.agencyEmail);
+
+    // ensure user exists for this agency/email
+    const user = await getOrCreateUser(ctx.agencyId, ctx.agencyEmail);
 
     const rows = await db.all(
-      `SELECT id, user_id, bot_id, summary, message_count, created_at, updated_at
+      `SELECT id, agency_id, bot_id, owner_user_id, title, summary, message_count, created_at, updated_at
        FROM conversations
-       WHERE user_id = ?
-       ORDER BY updated_at DESC`,
+       WHERE agency_id = ?
+         AND (owner_user_id IS NULL OR owner_user_id = ?)
+       ORDER BY updated_at DESC
+       LIMIT 200`,
+      ctx.agencyId,
       user.id
     );
 
-    return Response.json({ ok: true, user_id: user.id, conversations: rows ?? [] });
+    return Response.json({ ok: true, conversations: rows ?? [] });
   } catch (err: any) {
-    console.error("DEV_CONVERSATION_LIST_ERROR", err);
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     return Response.json(
       { error: "Server error", message: String(err?.message ?? err) },
       { status: 500 }
