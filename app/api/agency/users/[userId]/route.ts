@@ -1,3 +1,4 @@
+// app/api/agency/users/[userId]/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
@@ -10,6 +11,10 @@ type UserRow = {
   email: string;
   role: string | null;
   status: string | null;
+};
+
+type RouteCtx = {
+  params: Promise<{ userId: string }>;
 };
 
 async function ensureRoleStatusColumns(db: Db) {
@@ -40,10 +45,11 @@ function nowIso() {
  * - approve -> status=active
  * - deny -> status=blocked
  */
-export async function POST(req: NextRequest, ctx2: { params: { userId: string } }) {
+export async function POST(req: NextRequest, ctx2: RouteCtx) {
   try {
     const ctx = await requireOwner(req);
-    const targetUserId = String(ctx2.params.userId || "");
+    const { userId } = await ctx2.params;
+    const targetUserId = String(userId || "");
 
     const body = (await req.json().catch(() => ({}))) as any;
     const action = String(body?.action || "");
@@ -132,10 +138,11 @@ export async function POST(req: NextRequest, ctx2: { params: { userId: string } 
  * Clean future endpoint (optional for UI later):
  * PATCH { status?: "active"|"pending"|"blocked", role?: "owner"|"member" }
  */
-export async function PATCH(req: NextRequest, ctx2: { params: { userId: string } }) {
+export async function PATCH(req: NextRequest, ctx2: RouteCtx) {
   try {
     const ctx = await requireOwner(req);
-    const targetUserId = String(ctx2.params.userId || "");
+    const { userId } = await ctx2.params;
+    const targetUserId = String(userId || "");
 
     const body = (await req.json().catch(() => ({}))) as {
       role?: "owner" | "member";
