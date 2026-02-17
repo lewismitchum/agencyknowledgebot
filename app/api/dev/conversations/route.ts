@@ -1,9 +1,26 @@
 import { NextRequest } from "next/server";
 import { getDb } from "@/lib/db";
-
 import { getOrCreateUser } from "@/lib/users";
 
 export const runtime = "nodejs";
+
+/**
+ * Development-only session extractor: reads agency info from request headers
+ * 'x-agency-id' and 'x-agency-email' or from cookies 'agencyId' and 'agencyEmail'.
+ */
+async function getSession(req: NextRequest) {
+  const agencyId =
+    req.headers.get("x-agency-id") ||
+    req.cookies.get("agencyId")?.value ||
+    null;
+  const agencyEmail =
+    req.headers.get("x-agency-email") ||
+    req.cookies.get("agencyEmail")?.value ||
+    null;
+
+  if (!agencyId) return null;
+  return { agencyId, agencyEmail };
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,7 +28,7 @@ export async function GET(req: NextRequest) {
       return Response.json({ error: "Not found" }, { status: 404 });
     }
 
-    const session = getSessionFromRequest(req);
+    const session = await getSession(req);
     if (!session?.agencyId) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }

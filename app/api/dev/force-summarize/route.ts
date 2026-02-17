@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getDb } from "@/lib/db";
-
+import { getSessionFromRequest } from "@/lib/auth";
 import { getOrCreateUser } from "@/lib/users";
 import { getOrCreateConversation, setConversationSummary } from "@/lib/conversations";
 import { summarizeConversation } from "@/lib/summarizeConversation";

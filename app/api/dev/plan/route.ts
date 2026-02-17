@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { getDb } from "@/lib/db";
-
 import { normalizePlan } from "@/lib/plans";
+import { getSessionFromRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
