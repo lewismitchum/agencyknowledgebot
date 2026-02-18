@@ -1,4 +1,3 @@
-
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -19,7 +18,6 @@ function AcceptInviteInner() {
   const sp = useSearchParams();
 
   const token = useMemo(() => {
-    // Support a couple common param names
     return sp.get("token") || sp.get("invite") || sp.get("code") || "";
   }, [sp]);
 
@@ -147,11 +145,6 @@ function AcceptInviteInner() {
           )}
         </CardContent>
       </Card>
-
-      <p className="mt-4 text-xs text-muted-foreground">
-        If your build fails mentioning <code>useSearchParams()</code>, it means it was used outside a Suspense boundary.
-        This page keeps it inside a Suspense-wrapped child component.
-      </p>
     </div>
   );
 }
