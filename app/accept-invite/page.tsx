@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -52,14 +53,11 @@ function AcceptInviteInner() {
           return;
         }
 
-        // Optional fields if your API returns them
         const agencyName =
           (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
 
         if (!cancelled) setState({ status: "success", agencyName });
 
-        // Move user into the app after accepting.
-        // Keep it simple and robust across route groups.
         setTimeout(() => {
           window.location.href = "/chat";
         }, 600);
@@ -112,9 +110,7 @@ function AcceptInviteInner() {
           )}
 
           {state.status === "loading" && (
-            <p className="text-sm text-muted-foreground">
-              Accepting invite… hang tight.
-            </p>
+            <p className="text-sm text-muted-foreground">Accepting invite… hang tight.</p>
           )}
 
           {state.status === "success" && (
@@ -122,9 +118,7 @@ function AcceptInviteInner() {
               <p className="text-sm">
                 ✅ Invite accepted{state.agencyName ? ` — welcome to ${state.agencyName}` : ""}.
               </p>
-              <p className="text-sm text-muted-foreground">
-                Redirecting you to chat…
-              </p>
+              <p className="text-sm text-muted-foreground">Redirecting you to chat…</p>
               <div className="flex gap-2">
                 <Button asChild>
                   <Link href="/chat">Go to chat now</Link>
@@ -135,9 +129,7 @@ function AcceptInviteInner() {
 
           {state.status === "error" && (
             <>
-              <p className="text-sm">
-                ❌ Could not accept invite.
-              </p>
+              <p className="text-sm">❌ Could not accept invite.</p>
               <p className="text-sm text-muted-foreground">{state.message}</p>
               <div className="flex gap-2">
                 <Button asChild variant="secondary">
@@ -151,15 +143,13 @@ function AcceptInviteInner() {
           )}
 
           {state.status === "idle" && (
-            <p className="text-sm text-muted-foreground">
-              Preparing…
-            </p>
+            <p className="text-sm text-muted-foreground">Preparing…</p>
           )}
         </CardContent>
       </Card>
 
       <p className="mt-4 text-xs text-muted-foreground">
-        If your build ever fails mentioning <code>useSearchParams()</code>, it means it’s being used outside a Suspense boundary.
+        If your build fails mentioning <code>useSearchParams()</code>, it means it was used outside a Suspense boundary.
         This page keeps it inside a Suspense-wrapped child component.
       </p>
     </div>
