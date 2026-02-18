@@ -1,275 +1,218 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 
-type PlanKey = "free" | "starter" | "pro" | "enterprise";
+function BillingStatusBanner() {
+  const sp = useSearchParams();
 
-const PLANS: {
-  key: PlanKey;
-  name: string;
-  price: string;
-  subtitle: string;
-  badge?: string;
-  bullets: string[];
-  cta: string;
-}[] = [
-  {
-    key: "free",
-    name: "Free",
-    price: "$0/mo",
-    subtitle: "Docs-only • daily limits",
-    bullets: ["1 agency bot", "Docs-prioritized answers", "Strict fallback behavior", "Basic daily limit"],
-    cta: "Current plan",
-  },
-  {
-    key: "starter",
-    name: "Starter",
-    price: "$—/mo",
-    subtitle: "Higher limits • schedule enabled",
-    badge: "Most popular",
-    bullets: ["1 agency bot", "More users", "Higher daily usage", "Schedule + extraction (paid)"],
-    cta: "Upgrade",
-  },
-  {
-    key: "pro",
-    name: "Pro",
-    price: "$—/mo",
-    subtitle: "More bots • higher limits",
-    bullets: ["3 agency bots", "More users", "Higher limits", "Faster indexing"],
-    cta: "Upgrade",
-  },
-  {
-    key: "enterprise",
-    name: "Enterprise",
-    price: "Custom",
-    subtitle: "Most features • support",
-    bullets: ["5 agency bots", "More users", "Highest limits", "Priority support"],
-    cta: "Upgrade",
-  },
-];
+  const banner = useMemo(() => {
+    const status = sp.get("status");
+    const canceled = sp.get("canceled");
+    const success = sp.get("success");
 
-function normalizePlan(plan: any): PlanKey {
-  const p = String(plan || "").toLowerCase().trim();
-  if (p === "starter" || p === "pro" || p === "enterprise") return p;
-  return "free";
-}
-
-/**
- * ✅ useSearchParams lives ONLY in here, and ONLY under Suspense.
- * This is what Next requires to avoid the prerender build error.
- */
-function BillingQueryToast({ onToast }: { onToast: (msg: string) => void }) {
-  const search = useSearchParams();
-
-  useEffect(() => {
-    const success = search.get("success");
-    const canceled = search.get("canceled");
-
-    if (success) {
-      onToast("Success — your checkout completed. It may take a few seconds for the plan to update.");
-      const t = setTimeout(() => onToast(""), 5000);
-      return () => clearTimeout(t);
+    // Support a few common patterns: ?success=1, ?canceled=1, ?status=success|canceled
+    if (success === "1" || status === "success") {
+      return {
+        variant: "success" as const,
+        title: "Payment successful",
+        description: "Your plan will update shortly. You can refresh in a moment.",
+      };
     }
 
-    if (canceled) {
-      onToast("Checkout canceled.");
-      const t = setTimeout(() => onToast(""), 4000);
-      return () => clearTimeout(t);
-    }
-  }, [search, onToast]);
-
-  return null;
-}
-
-export default function BillingPage() {
-  const [plan, setPlan] = useState<PlanKey>("free");
-  const [role, setRole] = useState<string>("member");
-  const [loading, setLoading] = useState(true);
-
-  const [toast, setToast] = useState<string>("");
-  const [busyPlan, setBusyPlan] = useState<PlanKey | null>(null);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch("/api/me", { credentials: "include" });
-        if (r.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        if (!r.ok) return;
-
-        const j = await r.json().catch(() => null);
-        setPlan(normalizePlan(j?.plan));
-        setRole(String(j?.user?.role ?? "member"));
-      } catch {
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  const current = useMemo(() => PLANS.find((p) => p.key === plan)!, [plan]);
-  const isOwner = role === "owner";
-
-  async function startCheckout(target: PlanKey) {
-    if (target === "free") return;
-
-    if (!isOwner) {
-      setToast("Owner only — ask your agency owner to upgrade.");
-      setTimeout(() => setToast(""), 3500);
-      return;
+    if (canceled === "1" || status === "canceled") {
+      return {
+        variant: "warning" as const,
+        title: "Checkout canceled",
+        description: "No worries — you can try again anytime.",
+      };
     }
 
-    setBusyPlan(target);
-    try {
-      const r = await fetch("/api/billing/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ plan: target }),
-      });
+    return null;
+  }, [sp]);
 
-      if (r.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-
-      const j = await r.json().catch(() => null);
-      if (!r.ok) {
-        setToast(j?.error || `Checkout failed (${r.status})`);
-        setTimeout(() => setToast(""), 4500);
-        return;
-      }
-
-      const url = String(j?.url || "");
-      if (!url) {
-        setToast("Checkout failed: missing redirect URL.");
-        setTimeout(() => setToast(""), 4500);
-        return;
-      }
-
-      window.location.href = url;
-    } catch (e: any) {
-      setToast(e?.message || "Checkout failed.");
-      setTimeout(() => setToast(""), 4500);
-    } finally {
-      setBusyPlan(null);
-    }
-  }
+  if (!banner) return null;
 
   return (
-    <div className="space-y-8">
-      {/* ✅ Required Suspense boundary for useSearchParams */}
-      <Suspense fallback={null}>
-        <BillingQueryToast onToast={setToast} />
-      </Suspense>
-
-      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Billing</h1>
-          <p className="mt-2 text-muted-foreground">Upgrade your agency plan. Enforcement is server-side.</p>
+    <Card className="mb-6">
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="text-base">{banner.title}</CardTitle>
+          <Badge variant={banner.variant === "success" ? "default" : "secondary"}>
+            {banner.variant === "success" ? "Success" : "Canceled"}
+          </Badge>
         </div>
+        <CardDescription>{banner.description}</CardDescription>
+      </CardHeader>
+    </Card>
+  );
+}
 
-        <div className="flex gap-2">
-          <Link href="/pricing" className="rounded-xl border px-4 py-2 text-sm hover:bg-accent">
-            View public pricing
-          </Link>
-        </div>
+function BillingContent() {
+  const plans = [
+    {
+      key: "free",
+      name: "Free",
+      price: "$0",
+      badge: "Current default",
+      bullets: [
+        "1 agency bot",
+        "5 daily uploads (docs only)",
+        "Daily chat limits",
+        "No schedule/to-do/calendar",
+      ],
+      cta: { label: "Go to Chat", href: "/chat", variant: "secondary" as const },
+    },
+    {
+      key: "starter",
+      name: "Starter",
+      price: "$79–$99/mo",
+      badge: "Schedule enabled",
+      bullets: [
+        "1 agency bot",
+        "Up to 5 users (owner/admin excluded from seats)",
+        "Higher daily chat limits",
+        "Unlimited uploads (docs only)",
+        "Schedule/to-do/calendar enabled",
+      ],
+      cta: { label: "Upgrade (soon)", href: "/billing", variant: "default" as const },
+    },
+    {
+      key: "pro",
+      name: "Pro",
+      price: "$249–$399/mo",
+      badge: "Multimedia",
+      bullets: [
+        "3 agency bots",
+        "Up to 15 users (owner/admin excluded from seats)",
+        "Unlimited daily chats",
+        "Unlimited uploads (docs + images + video)",
+        "Schedule/to-do/calendar enabled",
+      ],
+      cta: { label: "Upgrade (soon)", href: "/billing", variant: "default" as const },
+    },
+    {
+      key: "enterprise",
+      name: "Enterprise",
+      price: "$899–$999/mo",
+      badge: "Teams",
+      bullets: [
+        "5 agency bots",
+        "Up to 50 users (owner/admin excluded from seats)",
+        "Unlimited daily chats",
+        "Uploads (docs + images + video)",
+        "Schedule/to-do/calendar enabled",
+      ],
+      cta: { label: "Contact us", href: "/docs", variant: "secondary" as const },
+    },
+    {
+      key: "corporation",
+      name: "Corporation",
+      price: "$1799–$1999/mo",
+      badge: "Email + AI triage",
+      bullets: [
+        "10 agency bots",
+        "Up to 100 users (owner/admin excluded from seats)",
+        "Unlimited daily chats",
+        "Uploads (docs + images + video)",
+        "Schedule/to-do/calendar enabled",
+        "Email page enabled (Gmail-like)",
+      ],
+      cta: { label: "Contact us", href: "/docs", variant: "secondary" as const },
+    },
+  ];
+
+  return (
+    <div className="mx-auto w-full max-w-5xl px-4 py-8">
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold">Billing</h1>
+        <p className="text-muted-foreground mt-1">
+          Upgrade your agency plan. Owner/admin seats don’t count toward limits, and upgrades apply to the whole agency.
+        </p>
       </div>
 
-      {toast ? (
-        <div className="rounded-2xl border bg-muted p-4 text-sm">
-          <div className="font-medium">Heads up</div>
-          <div className="mt-1 text-muted-foreground">{toast}</div>
-        </div>
-      ) : null}
+      <Suspense fallback={null}>
+        <BillingStatusBanner />
+      </Suspense>
 
-      <Card className="rounded-3xl">
+      <Card className="mb-6">
         <CardHeader>
-          <CardTitle className="text-xl tracking-tight">Current plan</CardTitle>
-          <CardDescription>What you’re on today.</CardDescription>
+          <CardTitle className="text-base">How billing works</CardTitle>
+          <CardDescription>
+            Plan enforcement is server-side. This page is the UI for upgrades and status.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="text-lg font-semibold">{current.name}</div>
-              <div className="mt-1 text-sm text-muted-foreground">{current.subtitle}</div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Badge variant="outline" className="rounded-full">
-                  Role: {isOwner ? "owner" : "member"}
-                </Badge>
-                <Badge variant="outline" className="rounded-full">
-                  Plan: {plan}
-                </Badge>
-              </div>
-            </div>
-            <div className="text-2xl font-semibold">{current.price}</div>
-          </div>
-
-          <Separator className="my-6" />
-
-          <div className="rounded-2xl bg-muted p-4">
-            <div className="text-sm font-medium">Docs fallback behavior</div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              If an answer isn’t present in your uploads, Louis replies exactly:
-            </p>
-            <div className="mt-3 rounded-xl bg-background p-3 font-mono text-sm">
-              I don’t have that information in the docs yet.
-            </div>
-          </div>
+        <CardContent className="text-sm text-muted-foreground space-y-2">
+          <p>
+            Louis.Ai is a multi-tenant agency knowledge system: agency bots/docs are shared across the agency; private bots/docs are isolated per user.
+          </p>
+          <p>
+            Schedule/to-do/calendar extraction is a paid feature. Basic reminders/notifications UI can exist on all tiers.
+          </p>
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        {PLANS.map((p) => {
-          const isCurrent = p.key === plan;
-          const disabled = loading || isCurrent || (!isOwner && p.key !== "free");
-          const busy = busyPlan === p.key;
-
-          return (
-            <div key={p.key} className="relative rounded-2xl border bg-card p-5 shadow-sm">
-              {p.badge ? (
-                <Badge className="absolute -top-3 left-5 rounded-full" variant="secondary">
-                  {p.badge}
-                </Badge>
-              ) : null}
-
-              <div className="text-sm font-semibold">{p.name}</div>
-              <div className="mt-2 text-3xl font-semibold">{p.price}</div>
-              <div className="mt-2 text-sm text-muted-foreground">{p.subtitle}</div>
-
-              <ul className="mt-4 space-y-2 text-sm text-muted-foreground">
+      <div className="grid gap-4 md:grid-cols-2">
+        {plans.map((p) => (
+          <Card key={p.key}>
+            <CardHeader>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-lg">{p.name}</CardTitle>
+                  <CardDescription className="mt-1">{p.price}</CardDescription>
+                </div>
+                <Badge variant="secondary">{p.badge}</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Separator />
+              <ul className="text-sm text-muted-foreground space-y-2">
                 {p.bullets.map((b) => (
                   <li key={b} className="flex gap-2">
-                    <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-foreground/60" />
+                    <span className="mt-1">•</span>
                     <span>{b}</span>
                   </li>
                 ))}
               </ul>
 
-              <Button
-                className="mt-5 w-full rounded-xl"
-                variant={isCurrent ? "secondary" : "default"}
-                disabled={disabled || busy}
-                onClick={!isCurrent && p.key !== "free" ? () => startCheckout(p.key) : undefined}
-              >
-                {isCurrent ? "Current plan" : busy ? "Redirecting…" : isOwner ? "Upgrade" : "Owner only"}
-              </Button>
+              <div className="pt-2 flex items-center gap-2">
+                <Button asChild variant={p.cta.variant}>
+                  <Link href={p.cta.href}>{p.cta.label}</Link>
+                </Button>
+                <Button asChild variant="ghost">
+                  <Link href="/docs">Plan details</Link>
+                </Button>
+              </div>
 
-              {!isOwner && p.key !== "free" ? (
-                <p className="mt-3 text-xs text-muted-foreground">Only the agency owner can upgrade.</p>
-              ) : null}
-            </div>
-          );
-        })}
+              <p className="text-xs text-muted-foreground">
+                Note: checkout + webhook wiring will update <code>agencies.plan</code>.
+              </p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <div className="mt-8 text-sm text-muted-foreground">
+        <p>
+          If you’re seeing build failures mentioning <code>useSearchParams()</code>, it means it was used outside of a Suspense boundary.
+          This page is structured so <code>useSearchParams()</code> only runs inside a Suspense-wrapped child.
+        </p>
       </div>
     </div>
   );
+}
+
+export default function BillingPage() {
+  return <BillingContent />;
 }
