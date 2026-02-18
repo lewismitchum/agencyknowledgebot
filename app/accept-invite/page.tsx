@@ -1,151 +1,175 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
-export default function AcceptInvitePage() {
+type AcceptState =
+  | { status: "idle" }
+  | { status: "missing_token" }
+  | { status: "loading" }
+  | { status: "success"; agencyName?: string }
+  | { status: "error"; message: string };
+
+function AcceptInviteInner() {
   const sp = useSearchParams();
-  const token = useMemo(() => (sp.get("token") || "").trim(), [sp]);
 
-  const [password, setPassword] = useState("");
-  const [password2, setPassword2] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; error?: string } | null>(null);
+  const token = useMemo(() => {
+    // Support a couple common param names
+    return sp.get("token") || sp.get("invite") || sp.get("code") || "";
+  }, [sp]);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setResult(null);
+  const [state, setState] = useState<AcceptState>({ status: "idle" });
 
-    if (!token) {
-      setResult({ ok: false, error: "Missing token" });
-      return;
-    }
-    if (password.length < 8) {
-      setResult({ ok: false, error: "Password must be at least 8 characters" });
-      return;
-    }
-    if (password !== password2) {
-      setResult({ ok: false, error: "Passwords do not match" });
-      return;
-    }
+  useEffect(() => {
+    let cancelled = false;
 
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/accept-invite", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token, password }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.ok) {
-        setResult({ ok: false, error: data?.error || "Invite failed" });
-      } else {
-        setResult({ ok: true });
+    async function run() {
+      if (!token) {
+        setState({ status: "missing_token" });
+        return;
       }
-    } catch (err: any) {
-      setResult({ ok: false, error: err?.message || "Network error" });
-    } finally {
-      setLoading(false);
+
+      setState({ status: "loading" });
+
+      try {
+        const res = await fetch("/api/accept-invite", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          const msg =
+            (data && (data.error || data.message)) ||
+            `Invite failed (HTTP ${res.status})`;
+          if (!cancelled) setState({ status: "error", message: msg });
+          return;
+        }
+
+        // Optional fields if your API returns them
+        const agencyName =
+          (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
+
+        if (!cancelled) setState({ status: "success", agencyName });
+
+        // Move user into the app after accepting.
+        // Keep it simple and robust across route groups.
+        setTimeout(() => {
+          window.location.href = "/chat";
+        }, 600);
+      } catch (e: any) {
+        if (!cancelled) {
+          setState({
+            status: "error",
+            message: e?.message || "Network error while accepting invite.",
+          });
+        }
+      }
     }
-  }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom,rgba(255,255,255,0.05),transparent_50%)]" />
-      </div>
-
-      <div className="mx-auto max-w-6xl px-4 py-14 md:py-20">
-        <div className="mx-auto max-w-xl">
-          <div className="rounded-3xl border bg-card p-8 shadow-sm">
-            <h1 className="text-2xl font-semibold tracking-tight">Join workspace</h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Create a password to finish joining. Your account may require owner approval before you can access the app.
-            </p>
-
-            {!token && (
-              <div className="mt-6 rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">
-                This invite link is missing a token. Please use the link from your email.
-              </div>
-            )}
-
-            {result && (
-              <div
-                className={[
-                  "mt-6 rounded-2xl border p-4 text-sm",
-                  result.ok ? "border-emerald-500/30 bg-emerald-500/10" : "border-red-500/30 bg-red-500/10",
-                ].join(" ")}
-              >
-                {result.ok ? (
-                  <div>
-                    <div className="font-medium">Invite accepted ✅</div>
-                    <div className="mt-1 text-muted-foreground">
-                      You can now log in. If your owner requires approval, you’ll see “Pending approval”.
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="font-medium">Could not accept invite</div>
-                    <div className="mt-1 text-muted-foreground">{result.error}</div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <form className="mt-6 space-y-4" onSubmit={onSubmit}>
-              <div>
-                <label className="text-sm font-medium">Password</label>
-                <input
-                  className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  disabled={loading || !token || (result?.ok ?? false)}
-                  placeholder="At least 8 characters"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm font-medium">Confirm password</label>
-                <input
-                  className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-                  type="password"
-                  value={password2}
-                  onChange={(e) => setPassword2(e.target.value)}
-                  disabled={loading || !token || (result?.ok ?? false)}
-                  placeholder="Repeat password"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading || !token || (result?.ok ?? false)}
-                className="w-full rounded-xl bg-primary px-5 py-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {loading ? "Creating account..." : "Accept invite"}
-              </button>
-            </form>
-
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Link
-                href="/login"
-                className="rounded-xl border px-5 py-3 text-sm hover:bg-accent"
-              >
-                Back to login
-              </Link>
-              <Link
-                href="/"
-                className="rounded-xl border px-5 py-3 text-sm hover:bg-accent"
-              >
-                Home
-              </Link>
+    <div className="mx-auto w-full max-w-xl px-4 py-10">
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle>Accept invite</CardTitle>
+              <CardDescription className="mt-1">
+                Joining an agency will give you access to its shared bot(s) and docs.
+              </CardDescription>
             </div>
+            <Badge variant="secondary">Louis.Ai</Badge>
           </div>
-        </div>
-      </div>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          {state.status === "missing_token" && (
+            <>
+              <p className="text-sm text-muted-foreground">
+                This invite link is missing a token. Please ask your agency owner/admin to resend the invite.
+              </p>
+              <div className="flex gap-2">
+                <Button asChild variant="secondary">
+                  <Link href="/login">Go to login</Link>
+                </Button>
+                <Button asChild variant="ghost">
+                  <Link href="/signup">Create account</Link>
+                </Button>
+              </div>
+            </>
+          )}
+
+          {state.status === "loading" && (
+            <p className="text-sm text-muted-foreground">
+              Accepting invite… hang tight.
+            </p>
+          )}
+
+          {state.status === "success" && (
+            <>
+              <p className="text-sm">
+                ✅ Invite accepted{state.agencyName ? ` — welcome to ${state.agencyName}` : ""}.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Redirecting you to chat…
+              </p>
+              <div className="flex gap-2">
+                <Button asChild>
+                  <Link href="/chat">Go to chat now</Link>
+                </Button>
+              </div>
+            </>
+          )}
+
+          {state.status === "error" && (
+            <>
+              <p className="text-sm">
+                ❌ Could not accept invite.
+              </p>
+              <p className="text-sm text-muted-foreground">{state.message}</p>
+              <div className="flex gap-2">
+                <Button asChild variant="secondary">
+                  <Link href="/login">Try logging in</Link>
+                </Button>
+                <Button asChild variant="ghost">
+                  <Link href="/signup">Or create account</Link>
+                </Button>
+              </div>
+            </>
+          )}
+
+          {state.status === "idle" && (
+            <p className="text-sm text-muted-foreground">
+              Preparing…
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <p className="mt-4 text-xs text-muted-foreground">
+        If your build ever fails mentioning <code>useSearchParams()</code>, it means it’s being used outside a Suspense boundary.
+        This page keeps it inside a Suspense-wrapped child component.
+      </p>
     </div>
+  );
+}
+
+export default function AcceptInvitePage() {
+  return (
+    <Suspense fallback={null}>
+      <AcceptInviteInner />
+    </Suspense>
   );
 }
