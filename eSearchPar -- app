@@ -1,0 +1,6 @@
+[35mapp/(app)/app/billing/page.tsx[m[36m:[m[32m5[m[36m:[mimport { [1;31museSearchParams[m } from "next/navigation";
+[35mapp/(app)/app/billing/page.tsx[m[36m:[m[32m18[m[36m:[m  const sp = [1;31museSearchParams[m();
+[35mapp/(app)/app/billing/page.tsx[m[36m:[m[32m208[m[36m:[m          If you’re seeing build failures mentioning <code>[1;31museSearchParams[m()</code>, it means it was used outside of a Suspense boundary.
+[35mapp/(app)/app/billing/page.tsx[m[36m:[m[32m209[m[36m:[m          This page is structured so <code>[1;31museSearchParams[m()</code> only runs inside a Suspense-wrapped child.
+[35mapp/accept-invite/page.tsx[m[36m:[m[32m5[m[36m:[mimport { [1;31museSearchParams[m } from "next/navigation";
+[35mapp/accept-invite/page.tsx[m[36m:[m[32m18[m[36m:[m  const sp = [1;31museSearchParams[m();
