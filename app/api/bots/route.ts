@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
     const limits = getPlanLimits(plan);
 
     const maxAgencyBots =
-      limits?.max_agency_bots ?? limits?.agency_bots ?? null;
+      limits?.max_agency_bots ?? null;
 
     if (maxAgencyBots != null) {
       const row = (await db.get(
