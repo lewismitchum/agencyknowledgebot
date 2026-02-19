@@ -1,166 +1,108 @@
-// app/api/billing/webhook/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { getDb, type Db } from "@/lib/db";
+import { ensureSchema } from "@/lib/schema";
+import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
-function stripeClient() {
+function getStripe() {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("Missing STRIPE_SECRET_KEY");
-  return new Stripe(key, { apiVersion: "2024-06-20" as any });
+  return new Stripe(key, { apiVersion: "2024-06-20" });
 }
 
-async function ensureBillingColumns(db: Db) {
-  await db.run("ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT").catch(() => {});
-  await db.run("ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT").catch(() => {});
-  await db.run("ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT").catch(() => {});
-  await db.run("ALTER TABLE agencies ADD COLUMN billing_status TEXT").catch(() => {});
-  await db.run("ALTER TABLE agencies ADD COLUMN plan TEXT").catch(() => {}); // in case older DB
+function getWebhookSecret() {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) throw new Error("Missing STRIPE_WEBHOOK_SECRET");
+  return secret;
 }
 
-function planForPriceId(priceId: string | null) {
-  const p = String(priceId || "");
-  if (!p) return null;
+function planFromPriceId(priceId: string | null | undefined): PlanKey {
+  const starter = process.env.STRIPE_PRICE_STARTER || "";
+  const pro = process.env.STRIPE_PRICE_PRO || "";
+  const ent = process.env.STRIPE_PRICE_ENTERPRISE || "";
 
-  if (process.env.STRIPE_PRICE_STARTER && p === process.env.STRIPE_PRICE_STARTER) return "starter";
-  if (process.env.STRIPE_PRICE_PRO && p === process.env.STRIPE_PRICE_PRO) return "pro";
-  if (process.env.STRIPE_PRICE_ENTERPRISE && p === process.env.STRIPE_PRICE_ENTERPRISE) return "enterprise";
-  if (process.env.STRIPE_PRICE_CORPORATION && p === process.env.STRIPE_PRICE_CORPORATION) return "corporation";
-
-  return null;
+  if (priceId && priceId === starter) return "starter";
+  if (priceId && priceId === pro) return "pro";
+  if (priceId && priceId === ent) return "enterprise";
+  return "free";
 }
 
-async function setAgencyPlan(db: Db, agencyId: string, plan: string, status: string, subId?: string | null, priceId?: string | null) {
-  await db.run(
-    `UPDATE agencies
-     SET plan = ?,
-         billing_status = ?,
-         stripe_subscription_id = COALESCE(?, stripe_subscription_id),
-         stripe_price_id = COALESCE(?, stripe_price_id)
-     WHERE id = ?`,
-    plan,
-    status,
-    subId ?? null,
-    priceId ?? null,
-    agencyId
-  );
-}
-
-async function downgradeToFree(db: Db, agencyId: string) {
-  await db.run(
-    `UPDATE agencies
-     SET plan = 'free',
-         billing_status = 'canceled',
-         stripe_subscription_id = NULL,
-         stripe_price_id = NULL
-     WHERE id = ?`,
-    agencyId
-  );
+async function setAgencyPlan(db: Db, agencyId: string, plan: PlanKey) {
+  await db.run(`UPDATE agencies SET plan = ? WHERE id = ?`, plan, agencyId);
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const stripe = stripeClient();
-    const secret = process.env.STRIPE_WEBHOOK_SECRET;
-    if (!secret) return NextResponse.json({ error: "Missing STRIPE_WEBHOOK_SECRET" }, { status: 500 });
+    const stripe = getStripe();
+    const secret = getWebhookSecret();
 
     const sig = req.headers.get("stripe-signature");
-    if (!sig) return NextResponse.json({ error: "Missing stripe-signature header" }, { status: 400 });
+    if (!sig) return NextResponse.json({ ok: false, error: "MISSING_SIGNATURE" }, { status: 400 });
 
     const rawBody = await req.text();
-    let event: Stripe.Event;
 
+    let event: Stripe.Event;
     try {
       event = stripe.webhooks.constructEvent(rawBody, sig, secret);
-    } catch (err: any) {
-      return NextResponse.json({ error: "Webhook signature verification failed" }, { status: 400 });
+    } catch (e: any) {
+      console.error("STRIPE_WEBHOOK_SIGNATURE_INVALID", e?.message ?? e);
+      return NextResponse.json({ ok: false, error: "INVALID_SIGNATURE" }, { status: 400 });
     }
 
     const db: Db = await getDb();
-    await ensureBillingColumns(db);
+    await ensureSchema(db);
 
-    // Helper: resolve agency_id from metadata or customer lookup
-    const resolveAgencyId = async (maybeAgencyId: string | null, customerId: string | null) => {
-      const direct = String(maybeAgencyId || "").trim();
-      if (direct) return direct;
-
-      const cust = String(customerId || "").trim();
-      if (!cust) return null;
-
-      const row = (await db.get(
-        `SELECT id FROM agencies WHERE stripe_customer_id = ? LIMIT 1`,
-        cust
-      )) as { id: string } | undefined;
-
-      return row?.id ?? null;
-    };
-
+    // 1) Checkout completed: trust metadata.plan (what user selected)
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
+      const agencyId = String((session.metadata as any)?.agency_id || session.client_reference_id || "").trim();
+      const plan = normalizePlan((session.metadata as any)?.plan);
 
-      const customerId = typeof session.customer === "string" ? session.customer : session.customer?.id ?? null;
-      const agencyId = await resolveAgencyId((session.metadata as any)?.agency_id ?? null, customerId);
-      if (!agencyId) return NextResponse.json({ ok: true });
-
-      // Pull subscription to get price id + status
-      const subId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id ?? null;
-      if (!subId) return NextResponse.json({ ok: true });
-
-      const sub = await stripe.subscriptions.retrieve(subId);
-      const priceId = sub.items.data?.[0]?.price?.id ?? null;
-      const plan = planForPriceId(priceId) ?? (String((session.metadata as any)?.plan_requested || "").toLowerCase() || null);
-
-      if (plan) {
-        await setAgencyPlan(db, agencyId, plan, String(sub.status || "active"), subId, priceId);
+      if (agencyId && plan !== "free") {
+        await setAgencyPlan(db, agencyId, plan);
       }
 
       return NextResponse.json({ ok: true });
     }
 
-    if (event.type === "customer.subscription.updated") {
+    // 2) Subscription updated/created: derive plan from active price id (more authoritative over time)
+    if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated") {
       const sub = event.data.object as Stripe.Subscription;
-      const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
-      // agency_id may exist on subscription metadata if you set it later; we also fall back to customer mapping.
-      const agencyId = await resolveAgencyId((sub.metadata as any)?.agency_id ?? null, customerId);
-      if (!agencyId) return NextResponse.json({ ok: true });
+      const agencyId = String((sub.metadata as any)?.agency_id || "").trim();
 
-      const priceId = sub.items.data?.[0]?.price?.id ?? null;
-      const plan = planForPriceId(priceId);
+      const firstItem = sub.items?.data?.[0];
+      const priceId = firstItem?.price?.id || null;
 
-      if (sub.status === "canceled" || sub.status === "unpaid" || sub.status === "incomplete_expired") {
-        await downgradeToFree(db, agencyId);
-        return NextResponse.json({ ok: true });
-      }
+      const plan = planFromPriceId(priceId);
 
-      if (plan) {
-        await setAgencyPlan(db, agencyId, plan, String(sub.status || "active"), sub.id, priceId);
-      } else {
-        // Unknown price id => don't change plan, but keep status updated
-        await db.run(`UPDATE agencies SET billing_status = ? WHERE id = ?`, String(sub.status || "active"), agencyId);
+      if (agencyId) {
+        // If subscription canceled/unpaid, Stripe may still send updated events; keep it simple for v1:
+        // active/trialing => mapped plan, else => free
+        const status = String(sub.status || "");
+        const active = status === "active" || status === "trialing";
+        await setAgencyPlan(db, agencyId, active ? plan : "free");
       }
 
       return NextResponse.json({ ok: true });
     }
 
+    // 3) Subscription deleted => downgrade
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object as Stripe.Subscription;
-      const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
-
-      const agencyId = await resolveAgencyId((sub.metadata as any)?.agency_id ?? null, customerId);
-      if (agencyId) await downgradeToFree(db, agencyId);
-
+      const agencyId = String((sub.metadata as any)?.agency_id || "").trim();
+      if (agencyId) {
+        await setAgencyPlan(db, agencyId, "free");
+      }
       return NextResponse.json({ ok: true });
     }
 
-    // Ignore other events
     return NextResponse.json({ ok: true });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    console.error("STRIPE_WEBHOOK_ERROR", err);
+    // Stripe expects 2xx to avoid retries unless we truly want retries.
+    return NextResponse.json({ ok: true, warning: "webhook_error_logged" }, { status: 200 });
   }
 }
