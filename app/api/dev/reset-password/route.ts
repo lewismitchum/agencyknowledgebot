@@ -1,8 +1,5 @@
 // app/api/dev/reset-password/route.ts
-// TEMP DEV-ONLY ROUTE.
-// Use this ONLY to unblock access when SMTP/forgot-password isn't set up.
-// Protect it with DEV_ADMIN_SECRET in Vercel env.
-// Delete this route and remove DEV_ADMIN_SECRET after you're back in.
+// TEMP DEV-ONLY ROUTE. DELETE AFTER USE.
 
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
@@ -26,11 +23,7 @@ async function readBody(req: NextRequest): Promise<{ email?: string; newPassword
 }
 
 function getSecret(req: NextRequest) {
-  return (
-    req.headers.get("x-dev-admin-secret") ||
-    new URL(req.url).searchParams.get("secret") ||
-    ""
-  );
+  return req.headers.get("x-dev-admin-secret") || new URL(req.url).searchParams.get("secret") || "";
 }
 
 function json(status: number, data: any) {
@@ -40,19 +33,22 @@ function json(status: number, data: any) {
   });
 }
 
+async function authOr401(req: NextRequest) {
+  const envSecret = process.env.DEV_ADMIN_SECRET || "";
+  if (!envSecret) return { ok: false as const, res: json(500, { ok: false, message: "DEV_ADMIN_SECRET is not set." }) };
+
+  const secret = getSecret(req);
+  if (!secret || secret !== envSecret) return { ok: false as const, res: json(401, { ok: false, message: "Unauthorized" }) };
+
+  return { ok: true as const, res: null as any };
+}
+
 export async function POST(req: NextRequest) {
   try {
     await ensureSchema().catch(() => {});
 
-    const envSecret = process.env.DEV_ADMIN_SECRET || "";
-    if (!envSecret) {
-      return json(500, { ok: false, message: "DEV_ADMIN_SECRET is not set." });
-    }
-
-    const secret = getSecret(req);
-    if (!secret || secret !== envSecret) {
-      return json(401, { ok: false, message: "Unauthorized" });
-    }
+    const auth = await authOr401(req);
+    if (!auth.ok) return auth.res;
 
     const { email, newPassword } = await readBody(req);
     const normalizedEmail = (email || "").trim().toLowerCase();
@@ -63,13 +59,13 @@ export async function POST(req: NextRequest) {
 
     const db = await getDb();
 
-    // Ensure columns exist (drift-safe)
+    // Drift-safe columns
     await db.run("ALTER TABLE agencies ADD COLUMN password_hash TEXT").catch(() => {});
     await db.run("ALTER TABLE agencies ADD COLUMN email_verified INTEGER").catch(() => {});
     await db.run("ALTER TABLE agencies ADD COLUMN updated_at TEXT").catch(() => {});
 
-    const agency = await db.get<{ id: string; email_verified?: number | null }>(
-      "SELECT id, email_verified FROM agencies WHERE lower(email) = ? LIMIT 1",
+    const agency = await db.get<{ id: string }>(
+      "SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
     );
 
@@ -79,7 +75,6 @@ export async function POST(req: NextRequest) {
 
     const password_hash = await bcrypt.hash(newPassword!, 10);
 
-    // Set password + mark verified so login won't 403 on email verification
     await db.run(
       "UPDATE agencies SET password_hash = ?, email_verified = 1, updated_at = ? WHERE id = ?",
       password_hash,
@@ -87,7 +82,7 @@ export async function POST(req: NextRequest) {
       agency.id
     );
 
-    // Best-effort: also ensure the users row for this email is verified+active if it exists
+    // Best-effort user row
     await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
     await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
     await db.run(
@@ -96,26 +91,51 @@ export async function POST(req: NextRequest) {
       normalizedEmail
     ).catch(() => {});
 
-    return json(200, {
-      ok: true,
-      message: "Password reset successfully (dev route). You can now login.",
-    });
+    return json(200, { ok: true, message: "Password reset successfully (dev route). You can now login." });
   } catch (err: any) {
     console.error("DEV_RESET_PASSWORD_ERROR", err);
     return json(500, { ok: false, message: err?.message || "Server error" });
   }
 }
 
+// GET = status check
 export async function GET(req: NextRequest) {
-  const envSecret = process.env.DEV_ADMIN_SECRET || "";
-  if (!envSecret) {
-    return json(500, { ok: false, message: "DEV_ADMIN_SECRET is not set." });
-  }
-
-  const secret = getSecret(req);
-  if (!secret || secret !== envSecret) {
-    return json(401, { ok: false, message: "Unauthorized" });
-  }
-
+  const auth = await authOr401(req);
+  if (!auth.ok) return auth.res;
   return json(200, { ok: true, message: "Dev reset route ready" });
+}
+
+// NEW: list the most recent agencies (emails) so you can pick the right one
+export async function PUT(req: NextRequest) {
+  try {
+    await ensureSchema().catch(() => {});
+
+    const auth = await authOr401(req);
+    if (!auth.ok) return auth.res;
+
+    const db = await getDb();
+
+    // Best effort: in case created_at doesn't exist yet
+    await db.run("ALTER TABLE agencies ADD COLUMN created_at TEXT").catch(() => {});
+    await db.run("ALTER TABLE agencies ADD COLUMN name TEXT").catch(() => {});
+    await db.run("ALTER TABLE agencies ADD COLUMN email TEXT").catch(() => {});
+
+    const rows = await db.all<{
+      id: string;
+      name: string | null;
+      email: string | null;
+      created_at: string | null;
+      email_verified: number | null;
+    }>(
+      `SELECT id, name, email, created_at, email_verified
+       FROM agencies
+       ORDER BY COALESCE(created_at, '') DESC
+       LIMIT 25`
+    );
+
+    return json(200, { ok: true, agencies: rows });
+  } catch (err: any) {
+    console.error("DEV_LIST_AGENCIES_ERROR", err);
+    return json(500, { ok: false, message: err?.message || "Server error" });
+  }
 }
