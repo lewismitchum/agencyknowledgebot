@@ -14,7 +14,7 @@ export default function LoginPage() {
     setLoading(true);
 
     const fd = new FormData(e.currentTarget);
-    const email = String(fd.get("email") || "");
+    const email = String(fd.get("email") || "").trim();
     const password = String(fd.get("password") || "");
 
     try {
@@ -32,11 +32,12 @@ export default function LoginPage() {
       } catch {}
 
       if (!r.ok) {
-        setErr(j?.error || raw || "Login failed");
+        setErr(j?.error || j?.message || raw || "Login failed");
         return;
       }
 
-      window.location.href = "/app";
+      const redirectTo = (j && (j.redirectTo || j.redirect_to)) || "/app/chat";
+      window.location.href = redirectTo;
     } catch (e: any) {
       setErr(e?.message || "Network error");
     } finally {
@@ -150,14 +151,7 @@ export default function LoginPage() {
 
 function EyeIcon() {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="block"
-      xmlns="http://www.w3.org/2000/svg"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="block" xmlns="http://www.w3.org/2000/svg">
       <path
         d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"
         stroke="currentColor"
@@ -176,14 +170,7 @@ function EyeIcon() {
 
 function EyeOffIcon() {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      className="block"
-      xmlns="http://www.w3.org/2000/svg"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="block" xmlns="http://www.w3.org/2000/svg">
       <path
         d="M10.58 10.58A2 2 0 0 0 12 14a2 2 0 0 0 1.42-.58"
         stroke="currentColor"

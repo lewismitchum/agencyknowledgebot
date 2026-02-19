@@ -15,8 +15,8 @@ export default function SignupPage() {
     setLoading(true);
 
     const fd = new FormData(e.currentTarget);
-    const name = String(fd.get("name") || "");
-    const email = String(fd.get("email") || "");
+    const name = String(fd.get("name") || "").trim();
+    const email = String(fd.get("email") || "").trim();
     const password = String(fd.get("password") || "");
 
     try {
@@ -24,23 +24,35 @@ export default function SignupPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        redirect: "follow",
         body: JSON.stringify({ name, email, password }),
       });
 
-      const raw = await r.text();
+      // If the API redirects (302), fetch() with redirect: "follow" returns the final HTML,
+      // so we just navigate ourselves to the intended next page after success.
+      const ct = r.headers.get("content-type") || "";
+
+      const raw = await r.text().catch(() => "");
       let j: any = null;
-      try {
-        j = raw ? JSON.parse(raw) : null;
-      } catch {}
+      if (ct.includes("application/json")) {
+        try {
+          j = raw ? JSON.parse(raw) : null;
+        } catch {}
+      }
 
       if (!r.ok) {
-        setErr(j?.error || raw || "Signup failed");
+        setErr(j?.error || j?.message || raw || "Signup failed");
         return;
       }
 
-      // Most setups require email verification next:
-      setOk("Account created. Check your email to verify your workspace.");
-      window.location.href = "/verify-email";
+      // Success. If backend returned JSON, honor redirectTo; otherwise assume check-email or chat.
+      const redirectTo =
+        (j && (j.redirectTo || j.redirect_to)) ||
+        // if SMTP is configured: signup route redirects to /check-email
+        "/check-email";
+
+      setOk("Account created.");
+      window.location.href = redirectTo;
     } catch (e: any) {
       setErr(e?.message || "Network error");
     } finally {
@@ -51,7 +63,6 @@ export default function SignupPage() {
   return (
     <div className="mx-auto max-w-6xl px-4 py-14 md:py-20">
       <div className="mx-auto grid max-w-4xl gap-8 md:grid-cols-2 md:items-center">
-        {/* Left */}
         <div className="hidden md:block">
           <div className="rounded-3xl border bg-card p-8 shadow-sm">
             <div className="text-sm font-semibold">Start Free</div>
@@ -70,7 +81,6 @@ export default function SignupPage() {
           </div>
         </div>
 
-        {/* Right */}
         <div className="rounded-3xl border bg-card p-8 shadow-sm">
           <h1 className="text-2xl font-semibold tracking-tight">Create your workspace</h1>
           <p className="mt-2 text-sm text-muted-foreground">
