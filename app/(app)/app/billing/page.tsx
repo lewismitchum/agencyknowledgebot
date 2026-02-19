@@ -1,7 +1,6 @@
-// app/app/billing/page.tsx
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -14,6 +13,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+
+type MeResponse =
+  | {
+      ok: true;
+      agency: { id: string; name: string | null; email: string | null; plan: string };
+    }
+  | { ok?: false; error?: string; message?: string };
 
 function BillingStatusBanner() {
   const sp = useSearchParams();
@@ -61,6 +67,25 @@ function BillingStatusBanner() {
 
 function BillingContent() {
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [currentPlan, setCurrentPlan] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/me", { method: "GET" });
+        const data = (await res.json().catch(() => ({}))) as MeResponse;
+        if (!cancelled && (data as any)?.ok && (data as any)?.agency?.plan) {
+          setCurrentPlan(String((data as any).agency.plan));
+        }
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function startCheckout(plan: "starter" | "pro" | "enterprise") {
     try {
@@ -93,14 +118,14 @@ function BillingContent() {
       key: "free",
       name: "Free",
       price: "$0",
-      badge: "Current default",
+      badge: "Default",
       bullets: [
         "1 agency bot",
         "5 daily uploads (docs only)",
         "Daily chat limits",
         "No schedule/to-do/calendar",
       ],
-      cta: { label: "Go to Chat", href: "/chat", variant: "secondary" as const },
+      cta: { label: "Go to Chat", href: "/app/chat", variant: "secondary" as const },
     },
     {
       key: "starter",
@@ -114,7 +139,7 @@ function BillingContent() {
         "Unlimited uploads (docs only)",
         "Schedule/to-do/calendar enabled",
       ],
-      cta: { label: "Upgrade", href: null as any, variant: "default" as const },
+      cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("starter"),
     },
     {
@@ -129,7 +154,7 @@ function BillingContent() {
         "Unlimited uploads (docs + images + video)",
         "Schedule/to-do/calendar enabled",
       ],
-      cta: { label: "Upgrade", href: null as any, variant: "default" as const },
+      cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("pro"),
     },
     {
@@ -144,7 +169,7 @@ function BillingContent() {
         "Uploads (docs + images + video)",
         "Schedule/to-do/calendar enabled",
       ],
-      cta: { label: "Upgrade", href: null as any, variant: "default" as const },
+      cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("enterprise"),
     },
     {
@@ -160,17 +185,25 @@ function BillingContent() {
         "Schedule/to-do/calendar enabled",
         "Email page enabled (Gmail-like)",
       ],
-      cta: { label: "Contact us", href: "/docs", variant: "secondary" as const },
+      cta: { label: "Contact us", href: "/app/docs", variant: "secondary" as const },
     },
   ];
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8">
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold">Billing</h1>
-        <p className="text-muted-foreground mt-1">
-          Upgrade your agency plan. Owner/admin seats don’t count toward limits, and upgrades apply to the whole agency.
-        </p>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">Billing</h1>
+            <p className="text-muted-foreground mt-1">
+              Upgrade your agency plan. Owner/admin seats don’t count toward limits, and upgrades apply to the whole agency.
+            </p>
+          </div>
+
+          <Badge variant="secondary">
+            Current: {currentPlan ? currentPlan : "…"}
+          </Badge>
+        </div>
       </div>
 
       <Suspense fallback={null}>
@@ -195,61 +228,59 @@ function BillingContent() {
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
-        {plans.map((p) => (
-          <Card key={p.key}>
-            <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-lg">{p.name}</CardTitle>
-                  <CardDescription className="mt-1">{p.price}</CardDescription>
+        {plans.map((p) => {
+          const isCurrent = currentPlan && currentPlan === p.key;
+          const isPaidCheckout = p.key === "starter" || p.key === "pro" || p.key === "enterprise";
+
+          return (
+            <Card key={p.key} className={isCurrent ? "ring-1 ring-border" : ""}>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <CardTitle className="text-lg">{p.name}</CardTitle>
+                    <CardDescription className="mt-1">{p.price}</CardDescription>
+                  </div>
+                  <Badge variant="secondary">{isCurrent ? "Current plan" : p.badge}</Badge>
                 </div>
-                <Badge variant="secondary">{p.badge}</Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Separator />
-              <ul className="text-sm text-muted-foreground space-y-2">
-                {p.bullets.map((b) => (
-                  <li key={b} className="flex gap-2">
-                    <span className="mt-1">•</span>
-                    <span>{b}</span>
-                  </li>
-                ))}
-              </ul>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Separator />
+                <ul className="text-sm text-muted-foreground space-y-2">
+                  {p.bullets.map((b) => (
+                    <li key={b} className="flex gap-2">
+                      <span className="mt-1">•</span>
+                      <span>{b}</span>
+                    </li>
+                  ))}
+                </ul>
 
-              <div className="pt-2 flex items-center gap-2">
-                {p.key === "starter" || p.key === "pro" || p.key === "enterprise" ? (
-                  <Button
-                    variant={p.cta.variant}
-                    onClick={(p as any).onClick}
-                    disabled={loadingPlan === p.key}
-                  >
-                    {loadingPlan === p.key ? "Redirecting..." : p.cta.label}
+                <div className="pt-2 flex items-center gap-2">
+                  {isPaidCheckout ? (
+                    <Button
+                      variant={(p as any).cta.variant}
+                      onClick={(p as any).onClick}
+                      disabled={isCurrent || loadingPlan === p.key}
+                    >
+                      {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : (p as any).cta.label}
+                    </Button>
+                  ) : (
+                    <Button asChild variant={(p as any).cta.variant}>
+                      <Link href={(p as any).cta.href}>{(p as any).cta.label}</Link>
+                    </Button>
+                  )}
+
+                  <Button asChild variant="ghost">
+                    <Link href="/app/docs">Plan details</Link>
                   </Button>
-                ) : (
-                  <Button asChild variant={p.cta.variant}>
-                    <Link href={p.cta.href}>{p.cta.label}</Link>
-                  </Button>
-                )}
+                </div>
 
-                <Button asChild variant="ghost">
-                  <Link href="/docs">Plan details</Link>
-                </Button>
-              </div>
-
-              <p className="text-xs text-muted-foreground">
-                Note: checkout + webhook wiring will update <code>agencies.plan</code>.
-              </p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <div className="mt-8 text-sm text-muted-foreground">
-        <p>
-          If you’re seeing build failures mentioning <code>useSearchParams()</code>, it means it was used outside of a Suspense boundary.
-          This page is structured so <code>useSearchParams()</code> only runs inside a Suspense-wrapped child.
-        </p>
+                <p className="text-xs text-muted-foreground">
+                  Note: checkout + webhook wiring updates <code>agencies.plan</code>.
+                </p>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
