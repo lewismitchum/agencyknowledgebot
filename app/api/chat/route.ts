@@ -30,7 +30,7 @@ function nowIso() {
 
 function makeId(prefix: string) {
   const uuid =
-    globalThis.crypto && "randomUUID" in globalThis.crypto && (globalThis.crypto as any).randomUUID
+    globalThis.crypto && "randomUUID" in globalThis.crypto
       ? (globalThis.crypto as any).randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}_${uuid}`;
@@ -68,7 +68,6 @@ function chicagoTimeString() {
   return `It’s ${time} in Chicago (${date}).`;
 }
 
-// Canonical daily key (UTC). Keep consistent across chat + uploads.
 function todayYmd() {
   const d = new Date();
   const y = d.getUTCFullYear();
@@ -105,23 +104,21 @@ async function incrementMessages(db: Db, agencyId: string, date: string) {
 }
 
 async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string | null) {
-  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { plan: string | null }
-    | undefined;
+  const planRow = (await db.get(
+    `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
+    agencyId
+  )) as { plan: string | null } | undefined;
 
   const rawPlan = planRow?.plan ?? planFromCtx ?? null;
   const plan = normalizePlan(rawPlan);
   const limits = getPlanLimits(plan);
+  const dailyLimit = (limits as any).daily_messages ?? null;
 
-  const dailyLimit = (limits as any).daily_messages ?? (limits as any).dailyMessages ?? null;
-
-  // Unlimited plan (or plan model returns null/undefined for unlimited)
   if (dailyLimit == null) {
     return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
   }
 
-  const date = todayYmd();
-  const usage = await getDailyUsage(db, agencyId, date);
+  const usage = await getDailyUsage(db, agencyId, todayYmd());
 
   if (usage.messages_count >= dailyLimit) {
     return { ok: false as const, used: usage.messages_count, dailyLimit, plan };
@@ -133,11 +130,11 @@ async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string |
 async function getOrCreateConversation(
   db: Db,
   args: { agencyId: string; userId: string; botId: string }
-): Promise<{ id: string; summary: string | null; message_count: number }> {
+) {
   const existing = (await db.get(
     `SELECT id, summary, message_count
      FROM conversations
-     WHERE agency_id = ? AND user_id = ? AND bot_id = ?
+     WHERE agency_id = ? AND owner_user_id = ? AND bot_id = ?
      LIMIT 1`,
     args.agencyId,
     args.userId,
@@ -154,7 +151,8 @@ async function getOrCreateConversation(
 
   const id = makeId("convo");
   await db.run(
-    `INSERT INTO conversations (id, agency_id, user_id, bot_id, summary, message_count, created_at, updated_at)
+    `INSERT INTO conversations
+     (id, agency_id, owner_user_id, bot_id, summary, message_count, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     args.agencyId,
@@ -169,102 +167,65 @@ async function getOrCreateConversation(
   return { id, summary: null, message_count: 0 };
 }
 
-async function bumpMessageCount(db: Db, convoId: string, inc: number): Promise<void> {
-  await db.run(
-    `UPDATE conversations
-     SET message_count = COALESCE(message_count, 0) + ?, updated_at = ?
-     WHERE id = ?`,
-    inc,
-    nowIso(),
-    convoId
-  );
-}
-
 async function insertMessage(
   db: Db,
-  args: {
-    agencyId: string;
-    userId: string;
-    botId: string;
-    convoId: string;
-    role: "user" | "assistant";
-    content: string;
-  }
-): Promise<void> {
+  convoId: string,
+  role: "user" | "assistant",
+  content: string
+) {
   await db.run(
     `INSERT INTO conversation_messages
-     (id, agency_id, user_id, bot_id, conversation_id, role, content, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, conversation_id, role, content, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
     makeId("msg"),
-    args.agencyId,
-    args.userId,
-    args.botId,
-    args.convoId,
-    args.role,
-    args.content,
+    convoId,
+    role,
+    content,
     nowIso()
   );
 }
 
-async function loadRecentMessages(
-  db: Db,
-  args: { convoId: string; limit: number }
-): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
+async function loadRecentMessages(db: Db, convoId: string, limit: number) {
   const rows = (await db.all(
     `SELECT role, content
      FROM conversation_messages
      WHERE conversation_id = ?
      ORDER BY created_at DESC
      LIMIT ?`,
-    args.convoId,
-    args.limit
+    convoId,
+    limit
   )) as Array<{ role: string; content: string }>;
 
-  return rows
-    .slice()
-    .reverse()
-    .map((r) => ({
-      role: r.role === "assistant" ? "assistant" : "user",
-      content: String(r.content ?? ""),
-    }));
+  return rows.reverse().map((r) => ({
+    role: r.role === "assistant" ? "assistant" : "user",
+    content: String(r.content ?? ""),
+  }));
 }
 
 async function maybeSummarize(
   db: Db,
-  args: {
-    convoId: string;
-    existingSummary: string | null;
-    messageCount: number;
-    threshold: number;
-  }
-): Promise<string | null> {
-  if (args.messageCount < args.threshold) return args.existingSummary ?? null;
+  convoId: string,
+  existingSummary: string | null,
+  messageCount: number,
+  threshold: number
+) {
+  if (messageCount < threshold) return existingSummary ?? null;
 
-  const recent = await loadRecentMessages(db, { convoId: args.convoId, limit: 40 });
-
-  const summaryPrompt = `
-Summarize this conversation for future continuity.
-Rules:
-- Keep all critical facts, decisions, constraints, and TODOs.
-- Preserve names of routes, tables, file paths, and key bugs/fixes.
-- Be concise but complete.
-Output plain text only.
-`.trim();
+  const recent = await loadRecentMessages(db, convoId, 40);
 
   let resp: any;
   try {
     resp = await openai.responses.create({
       model: "gpt-4.1-mini",
-      instructions: summaryPrompt,
-      input: `Existing summary:\n${args.existingSummary || "(none)"}\n\nRecent messages:\n${recent
-        .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-        .join("\n")}`,
+      instructions:
+        "Summarize this conversation for future continuity. Preserve facts, decisions, constraints, and TODOs.",
+      input: recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n"),
     });
   } catch {
-    return args.existingSummary ?? null;
+    return existingSummary ?? null;
   }
 
-  const newSummary = String(resp?.output_text ?? "").trim() || (args.existingSummary ?? null);
+  const newSummary = String(resp?.output_text ?? "").trim() || existingSummary;
 
   await db.run(
     `UPDATE conversations
@@ -272,33 +233,24 @@ Output plain text only.
      WHERE id = ?`,
     newSummary,
     nowIso(),
-    args.convoId
+    convoId
   );
 
-  try {
-    await db.run(`DELETE FROM conversation_messages WHERE conversation_id = ?`, args.convoId);
-  } catch {}
+  await db.run(`DELETE FROM conversation_messages WHERE conversation_id = ?`, convoId);
 
   return newSummary;
 }
 
-// 👇 This prevents the “mystery 405” when something hits GET /api/chat
 export async function GET() {
-  return Response.json(
-    { error: "METHOD_NOT_ALLOWED", hint: "Use POST /api/chat" },
-    { status: 405 }
-  );
+  return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
 
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
-    // ✅ Get DB first, then ensure schema on that DB (consistent + avoids silent failures)
     const db: Db = await getDb();
-    await ensureSchema(db).catch((err) => {
-      console.error("SCHEMA_ENSURE_FAILED", err);
-    });
+    await ensureSchema(db);
 
     const body = (await req.json().catch(() => null)) as ChatBody | null;
     const bot_id = String(body?.bot_id || "").trim();
@@ -311,17 +263,10 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: true, answer: chicagoTimeString(), source: "system" });
     }
 
-    // ✅ Server-side daily limits (do NOT bump until success)
     const usage = await enforceDailyLimit(db, ctx.agencyId, ctx.plan);
     if (!usage.ok) {
       return Response.json(
-        {
-          ok: false,
-          error: "DAILY_LIMIT_EXCEEDED",
-          used: usage.used,
-          daily_limit: usage.dailyLimit,
-          plan: usage.plan,
-        },
+        { error: "DAILY_LIMIT_EXCEEDED", used: usage.used, daily_limit: usage.dailyLimit },
         { status: 429 }
       );
     }
@@ -335,9 +280,9 @@ export async function POST(req: NextRequest) {
       bot_id,
       ctx.agencyId,
       ctx.userId
-    )) as { id: string; vector_store_id: string | null; owner_user_id: string | null } | undefined;
+    )) as { id: string; vector_store_id: string | null } | undefined;
 
-    if (!bot?.id) return Response.json({ error: "Bot not found" }, { status: 404 });
+    if (!bot) return Response.json({ error: "Bot not found" }, { status: 404 });
 
     const convo = await getOrCreateConversation(db, {
       agencyId: ctx.agencyId,
@@ -345,74 +290,37 @@ export async function POST(req: NextRequest) {
       botId: bot_id,
     });
 
-    await insertMessage(db, {
-      agencyId: ctx.agencyId,
-      userId: ctx.userId,
-      botId: bot_id,
-      convoId: convo.id,
-      role: "user",
-      content: message,
-    });
-    await bumpMessageCount(db, convo.id, 1);
+    await insertMessage(db, convo.id, "user", message);
 
-    const refreshedSummary = await maybeSummarize(db, {
-      convoId: convo.id,
-      existingSummary: convo.summary,
-      messageCount: convo.message_count + 1,
-      threshold: summarizeThresholdForPlan(ctx.plan),
-    });
+    const summary = await maybeSummarize(
+      db,
+      convo.id,
+      convo.summary,
+      convo.message_count + 1,
+      summarizeThresholdForPlan(ctx.plan)
+    );
 
-    const recent = await loadRecentMessages(db, { convoId: convo.id, limit: 20 });
+    const recent = await loadRecentMessages(db, convo.id, 20);
 
-    const instructions = `
-You are Louis.Ai, a secure internal assistant for an agency.
-Rules:
-- For internal/business answers: you MUST rely on uploaded documents.
-- Use the file_search tool to find relevant info in the agency's docs.
-- If the docs do not contain the answer, reply EXACTLY with:
+    const resp = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      instructions: `
+You are Louis.Ai.
+For internal/business answers you MUST rely on uploaded documents.
+If docs do not contain the answer, reply exactly:
 ${FALLBACK}
-- Do not invent facts.
-- Keep answers direct.
-`.trim();
-
-    const memoryBlock = refreshedSummary ? `Conversation memory:\n${refreshedSummary}\n` : "";
-
-    let resp: any;
-    try {
-      resp = await openai.responses.create({
-        model: "gpt-4.1-mini",
-        instructions,
-        input:
-          memoryBlock +
-          `Most recent messages:\n` +
-          recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n"),
-        tools: bot.vector_store_id
-          ? [
-              {
-                type: "file_search",
-                vector_store_ids: [bot.vector_store_id],
-              },
-            ]
-          : [],
-      });
-    } catch (e: any) {
-      const msg = String(e?.message ?? e);
-      return Response.json({ ok: true, answer: FALLBACK, openai_error: msg });
-    }
+`.trim(),
+      input:
+        (summary ? `Conversation memory:\n${summary}\n\n` : "") +
+        recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n"),
+      tools: bot.vector_store_id
+        ? [{ type: "file_search", vector_store_ids: [bot.vector_store_id] }]
+        : [],
+    });
 
     const answer = String(resp?.output_text ?? "").trim() || FALLBACK;
 
-    await insertMessage(db, {
-      agencyId: ctx.agencyId,
-      userId: ctx.userId,
-      botId: bot_id,
-      convoId: convo.id,
-      role: "assistant",
-      content: answer,
-    });
-    await bumpMessageCount(db, convo.id, 1);
-
-    // ✅ Bump usage ONLY after successful assistant response
+    await insertMessage(db, convo.id, "assistant", answer);
     await incrementMessages(db, ctx.agencyId, todayYmd());
 
     return Response.json({ ok: true, answer });
@@ -420,7 +328,6 @@ ${FALLBACK}
     const msg = String(err?.code ?? err?.message ?? err);
     if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Pending approval" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return Response.json({ error: "Owner only" }, { status: 403 });
 
     console.error("CHAT_ROUTE_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });

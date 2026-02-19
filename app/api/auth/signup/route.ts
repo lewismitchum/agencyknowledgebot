@@ -26,21 +26,8 @@ async function readBody(req: NextRequest) {
 }
 
 /**
- * Best-effort schema patch so roles/status can exist without manual migrations.
- * Safe: if column already exists, ALTER will throw and we ignore.
- */
-async function ensureUserRoleColumns(db: any) {
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN role TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN status TEXT");
-  } catch {}
-}
-
-/**
  * Returns true if SMTP env vars appear configured.
- * We do NOT want signup to crash when SMTP is missing in production.
+ * Signup must NEVER crash if email is unavailable.
  */
 function smtpConfigured() {
   const host = process.env.SMTP_HOST;
@@ -52,9 +39,10 @@ function smtpConfigured() {
 }
 
 export async function POST(req: NextRequest) {
-  await ensureSchema().catch(() => {});
-
   try {
+    // 🔒 Canonical schema guarantee
+    await ensureSchema();
+
     const { name, email, password } = await readBody(req);
 
     if (!name?.trim() || !email?.trim() || !password?.trim()) {
@@ -77,10 +65,10 @@ export async function POST(req: NextRequest) {
     const ownerUserId = randomUUID();
     const password_hash = await bcrypt.hash(password, 10);
 
-    // If SMTP is configured, do verify-email flow. Otherwise, auto-verify (no crash).
+    // Email verification strategy
     const willSendEmail = smtpConfigured();
-
     const emailVerified = willSendEmail ? 0 : 1;
+
     let tokenHash: string | null = null;
     let expiresAt: string | null = null;
     let verifyUrl: string | null = null;
@@ -92,40 +80,54 @@ export async function POST(req: NextRequest) {
       verifyUrl = `${getAppUrl()}/verify-email?token=${token}`;
     }
 
-    // Create agency
+    // Create agency (canonical columns only)
     await db.run(
       `INSERT INTO agencies (
-        id, name, email, password_hash, vector_store_id, created_at,
-        email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        name,
+        email,
+        password_hash,
+        plan,
+        email_verified,
+        email_verify_token_hash,
+        email_verify_expires_at,
+        email_verify_last_sent_at,
+        created_at
+      ) VALUES (?, ?, ?, ?, 'free', ?, ?, ?, ?, ?)`,
       agencyId,
       name.trim(),
       normalizedEmail,
       password_hash,
-      null,
-      nowIso(),
       emailVerified,
       tokenHash,
       expiresAt,
-      willSendEmail ? nowIso() : null
+      willSendEmail ? nowIso() : null,
+      nowIso()
     );
 
-    // Ensure users table has role/status
-    await ensureUserRoleColumns(db);
-
-    // Create the OWNER user row
+    // Create OWNER user row (schema already guaranteed)
     await db.run(
-      `INSERT INTO users (id, agency_id, email, email_verified, role, status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (
+        id,
+        agency_id,
+        email,
+        email_verified,
+        role,
+        status,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ownerUserId,
       agencyId,
       normalizedEmail,
       emailVerified,
       "owner",
-      emailVerified ? "active" : "pending"
+      emailVerified ? "active" : "pending",
+      nowIso(),
+      nowIso()
     );
 
-    // Send verification email if configured — but NEVER crash signup if it fails
+    // Best-effort email send (never fatal)
     if (willSendEmail && verifyUrl) {
       try {
         await sendEmail({
@@ -153,6 +155,7 @@ export async function POST(req: NextRequest) {
       ? NextResponse.redirect(new URL("/check-email", req.url))
       : NextResponse.redirect(new URL("/app/chat", req.url));
 
+    // 🔐 Identity-only session
     setSessionCookie(res, {
       agencyId,
       agencyEmail: normalizedEmail,

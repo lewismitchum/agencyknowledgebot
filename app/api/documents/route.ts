@@ -2,6 +2,7 @@
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
+import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
@@ -48,10 +49,11 @@ export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
     const url = new URL(req.url);
     let bot_id = String(url.searchParams.get("bot_id") || "").trim();
-
-    const db: Db = await getDb();
 
     if (!bot_id) {
       const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
@@ -61,9 +63,12 @@ export async function GET(req: NextRequest) {
       bot_id = fallback;
     }
 
-    await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
+    await assertBotAccess(db, {
+      bot_id,
+      agency_id: ctx.agencyId,
+      user_id: ctx.userId,
+    });
 
-    // NOTE: schema.ts defines documents.title (not filename)
     const documents = await db.all(
       `SELECT id, title, openai_file_id, created_at
        FROM documents
@@ -89,17 +94,18 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// Some parts of the app may POST to /api/documents. If uploads are implemented elsewhere,
-// this keeps the route module valid and avoids confusing build/runtime behavior.
 export async function POST(req: NextRequest) {
   try {
-    await requireActiveMember(req);
+    const ctx = await requireActiveMember(req);
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
 
     return Response.json(
       {
         ok: false,
         error: "METHOD_NOT_ALLOWED",
-        hint: "Uploads are not handled by POST /api/documents in this build. Use the upload endpoint used by the UI.",
+        hint: "Uploads are not handled by POST /api/documents in this build.",
       },
       { status: 405 }
     );

@@ -26,22 +26,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function ensureUserColumns(db: Db) {
-  await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
-}
-
 /**
  * Ensures there is at least one owner for the agency.
  * Rule: if there are no users yet for this agency, the agency email becomes owner+active.
- * Otherwise do nothing.
  */
 async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
-  await ensureUserColumns(db);
-
   const countRow = (await db.get(
     `SELECT COUNT(*) as c
      FROM users
@@ -50,9 +39,9 @@ async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
   )) as { c: number } | undefined;
 
   const c = Number(countRow?.c ?? 0);
-  const normalizedEmail = agency.email.trim().toLowerCase();
-
   if (c > 0) return;
+
+  const normalizedEmail = agency.email.trim().toLowerCase();
 
   const existing = (await db.get(
     `SELECT id
@@ -108,7 +97,8 @@ function normStatus(s: any): "active" | "pending" | "blocked" {
 
 export async function POST(req: NextRequest) {
   try {
-    await ensureSchema().catch(() => {}); // harmless if already run elsewhere
+    // 🔒 Canonical schema guarantee (no ad-hoc ALTERs anywhere else)
+    await ensureSchema();
 
     const { email, password } = await readBody(req);
 
@@ -120,7 +110,9 @@ export async function POST(req: NextRequest) {
     const normalizedEmail = email.trim().toLowerCase();
 
     const agency = (await db.get(
-      "SELECT id, email, password_hash, email_verified FROM agencies WHERE email = ?",
+      `SELECT id, email, password_hash, email_verified
+       FROM agencies
+       WHERE email = ?`,
       normalizedEmail
     )) as
       | { id: string; email: string; password_hash: string; email_verified: number }
@@ -136,15 +128,16 @@ export async function POST(req: NextRequest) {
     }
 
     if (agency.email_verified === 0) {
-      return NextResponse.json({ error: "Please verify your email before logging in." }, { status: 403 });
+      return NextResponse.json(
+        { error: "Please verify your email before logging in." },
+        { status: 403 }
+      );
     }
 
-    // ✅ Ensure first owner exists (agency email owner)
+    // ✅ Ensure first owner exists
     await ensureFirstOwner(db, { id: agency.id, email: agency.email });
 
-    // ✅ Load the actual user row for this email inside this agency
-    await ensureUserColumns(db);
-
+    // ✅ Load user row (schema already guaranteed)
     let user = (await db.get(
       `SELECT id, email, email_verified, role, status
        FROM users
@@ -156,7 +149,7 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; email_verified: number; role: string | null; status: string | null }
       | undefined;
 
-    // Safety: if somehow missing, create as pending member (never auto-owner except the first-owner rule above)
+    // Safety: create pending member if missing
     if (!user?.id) {
       const id = crypto.randomUUID();
       const t = nowIso();
@@ -179,19 +172,19 @@ export async function POST(req: NextRequest) {
       };
     }
 
-    // Normalize role/status (kept for DB correctness / future use)
+    // Normalize (kept for correctness / future use)
     const role = normRole(user.role);
     const status = normStatus(user.status);
+    void role;
+    void status;
 
     const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
 
-    // ✅ Session cookie is identity-only (agencyId + agencyEmail). User/role/status are read server-side from DB.
+    // 🔐 Identity-only session
     setSessionCookie(res, {
       agencyId: agency.id,
       agencyEmail: agency.email,
     });
-
-    // (role/status computed above intentionally unused here to keep cookie typing consistent)
 
     return res;
   } catch (err: any) {
