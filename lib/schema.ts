@@ -8,8 +8,7 @@ export const runtime = "nodejs";
  *
  * Key requirement:
  * - MUST be safe to run on every request.
- * - MUST tolerate older DBs where usage_daily was created with different columns
- *   (e.g. `count` instead of `messages_count`, `day` instead of `date`).
+ * - MUST tolerate older DBs where tables existed with missing columns.
  *
  * Backwards compatibility:
  * - allow BOTH: ensureSchema() and ensureSchema(db)
@@ -20,7 +19,7 @@ type Db = Pick<RealDb, "exec" | "run" | "get" | "all">;
 let _schemaEnsured = false;
 
 function qIdent(name: string) {
-  // Minimal identifier quoting for SQLite
+  // Minimal identifier quoting for SQLite/libsql
   return `"${name.replace(/"/g, '""')}"`;
 }
 
@@ -65,11 +64,7 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
         ? "messages_count"
         : null;
 
-  const legacyUploadsCol = has(cols, "uploads_count")
-    ? "uploads_count"
-    : has(cols, "uploads")
-      ? "uploads"
-      : null;
+  const legacyUploadsCol = has(cols, "uploads_count") ? "uploads_count" : has(cols, "uploads") ? "uploads" : null;
 
   // If we can't confidently map, still rebuild but set safe defaults.
   const dateExpr = legacyDateCol ? qIdent(legacyDateCol) : "''";
@@ -266,6 +261,34 @@ async function ensureCoreTables(db: Db) {
   `);
 }
 
+async function ensureAgenciesColumns(db: Db) {
+  const exists = await tableExists(db, "agencies");
+  if (!exists) return;
+
+  const cols = await getTableColumns(db, "agencies");
+
+  // Add columns that newer auth flows expect.
+  // Safe: ALTER TABLE will throw if column already exists; ignore.
+  if (!has(cols, "password_hash")) {
+    await db.exec(`ALTER TABLE agencies ADD COLUMN password_hash TEXT;`);
+  }
+  if (!has(cols, "vector_store_id")) {
+    await db.exec(`ALTER TABLE agencies ADD COLUMN vector_store_id TEXT;`);
+  }
+  if (!has(cols, "email_verified")) {
+    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!has(cols, "email_verify_token_hash")) {
+    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verify_token_hash TEXT;`);
+  }
+  if (!has(cols, "email_verify_expires_at")) {
+    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verify_expires_at TEXT;`);
+  }
+  if (!has(cols, "email_verify_last_sent_at")) {
+    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verify_last_sent_at TEXT;`);
+  }
+}
+
 /**
  * Ensure the full DB schema exists, plus apply drift repairs.
  * Safe to call in every API route before DB usage.
@@ -280,6 +303,10 @@ export async function ensureSchema(dbArg?: Db) {
   const db: Db = dbArg ?? ((await getDb()) as unknown as Db);
 
   await ensureCoreTables(db);
+
+  // ✅ Patch older DBs that already have agencies table but lack auth columns.
+  await ensureAgenciesColumns(db);
+
   await ensureUsageDailyColumns(db);
 
   _schemaEnsured = true;
