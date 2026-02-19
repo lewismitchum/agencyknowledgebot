@@ -4,9 +4,13 @@ import { getDb, type Db as RealDb } from "@/lib/db";
 export const runtime = "nodejs";
 
 /**
- * Louis.Ai schema bootstrap + drift repair.
+ * Canonical Louis.Ai schema bootstrap + drift repair.
  *
- * MUST be safe to run on every request.
+ * Rules:
+ * - Safe to call on EVERY request
+ * - Idempotent
+ * - Repairs legacy drift instead of assuming fresh DB
+ * - Matches what routes actually expect (no “thin tables”)
  */
 
 type Db = Pick<RealDb, "exec" | "run" | "get" | "all">;
@@ -26,7 +30,9 @@ async function tableExists(db: Db, tableName: string) {
 }
 
 async function getTableColumns(db: Db, tableName: string): Promise<string[]> {
-  const rows = (await db.all(`PRAGMA table_info(${qIdent(tableName)})`)) as Array<{ name: string }>;
+  const rows = (await db.all(
+    `PRAGMA table_info(${qIdent(tableName)})`
+  )) as Array<{ name: string }>;
   return rows.map((r) => r.name);
 }
 
@@ -34,6 +40,10 @@ function has(cols: string[], col: string) {
   return cols.includes(col);
 }
 
+/**
+ * usage_daily has been the biggest drift landmine.
+ * If canonical columns are missing, rebuild safely.
+ */
 async function rebuildUsageDailyIfNeeded(db: Db) {
   const exists = await tableExists(db, "usage_daily");
   if (!exists) return;
@@ -43,23 +53,32 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
   const wants = ["agency_id", "date", "messages_count", "uploads_count"];
   if (wants.every((c) => has(cols, c))) return;
 
-  const legacyDateCol = has(cols, "day") ? "day" : has(cols, "date") ? "date" : null;
-  const legacyMsgCol = has(cols, "count")
-    ? "count"
+  const legacyAgencyCol = has(cols, "agency_id") ? "agency_id" : null;
+  if (!legacyAgencyCol) return;
+
+  const legacyDateCol = has(cols, "date")
+    ? "date"
+    : has(cols, "day")
+      ? "day"
+      : null;
+
+  const legacyMsgCol = has(cols, "messages_count")
+    ? "messages_count"
     : has(cols, "messages")
       ? "messages"
-      : has(cols, "messages_count")
-        ? "messages_count"
+      : has(cols, "count")
+        ? "count"
         : null;
 
-  const legacyUploadsCol = has(cols, "uploads_count") ? "uploads_count" : has(cols, "uploads") ? "uploads" : null;
+  const legacyUploadsCol = has(cols, "uploads_count")
+    ? "uploads_count"
+    : has(cols, "uploads")
+      ? "uploads"
+      : null;
 
   const dateExpr = legacyDateCol ? qIdent(legacyDateCol) : "''";
   const msgExpr = legacyMsgCol ? qIdent(legacyMsgCol) : "0";
   const upExpr = legacyUploadsCol ? qIdent(legacyUploadsCol) : "0";
-
-  const legacyAgencyCol = has(cols, "agency_id") ? "agency_id" : null;
-  if (!legacyAgencyCol) return;
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS usage_daily_new (
@@ -74,13 +93,12 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
   await db.exec(`
     INSERT INTO usage_daily_new (agency_id, date, messages_count, uploads_count)
     SELECT
-      ${qIdent(legacyAgencyCol)} as agency_id,
-      COALESCE(${dateExpr}, '') as date,
-      COALESCE(MAX(CAST(${msgExpr} AS INTEGER)), 0) as messages_count,
-      COALESCE(MAX(CAST(${upExpr} AS INTEGER)), 0) as uploads_count
+      ${qIdent(legacyAgencyCol)} AS agency_id,
+      COALESCE(${dateExpr}, '') AS date,
+      COALESCE(MAX(CAST(${msgExpr} AS INTEGER)), 0) AS messages_count,
+      COALESCE(MAX(CAST(${upExpr} AS INTEGER)), 0) AS uploads_count
     FROM usage_daily
-    GROUP BY ${qIdent(legacyAgencyCol)}, COALESCE(${dateExpr}, '')
-    ;
+    GROUP BY ${qIdent(legacyAgencyCol)}, COALESCE(${dateExpr}, '');
   `);
 
   await db.exec(`
@@ -89,36 +107,39 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
   `);
 }
 
-async function ensureUsageDailyColumns(db: Db) {
+async function ensureUsageDaily(db: Db) {
   const exists = await tableExists(db, "usage_daily");
   if (!exists) return;
 
   const cols = await getTableColumns(db, "usage_daily");
 
   const missingCanonical =
-    !has(cols, "agency_id") || !has(cols, "date") || !has(cols, "messages_count") || !has(cols, "uploads_count");
+    !has(cols, "agency_id") ||
+    !has(cols, "date") ||
+    !has(cols, "messages_count") ||
+    !has(cols, "uploads_count");
 
   if (missingCanonical) {
     await rebuildUsageDailyIfNeeded(db);
     return;
   }
-
-  const cols2 = await getTableColumns(db, "usage_daily");
-  if (!has(cols2, "messages_count")) {
-    await db.exec(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER NOT NULL DEFAULT 0;`);
-  }
-  if (!has(cols2, "uploads_count")) {
-    await db.exec(`ALTER TABLE usage_daily ADD COLUMN uploads_count INTEGER NOT NULL DEFAULT 0;`);
-  }
 }
 
+/**
+ * Core tables — canonical shape
+ */
 async function ensureCoreTables(db: Db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS agencies (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       email TEXT,
+      password_hash TEXT,
       plan TEXT NOT NULL DEFAULT 'free',
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      email_verify_token_hash TEXT,
+      email_verify_expires_at TEXT,
+      email_verify_last_sent_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -247,58 +268,8 @@ async function ensureCoreTables(db: Db) {
   `);
 }
 
-async function ensureAgenciesColumns(db: Db) {
-  const exists = await tableExists(db, "agencies");
-  if (!exists) return;
-
-  const cols = await getTableColumns(db, "agencies");
-
-  if (!has(cols, "password_hash")) {
-    await db.exec(`ALTER TABLE agencies ADD COLUMN password_hash TEXT;`);
-  }
-  if (!has(cols, "vector_store_id")) {
-    await db.exec(`ALTER TABLE agencies ADD COLUMN vector_store_id TEXT;`);
-  }
-  if (!has(cols, "email_verified")) {
-    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;`);
-  }
-  if (!has(cols, "email_verify_token_hash")) {
-    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verify_token_hash TEXT;`);
-  }
-  if (!has(cols, "email_verify_expires_at")) {
-    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verify_expires_at TEXT;`);
-  }
-  if (!has(cols, "email_verify_last_sent_at")) {
-    await db.exec(`ALTER TABLE agencies ADD COLUMN email_verify_last_sent_at TEXT;`);
-  }
-}
-
-async function ensureUsersColumns(db: Db) {
-  const exists = await tableExists(db, "users");
-  if (!exists) return;
-
-  const cols = await getTableColumns(db, "users");
-
-  if (!has(cols, "email_verified")) {
-    await db.exec(`ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;`);
-  }
-  if (!has(cols, "role")) {
-    await db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member';`);
-  }
-  if (!has(cols, "status")) {
-    await db.exec(`ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active';`);
-  }
-  if (!has(cols, "created_at")) {
-    await db.exec(`ALTER TABLE users ADD COLUMN created_at TEXT;`);
-  }
-  if (!has(cols, "updated_at")) {
-    await db.exec(`ALTER TABLE users ADD COLUMN updated_at TEXT;`);
-  }
-}
-
 /**
- * Ensure the full DB schema exists, plus apply drift repairs.
- * Safe to call in every API route before DB usage.
+ * Entry point
  */
 export async function ensureSchema(dbArg?: Db) {
   if (_schemaEnsured) return;
@@ -306,11 +277,7 @@ export async function ensureSchema(dbArg?: Db) {
   const db: Db = dbArg ?? ((await getDb()) as unknown as Db);
 
   await ensureCoreTables(db);
-
-  await ensureAgenciesColumns(db);
-  await ensureUsersColumns(db);
-
-  await ensureUsageDailyColumns(db);
+  await ensureUsageDaily(db);
 
   _schemaEnsured = true;
 }
