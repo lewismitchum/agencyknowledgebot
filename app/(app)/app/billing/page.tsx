@@ -1,6 +1,7 @@
+// app/app/billing/page.tsx
 "use client";
 
-import { Suspense, useMemo } from "react";
+import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -22,7 +23,6 @@ function BillingStatusBanner() {
     const canceled = sp.get("canceled");
     const success = sp.get("success");
 
-    // Support a few common patterns: ?success=1, ?canceled=1, ?status=success|canceled
     if (success === "1" || status === "success") {
       return {
         variant: "success" as const,
@@ -60,6 +60,34 @@ function BillingStatusBanner() {
 }
 
 function BillingContent() {
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+
+  async function startCheckout(plan: "starter" | "pro" | "enterprise") {
+    try {
+      setLoadingPlan(plan);
+
+      const res = await fetch("/api/billing/checkout", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ plan }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data?.url) {
+        const msg = String(data?.error || data?.message || "Checkout failed");
+        alert(msg);
+        return;
+      }
+
+      window.location.href = String(data.url);
+    } catch (e: any) {
+      alert(String(e?.message ?? e));
+    } finally {
+      setLoadingPlan(null);
+    }
+  }
+
   const plans = [
     {
       key: "free",
@@ -86,7 +114,8 @@ function BillingContent() {
         "Unlimited uploads (docs only)",
         "Schedule/to-do/calendar enabled",
       ],
-      cta: { label: "Upgrade (soon)", href: "/billing", variant: "default" as const },
+      cta: { label: "Upgrade", href: null as any, variant: "default" as const },
+      onClick: () => startCheckout("starter"),
     },
     {
       key: "pro",
@@ -100,7 +129,8 @@ function BillingContent() {
         "Unlimited uploads (docs + images + video)",
         "Schedule/to-do/calendar enabled",
       ],
-      cta: { label: "Upgrade (soon)", href: "/billing", variant: "default" as const },
+      cta: { label: "Upgrade", href: null as any, variant: "default" as const },
+      onClick: () => startCheckout("pro"),
     },
     {
       key: "enterprise",
@@ -114,7 +144,8 @@ function BillingContent() {
         "Uploads (docs + images + video)",
         "Schedule/to-do/calendar enabled",
       ],
-      cta: { label: "Contact us", href: "/docs", variant: "secondary" as const },
+      cta: { label: "Upgrade", href: null as any, variant: "default" as const },
+      onClick: () => startCheckout("enterprise"),
     },
     {
       key: "corporation",
@@ -187,9 +218,20 @@ function BillingContent() {
               </ul>
 
               <div className="pt-2 flex items-center gap-2">
-                <Button asChild variant={p.cta.variant}>
-                  <Link href={p.cta.href}>{p.cta.label}</Link>
-                </Button>
+                {p.key === "starter" || p.key === "pro" || p.key === "enterprise" ? (
+                  <Button
+                    variant={p.cta.variant}
+                    onClick={(p as any).onClick}
+                    disabled={loadingPlan === p.key}
+                  >
+                    {loadingPlan === p.key ? "Redirecting..." : p.cta.label}
+                  </Button>
+                ) : (
+                  <Button asChild variant={p.cta.variant}>
+                    <Link href={p.cta.href}>{p.cta.label}</Link>
+                  </Button>
+                )}
+
                 <Button asChild variant="ghost">
                   <Link href="/docs">Plan details</Link>
                 </Button>
