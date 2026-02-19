@@ -38,94 +38,138 @@ async function ensureUserRoleColumns(db: any) {
   } catch {}
 }
 
+/**
+ * Returns true if SMTP env vars appear configured.
+ * We do NOT want signup to crash when SMTP is missing in production.
+ */
+function smtpConfigured() {
+  const host = process.env.SMTP_HOST;
+  const port = process.env.SMTP_PORT;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.SMTP_FROM;
+  return Boolean(host && port && user && pass && from);
+}
+
 export async function POST(req: NextRequest) {
-  // keep: harmless if you already call it elsewhere; also ensures tables exist in fresh deploys
   await ensureSchema().catch(() => {});
 
-  const { name, email, password } = await readBody(req);
+  try {
+    const { name, email, password } = await readBody(req);
 
-  if (!name?.trim() || !email?.trim() || !password?.trim()) {
-    return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    if (!name?.trim() || !email?.trim() || !password?.trim()) {
+      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    }
+
+    const db = await getDb();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const existing = await db.get(
+      "SELECT id FROM agencies WHERE email = ?",
+      normalizedEmail
+    );
+    if (existing) {
+      return NextResponse.json({ error: "Email already in use" }, { status: 409 });
+    }
+
+    const agencyId = randomUUID();
+    const ownerUserId = randomUUID();
+    const password_hash = await bcrypt.hash(password, 10);
+
+    // If SMTP is configured, do full verify-email flow.
+    // If SMTP is NOT configured, do NOT crash — just auto-verify.
+    const willSendEmail = smtpConfigured();
+
+    let emailVerified = willSendEmail ? 0 : 1;
+    let tokenHash: string | null = null;
+    let expiresAt: string | null = null;
+    let verifyUrl: string | null = null;
+
+    if (willSendEmail) {
+      const token = makeToken();
+      tokenHash = hashToken(token);
+      expiresAt = isoFromNowMinutes(60); // 1 hour
+      verifyUrl = `${getAppUrl()}/verify-email?token=${token}`;
+    }
+
+    // Create agency
+    await db.run(
+      `INSERT INTO agencies (
+        id, name, email, password_hash, vector_store_id, created_at,
+        email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      agencyId,
+      name.trim(),
+      normalizedEmail,
+      password_hash,
+      null,
+      nowIso(),
+      emailVerified,
+      tokenHash,
+      expiresAt,
+      willSendEmail ? nowIso() : null
+    );
+
+    // Ensure users table has role/status, then create the OWNER user row
+    await ensureUserRoleColumns(db);
+
+    await db.run(
+      `INSERT INTO users (id, agency_id, email, email_verified, role, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ownerUserId,
+      agencyId,
+      normalizedEmail,
+      emailVerified,
+      "owner",
+      emailVerified ? "active" : "pending"
+    );
+
+    // Try to send verification email ONLY if SMTP configured.
+    // If email send fails, do NOT crash signup.
+    if (willSendEmail && verifyUrl) {
+      try {
+        await sendEmail({
+          to: normalizedEmail,
+          subject: "Verify your email for Louis.Ai",
+          html: `
+            <div style="font-family: ui-sans-serif, system-ui; line-height: 1.5">
+              <h2>Verify your email</h2>
+              <p>Click the button below to verify your email and activate your workspace.</p>
+              <p style="margin: 24px 0;">
+                <a href="${verifyUrl}" style="background:#111;color:#fff;padding:10px 14px;border-radius:999px;text-decoration:none;display:inline-block;">
+                  Verify email
+                </a>
+              </p>
+              <p style="color:#666;font-size:12px;">This link expires in 60 minutes.</p>
+            </div>
+          `,
+        });
+      } catch (e) {
+        console.error("SIGNUP_EMAIL_SEND_FAILED", e);
+        // Keep the account created; user can still log in after manual verification flow is fixed.
+        // You can later add a "resend verification" button that works once SMTP is configured.
+      }
+    }
+
+    // Response:
+    // - If we sent an email, redirect to check-email.
+    // - If we did not, redirect straight into the app.
+    const res = willSendEmail
+      ? NextResponse.redirect(new URL("/check-email", req.url))
+      : NextResponse.redirect(new URL("/app/chat", req.url));
+
+    // Session cookie is identity-only (agencyId + agencyEmail). User/role/status read server-side from DB.
+    setSessionCookie(res, {
+      agencyId,
+      agencyEmail: normalizedEmail,
+    });
+
+    return res;
+  } catch (err: any) {
+    console.error("SIGNUP_ERROR", err);
+    return NextResponse.json(
+      { error: "Server error", message: err?.message || "Unknown error" },
+      { status: 500 }
+    );
   }
-
-  const db = await getDb();
-  const normalizedEmail = email.trim().toLowerCase();
-
-  const existing = await db.get("SELECT id FROM agencies WHERE email = ?", normalizedEmail);
-  if (existing) {
-    return NextResponse.json({ error: "Email already in use" }, { status: 409 });
-  }
-
-  const agencyId = randomUUID();
-  const ownerUserId = randomUUID();
-  const password_hash = await bcrypt.hash(password, 10);
-
-  // Email verification token
-  const token = makeToken();
-  const tokenHash = hashToken(token);
-  const expiresAt = isoFromNowMinutes(60); // 1 hour
-
-  // Create agency (email not verified yet)
-  await db.run(
-    `INSERT INTO agencies (
-      id, name, email, password_hash, vector_store_id, created_at,
-      email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    agencyId,
-    name.trim(),
-    normalizedEmail,
-    password_hash,
-    null,
-    nowIso(),
-    0,
-    tokenHash,
-    expiresAt,
-    nowIso()
-  );
-
-  // Ensure users table has role/status, then create the OWNER user row
-  await ensureUserRoleColumns(db);
-
-  // NOTE: This user represents the agency owner identity.
-  // They are "pending" until email verification is complete.
-  await db.run(
-    `INSERT INTO users (id, agency_id, email, email_verified, role, status)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    ownerUserId,
-    agencyId,
-    normalizedEmail,
-    0,
-    "owner",
-    "pending"
-  );
-
-  const verifyUrl = `${getAppUrl()}/verify-email?token=${token}`;
-
-  await sendEmail({
-    to: normalizedEmail,
-    subject: "Verify your email for Louis.Ai",
-    html: `
-      <div style="font-family: ui-sans-serif, system-ui; line-height: 1.5">
-        <h2>Verify your email</h2>
-        <p>Click the button below to verify your email and activate your workspace.</p>
-        <p style="margin: 24px 0;">
-          <a href="${verifyUrl}" style="background:#111;color:#fff;padding:10px 14px;border-radius:999px;text-decoration:none;display:inline-block;">
-            Verify email
-          </a>
-        </p>
-        <p style="color:#666;font-size:12px;">This link expires in 60 minutes.</p>
-      </div>
-    `,
-  });
-
-  // Redirect to check-email screen
-  const res = NextResponse.redirect(new URL("/check-email", req.url));
-
-  // ✅ Session cookie is identity-only (agencyId + agencyEmail). User/role/status are read server-side from DB.
-  setSessionCookie(res, {
-    agencyId,
-    agencyEmail: normalizedEmail,
-  });
-
-  return res;
 }
