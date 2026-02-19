@@ -3,19 +3,10 @@
 export type PlanKey = "free" | "starter" | "pro" | "enterprise";
 
 export type PlanLimits = {
-  // core
   daily_messages: number;
-
-  // ✅ uploads/day (null => unlimited)
   daily_uploads: number | null;
-
-  // ✅ seats (billable members) (null => unlimited)
-  max_users: number | null;
-
-  // ✅ agency bots allowed (owner_user_id IS NULL) (null => unlimited)
+  max_users: number | null; // billable members only
   max_agency_bots: number | null;
-
-  // ✅ future-proofing (used for UI toggles + server gates)
   allow_images: boolean;
   allow_video: boolean;
 };
@@ -24,31 +15,31 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
   free: {
     daily_messages: 20,
     daily_uploads: 5,
-    max_users: 1, // billable members only (owner/admin excluded)
+    max_users: 1,
     max_agency_bots: 1,
     allow_images: false,
     allow_video: false,
   },
   starter: {
     daily_messages: 200,
-    daily_uploads: null, // unlimited
-    max_users: 10,
+    daily_uploads: null,
+    max_users: 5,
     max_agency_bots: 1,
     allow_images: false,
     allow_video: false,
   },
   pro: {
     daily_messages: 500,
-    daily_uploads: null, // unlimited
-    max_users: 25,
+    daily_uploads: null,
+    max_users: 15,
     max_agency_bots: 3,
     allow_images: true,
     allow_video: false,
   },
   enterprise: {
     daily_messages: 2000,
-    daily_uploads: null, // unlimited
-    max_users: 100,
+    daily_uploads: null,
+    max_users: 50,
     max_agency_bots: 5,
     allow_images: true,
     allow_video: true,
@@ -66,14 +57,9 @@ export function getPlanLimits(plan: unknown): PlanLimits {
 }
 
 export function isPaidPlan(plan: string | null) {
-  const p = String(plan ?? "free").toLowerCase();
-  return p !== "free";
+  return normalizePlan(plan) !== "free";
 }
 
-/**
- * Feature gates (SERVER-SIDE).
- * Treat these as the canonical authority for entitlement checks.
- */
 export type FeatureKey = "schedule" | "extraction" | "multimedia";
 
 const FEATURES: Record<FeatureKey, PlanKey[]> = {
@@ -83,8 +69,7 @@ const FEATURES: Record<FeatureKey, PlanKey[]> = {
 };
 
 export function hasFeature(plan: unknown, feature: FeatureKey): boolean {
-  const p = normalizePlan(plan);
-  return FEATURES[feature].includes(p);
+  return FEATURES[feature].includes(normalizePlan(plan));
 }
 
 export function requireFeature(
