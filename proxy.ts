@@ -18,8 +18,8 @@ function isProtectedApi(pathname: string) {
 }
 
 function applySecurityHeaders(res: NextResponse) {
-  // ✅ Next.js App Router requires inline scripts for hydration/streaming in many setups.
-  // Tighten later using nonces/hashes once everything is stable.
+  // ✅ Next.js App Router needs inline scripts for hydration/streaming.
+  // Tighten later with nonces/hashes once everything is stable.
   const csp = [
     "default-src 'self'",
     "base-uri 'self'",
@@ -28,12 +28,9 @@ function applySecurityHeaders(res: NextResponse) {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
-    // Allow Next inline scripts for now; otherwise /signup, /login can break.
     "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
     "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval'",
     "script-src-attr 'self' 'unsafe-inline'",
-    // Include any external origins you actually call from the browser.
-    // Add Turso host if you ever call it client-side (usually you don't).
     "connect-src 'self' https://api.openai.com wss:",
   ].join("; ");
 
@@ -48,7 +45,7 @@ function applySecurityHeaders(res: NextResponse) {
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // ✅ Always allow public + auth routes
+  // ✅ Always allow public + auth routes (but still apply headers)
   if (
     pathname === "/" ||
     pathname.startsWith("/login") ||
@@ -59,8 +56,7 @@ export function proxy(req: NextRequest) {
     pathname.startsWith("/check-email") ||
     pathname.startsWith("/api/auth")
   ) {
-    const res = NextResponse.next();
-    return applySecurityHeaders(res);
+    return applySecurityHeaders(NextResponse.next());
   }
 
   const session = req.cookies.get(SESSION_COOKIE)?.value;
@@ -68,11 +64,11 @@ export function proxy(req: NextRequest) {
   // 🔒 Protect API routes
   if (isProtectedApi(pathname)) {
     if (!session) {
-      const res = NextResponse.json({ user: null, error: "Unauthorized" }, { status: 401 });
-      return applySecurityHeaders(res);
+      return applySecurityHeaders(
+        NextResponse.json({ user: null, error: "Unauthorized" }, { status: 401 })
+      );
     }
-    const res = NextResponse.next();
-    return applySecurityHeaders(res);
+    return applySecurityHeaders(NextResponse.next());
   }
 
   // 🔒 Protect page routes
@@ -80,18 +76,16 @@ export function proxy(req: NextRequest) {
     if (!session) {
       const url = req.nextUrl.clone();
       url.pathname = "/login";
-      const res = NextResponse.redirect(url);
-      return applySecurityHeaders(res);
+      return applySecurityHeaders(NextResponse.redirect(url));
     }
-    const res = NextResponse.next();
-    return applySecurityHeaders(res);
+    return applySecurityHeaders(NextResponse.next());
   }
 
-  const res = NextResponse.next();
-  return applySecurityHeaders(res);
+  return applySecurityHeaders(NextResponse.next());
 }
 
-// Only run proxy where needed
+// ✅ Run proxy on ALL routes (so CSP applies to /signup and /login too),
+// but exclude Next static assets.
 export const config = {
-  matcher: ["/app/chat/:path*", "/admin/:path*", "/launch", "/api/:path*"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
