@@ -1,5 +1,8 @@
+// lib/users.ts
 import { getDb, type Db } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { ensureSchema } from "@/lib/schema";
+import { getPlanLimits, normalizePlan } from "@/lib/plans";
 
 export type UserRow = {
   id: string;
@@ -8,18 +11,9 @@ export type UserRow = {
   email_verified: number;
   created_at: string | null;
   updated_at: string | null;
-  role?: string | null;
-  status?: string | null;
+  role: "owner" | "admin" | "member";
+  status: "active" | "pending" | "blocked";
 };
-
-async function ensureUserColumns(db: Db) {
-  // Best-effort schema patching (no migrations required)
-  await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
-}
 
 function nowIso() {
   return new Date().toISOString();
@@ -43,22 +37,47 @@ function normalizeStatus(raw: any): "active" | "pending" | "blocked" {
   return "pending";
 }
 
-async function backfillRoleStatus(db: Db, userId: string) {
-  // Only fill blanks; do not change meaning of existing values
-  await db.run(
-    `UPDATE users
-     SET role = COALESCE(NULLIF(role, ''), 'member'),
-         status = COALESCE(NULLIF(status, ''), 'pending'),
-         updated_at = COALESCE(updated_at, ?)
-     WHERE id = ?`,
-    nowIso(),
-    userId
-  );
+async function countBillableMembers(db: Db, agencyId: string): Promise<number> {
+  const row = (await db.get(
+    `SELECT COUNT(*) as c
+     FROM users
+     WHERE agency_id = ?
+       AND role = 'member'
+       AND status = 'active'`,
+    agencyId
+  )) as { c: number } | undefined;
+
+  return Number(row?.c ?? 0);
 }
 
-export async function getUserById(agencyId: string, userId: string): Promise<UserRow | null> {
+async function enforceSeatLimit(db: Db, agencyId: string) {
+  const planRow = (await db.get(
+    `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
+    agencyId
+  )) as { plan: string | null } | undefined;
+
+  const plan = normalizePlan(planRow?.plan ?? null);
+  const limits = getPlanLimits(plan);
+
+  if (limits.max_users == null) return;
+
+  const used = await countBillableMembers(db, agencyId);
+  if (used >= limits.max_users) {
+    throw Object.assign(new Error("SEAT_LIMIT_EXCEEDED"), {
+      code: "SEAT_LIMIT_EXCEEDED",
+      plan,
+      used,
+      limit: limits.max_users,
+    });
+  }
+}
+
+export async function getUserById(
+  agencyId: string,
+  userId: string
+): Promise<UserRow | null> {
   const db: Db = await getDb();
-  await ensureUserColumns(db);
+  await ensureSchema(db);
 
   const row = (await db.get(
     `SELECT id, agency_id, email, email_verified, created_at, updated_at, role, status
@@ -71,27 +90,19 @@ export async function getUserById(agencyId: string, userId: string): Promise<Use
 
   if (!row?.id) return null;
 
-  const needsRole = row.role == null || String(row.role).trim() === "";
-  const needsStatus = row.status == null || String(row.status).trim() === "";
-  if (needsRole || needsStatus) {
-    await backfillRoleStatus(db, row.id);
-    const patched = (await db.get(
-      `SELECT id, agency_id, email, email_verified, created_at, updated_at, role, status
-       FROM users
-       WHERE agency_id = ? AND id = ?
-       LIMIT 1`,
-      agencyId,
-      userId
-    )) as UserRow | undefined;
-    return patched ?? row;
-  }
-
-  return row;
+  return {
+    ...row,
+    role: normalizeRole(row.role),
+    status: normalizeStatus(row.status),
+  };
 }
 
-export async function getUserByEmail(agencyId: string, email: string): Promise<UserRow | null> {
+export async function getUserByEmail(
+  agencyId: string,
+  email: string
+): Promise<UserRow | null> {
   const db: Db = await getDb();
-  await ensureUserColumns(db);
+  await ensureSchema(db);
 
   const normalizedEmail = normalizeEmail(email);
 
@@ -106,33 +117,24 @@ export async function getUserByEmail(agencyId: string, email: string): Promise<U
 
   if (!row?.id) return null;
 
-  const needsRole = row.role == null || String(row.role).trim() === "";
-  const needsStatus = row.status == null || String(row.status).trim() === "";
-  if (needsRole || needsStatus) {
-    await backfillRoleStatus(db, row.id);
-    const patched = (await db.get(
-      `SELECT id, agency_id, email, email_verified, created_at, updated_at, role, status
-       FROM users
-       WHERE agency_id = ? AND lower(email) = ?
-       LIMIT 1`,
-      agencyId,
-      normalizedEmail
-    )) as UserRow | undefined;
-    return patched ?? row;
-  }
-
-  return row;
+  return {
+    ...row,
+    role: normalizeRole(row.role),
+    status: normalizeStatus(row.status),
+  };
 }
 
 /**
- * Canonical v1 rule (post-approvals):
- * - New users are created as MEMBER + PENDING by default.
- * - Only owners/admins (or accept-invite) should set ACTIVE.
- * - BLOCKED is a real deny state.
+ * Canonical rule:
+ * - If user exists → return it
+ * - If new user → enforce seat limits, then create as MEMBER + PENDING
  */
-export async function getOrCreateUser(agencyId: string, email: string): Promise<UserRow> {
+export async function getOrCreateUser(
+  agencyId: string,
+  email: string
+): Promise<UserRow> {
   const db: Db = await getDb();
-  await ensureUserColumns(db);
+  await ensureSchema(db);
 
   const normalizedEmail = normalizeEmail(email);
 
@@ -146,23 +148,22 @@ export async function getOrCreateUser(agencyId: string, email: string): Promise<
   )) as UserRow | undefined;
 
   if (existing?.id) {
-    // Backfill blanks only (do NOT auto-promote pending -> active)
-    const needsRole = existing.role == null || String(existing.role).trim() === "";
-    const needsStatus = existing.status == null || String(existing.status).trim() === "";
-    if (needsRole || needsStatus) {
-      await backfillRoleStatus(db, existing.id);
-      const patched = await getUserById(agencyId, existing.id);
-      if (patched) return patched;
-    }
-    return existing;
+    return {
+      ...existing,
+      role: normalizeRole(existing.role),
+      status: normalizeStatus(existing.status),
+    };
   }
+
+  // 🔒 Enforce seat limits BEFORE creating a new member
+  await enforceSeatLimit(db, agencyId);
 
   const id = randomUUID();
   const t = nowIso();
 
-  // ✅ New users are PENDING by default (safe)
   await db.run(
-    `INSERT INTO users (id, agency_id, email, email_verified, role, status, created_at, updated_at)
+    `INSERT INTO users
+     (id, agency_id, email, email_verified, role, status, created_at, updated_at)
      VALUES (?, ?, ?, 0, 'member', 'pending', ?, ?)`,
     id,
     agencyId,
@@ -176,7 +177,7 @@ export async function getOrCreateUser(agencyId: string, email: string): Promise<
   return created;
 }
 
-// Convenience helpers (optional to use elsewhere)
+// Convenience helpers
 export function normalizeUserRole(raw: any) {
   return normalizeRole(raw);
 }
