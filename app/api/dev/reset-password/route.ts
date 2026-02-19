@@ -10,9 +10,7 @@ export const runtime = "nodejs";
 
 async function readJson(req: NextRequest): Promise<any> {
   const ct = req.headers.get("content-type") || "";
-  if (ct.includes("application/json")) {
-    return await req.json().catch(() => ({}));
-  }
+  if (ct.includes("application/json")) return await req.json().catch(() => ({}));
   const text = await req.text().catch(() => "");
   const params = new URLSearchParams(text);
   const obj: Record<string, any> = {};
@@ -33,13 +31,9 @@ function json(status: number, data: any) {
 
 async function authOr401(req: NextRequest) {
   const envSecret = process.env.DEV_ADMIN_SECRET || "";
-  if (!envSecret) {
-    return { ok: false as const, res: json(500, { ok: false, message: "DEV_ADMIN_SECRET is not set." }) };
-  }
+  if (!envSecret) return { ok: false as const, res: json(500, { ok: false, message: "DEV_ADMIN_SECRET is not set." }) };
   const secret = getSecret(req);
-  if (!secret || secret !== envSecret) {
-    return { ok: false as const, res: json(401, { ok: false, message: "Unauthorized" }) };
-  }
+  if (!secret || secret !== envSecret) return { ok: false as const, res: json(401, { ok: false, message: "Unauthorized" }) };
   return { ok: true as const, res: null as any };
 }
 
@@ -76,22 +70,14 @@ export async function POST(req: NextRequest) {
     const email = String(body?.email || "").trim().toLowerCase();
     const newPassword = String(body?.newPassword || "");
 
-    if (!email || !newPassword.trim()) {
-      return json(400, { ok: false, message: "Missing email or newPassword" });
-    }
+    if (!email || !newPassword.trim()) return json(400, { ok: false, message: "Missing email or newPassword" });
 
     const db = await getDb();
     await ensureAgencyColumns(db);
     await ensureUserColumns(db);
 
-    const agency = await db.get<{ id: string }>(
-      "SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1",
-      email
-    );
-
-    if (!agency?.id) {
-      return json(404, { ok: false, message: "No agency found for that email" });
-    }
+    const agency = await db.get<{ id: string }>("SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1", email);
+    if (!agency?.id) return json(404, { ok: false, message: "No agency found for that email" });
 
     const password_hash = await bcrypt.hash(newPassword, 10);
 
@@ -102,7 +88,6 @@ export async function POST(req: NextRequest) {
       agency.id
     );
 
-    // Best-effort: mark the matching user row verified/active
     await db.run(
       "UPDATE users SET email_verified = 1, status = COALESCE(status, 'active'), updated_at = ? WHERE agency_id = ? AND lower(email) = ?",
       new Date().toISOString(),
@@ -137,7 +122,7 @@ export async function PUT(req: NextRequest) {
       `SELECT id, name, email, created_at, email_verified
        FROM agencies
        ORDER BY COALESCE(created_at, '') DESC
-       LIMIT 25`
+       LIMIT 50`
     );
 
     return json(200, { ok: true, agencies: rows });
@@ -148,6 +133,7 @@ export async function PUT(req: NextRequest) {
 }
 
 // Rename agency email (and matching user email within that agency)
+// Body: { oldEmail, newEmail, force?: boolean }
 export async function PATCH(req: NextRequest) {
   try {
     await ensureSchema().catch(() => {});
@@ -157,45 +143,56 @@ export async function PATCH(req: NextRequest) {
     const body = await readJson(req);
     const oldEmail = String(body?.oldEmail || "").trim().toLowerCase();
     const newEmail = String(body?.newEmail || "").trim().toLowerCase();
+    const force = Boolean(body?.force);
 
-    if (!oldEmail || !newEmail) {
-      return json(400, { ok: false, message: "Missing oldEmail or newEmail" });
-    }
+    if (!oldEmail || !newEmail) return json(400, { ok: false, message: "Missing oldEmail or newEmail" });
 
     const db = await getDb();
     await ensureAgencyColumns(db);
     await ensureUserColumns(db);
 
-    const existingNew = await db.get<{ id: string }>(
+    const agency = await db.get<{ id: string }>(
       "SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1",
-      newEmail
-    );
-    if (existingNew?.id) {
-      return json(409, { ok: false, message: "New email is already in use (agencies)." });
-    }
-
-    const agency = await db.get<{ id: string; email: string }>(
-      "SELECT id, email FROM agencies WHERE lower(email) = ? LIMIT 1",
       oldEmail
     );
-    if (!agency?.id) {
-      return json(404, { ok: false, message: "No agency found for oldEmail" });
-    }
+    if (!agency?.id) return json(404, { ok: false, message: "No agency found for oldEmail" });
 
-    const t = new Date().toISOString();
-
-    await db.run(
-      "UPDATE agencies SET email = ?, updated_at = ? WHERE id = ?",
-      newEmail,
-      t,
-      agency.id
+    const conflict = await db.get<{ id: string; email: string | null; name: string | null }>(
+      "SELECT id, email, name FROM agencies WHERE lower(email) = ? LIMIT 1",
+      newEmail
     );
 
-    // Update matching user row inside same agency (best-effort)
+    // If conflict exists and it's not the same agency, block unless force=true
+    if (conflict?.id && conflict.id !== agency.id) {
+      if (!force) {
+        return json(409, {
+          ok: false,
+          message: "New email is already in use (agencies).",
+          conflictAgency: conflict,
+        });
+      }
+
+      // Force mode: move the conflicting agency email out of the way
+      const t = Date.now();
+      const bumped = `${newEmail}.conflict.${t}`;
+      await db.run("UPDATE agencies SET email = ?, updated_at = ? WHERE id = ?", bumped, new Date().toISOString(), conflict.id);
+      // best-effort: also bump matching user row in that conflicting agency
+      await db.run(
+        "UPDATE users SET email = ?, updated_at = ? WHERE agency_id = ? AND lower(email) = ?",
+        bumped,
+        new Date().toISOString(),
+        conflict.id,
+        newEmail
+      ).catch(() => {});
+    }
+
+    const tIso = new Date().toISOString();
+
+    await db.run("UPDATE agencies SET email = ?, updated_at = ? WHERE id = ?", newEmail, tIso, agency.id);
     await db.run(
       "UPDATE users SET email = ?, updated_at = ? WHERE agency_id = ? AND lower(email) = ?",
       newEmail,
-      t,
+      tIso,
       agency.id,
       oldEmail
     ).catch(() => {});
@@ -206,6 +203,7 @@ export async function PATCH(req: NextRequest) {
       agencyId: agency.id,
       oldEmail,
       newEmail,
+      forced: force,
     });
   } catch (err: any) {
     console.error("DEV_RENAME_AGENCY_EMAIL_ERROR", err);
