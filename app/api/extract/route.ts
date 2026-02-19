@@ -1,11 +1,10 @@
 // app/api/extract/route.ts
 import { NextRequest } from "next/server";
-import { ensureScheduleTables } from "@/lib/db/migrations";
-import { getDb } from "@/lib/db";
-
+import { getDb, type Db } from "@/lib/db";
 import { openai } from "@/lib/openai";
 import { requireActiveMember } from "@/lib/authz";
 import { requireFeature } from "@/lib/plans";
+import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
@@ -24,7 +23,7 @@ function safeJsonParse(s: string) {
 
 function makeId(prefix: string) {
   const uuid =
-    globalThis.crypto && "randomUUID" in globalThis.crypto && (globalThis.crypto as any).randomUUID
+    globalThis.crypto && "randomUUID" in globalThis.crypto
       ? (globalThis.crypto as any).randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}_${uuid}`;
@@ -38,11 +37,13 @@ function requireExtractionOr403(plan: unknown) {
 
 export async function POST(req: NextRequest) {
   try {
-    await ensureScheduleTables();
-
     const ctx = await requireActiveMember(req);
+
     const gated = requireExtractionOr403(ctx.plan);
     if (gated) return gated;
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
 
     const body = (await req.json().catch(() => null)) as ExtractBody | null;
     const botIdFromBody = String(body?.bot_id ?? "").trim();
@@ -51,10 +52,8 @@ export async function POST(req: NextRequest) {
     if (!documentId) return Response.json({ error: "Missing document_id" }, { status: 400 });
     if (!botIdFromBody) return Response.json({ error: "Missing bot_id" }, { status: 400 });
 
-    const db: any = await getDb();
-
     const doc = (await db.get(
-      `SELECT id, agency_id, bot_id, filename, openai_file_id
+      `SELECT id, agency_id, bot_id, title, openai_file_id
        FROM documents
        WHERE id = ? AND agency_id = ?
        LIMIT 1`,
@@ -64,24 +63,20 @@ export async function POST(req: NextRequest) {
       | {
           id: string;
           agency_id: string;
-          bot_id: string | null;
-          filename: string;
+          bot_id: string;
+          title: string;
           openai_file_id: string | null;
         }
-      | null;
+      | undefined;
 
     if (!doc?.id) {
-      return Response.json(
-        { error: "Not found", where: "documents lookup", documentId, agencyId: ctx.agencyId },
-        { status: 404 }
-      );
+      return Response.json({ error: "DOCUMENT_NOT_FOUND" }, { status: 404 });
     }
 
-    if (!doc.bot_id) return Response.json({ error: "Document missing bot_id" }, { status: 400 });
     if (doc.bot_id !== botIdFromBody) {
       return Response.json(
         {
-          error: "Document belongs to a different bot",
+          error: "DOCUMENT_BOT_MISMATCH",
           document_bot_id: doc.bot_id,
           requested_bot_id: botIdFromBody,
         },
@@ -93,7 +88,7 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "Document missing openai_file_id" }, { status: 400 });
     }
 
-    const botOk = (await db.get(
+    const bot = (await db.get(
       `SELECT id, vector_store_id
        FROM bots
        WHERE id = ? AND agency_id = ?
@@ -102,32 +97,24 @@ export async function POST(req: NextRequest) {
       doc.bot_id,
       ctx.agencyId,
       ctx.userId
-    )) as { id: string; vector_store_id: string | null } | null;
+    )) as { id: string; vector_store_id: string | null } | undefined;
 
-    if (!botOk?.id) {
-      return Response.json(
-        {
-          error: "Not found",
-          where: "bot authorization",
-          bot_id: doc.bot_id,
-          agencyId: ctx.agencyId,
-          userId: ctx.userId,
-        },
-        { status: 404 }
-      );
+    if (!bot?.id) {
+      return Response.json({ error: "BOT_NOT_FOUND" }, { status: 404 });
     }
-    if (!botOk.vector_store_id) {
+
+    if (!bot.vector_store_id) {
       return Response.json(
-        { error: "Bot has no vector_store_id (uploads/billing may be blocked)", bot_id: doc.bot_id },
+        { error: "Bot has no vector_store_id (billing or quota issue)" },
         { status: 400 }
       );
     }
 
     const instructions = `
-You extract structured events and tasks ONLY from the provided document(s).
-Do NOT invent anything. If the document does not clearly specify an item, do not include it.
+You extract structured events and tasks ONLY from the provided document.
+Do NOT invent anything.
 
-Return ONLY valid JSON matching this schema:
+Return ONLY valid JSON:
 
 {
   "items": [
@@ -144,59 +131,44 @@ Return ONLY valid JSON matching this schema:
 }
 
 Rules:
-- If date exists but time doesn't, still output date with "T00:00:00Z" (best effort).
-- Keep source_excerpt short (<= 200 chars).
-- confidence should be high only when the doc is explicit.
+- If date exists but time doesn't, use T00:00:00Z.
+- confidence must be between 0 and 1.
 - If none found, return {"items": []}.
 `.trim();
-
-    const input = `Extract events/tasks from this document only.
-Filename: ${doc.filename}
-OpenAI file id: ${doc.openai_file_id}
-Document id (DB): ${doc.id}
-
-Return JSON only.`;
 
     let resp: any;
     try {
       resp = await openai.responses.create({
         model: "gpt-4.1-mini",
         instructions,
-        input,
+        input: `Extract from document "${doc.title}" only.`,
         tools: [
           {
             type: "file_search",
-            vector_store_ids: [botOk.vector_store_id],
+            vector_store_ids: [bot.vector_store_id],
           },
         ],
       });
     } catch (e: any) {
       const msg = String(e?.message ?? e);
-      console.error("SCHEDULE_EXTRACT_OPENAI_ERROR", e);
 
       await db.run(
         `INSERT INTO extractions
-         (id, agency_id, bot_id, document_id, events_created, tasks_created, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (id, agency_id, bot_id, document_id, kind, created_at)
+         VALUES (?, ?, ?, ?, 'error', ?)`,
         makeId("ext"),
         ctx.agencyId,
         doc.bot_id,
         doc.id,
-        0,
-        0,
         new Date().toISOString()
       );
 
-      return Response.json(
-        {
-          ok: true,
-          events_created: 0,
-          tasks_created: 0,
-          message: "OpenAI error",
-          openai_error: msg,
-        },
-        { status: 200 }
-      );
+      return Response.json({
+        ok: true,
+        events_created: 0,
+        tasks_created: 0,
+        openai_error: msg,
+      });
     }
 
     const text = String(resp?.output_text ?? "").trim();
@@ -212,58 +184,48 @@ Return JSON only.`;
       const title = String(it?.title ?? "").trim();
       if (!type || !title) continue;
 
-      const start_at = it?.start_at ? String(it.start_at) : null;
-      const end_at = it?.end_at ? String(it.end_at) : null;
-      const due_at = it?.due_at ? String(it.due_at) : null;
-
       const confidenceRaw = Number(it?.confidence ?? 0);
       const confidence = Number.isFinite(confidenceRaw)
         ? Math.max(0, Math.min(1, confidenceRaw))
         : 0;
 
-      const source_excerpt = it?.source_excerpt ? String(it.source_excerpt).slice(0, 400) : "";
-      const notes =
-        source_excerpt || confidence > 0
-          ? `${source_excerpt}${source_excerpt ? "\n\n" : ""}confidence: ${confidence}`
-          : null;
+      const notes = it?.source_excerpt
+        ? `${String(it.source_excerpt).slice(0, 400)}\n\nconfidence: ${confidence}`
+        : null;
 
       if (type === "event") {
-        if (!start_at) continue;
+        if (!it?.start_at) continue;
 
         await db.run(
-          `INSERT INTO schedule_events (
-            id, agency_id, user_id, bot_id, source_document_id,
-            title, starts_at, ends_at, location, notes, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO schedule_events
+           (id, agency_id, bot_id, document_id, title, start_at, end_at, notes, confidence, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           makeId("evt"),
           ctx.agencyId,
-          ctx.userId,
           doc.bot_id,
           doc.id,
           title,
-          start_at,
-          end_at,
-          null,
+          String(it.start_at),
+          it.end_at ? String(it.end_at) : null,
           notes,
+          confidence,
           now
         );
 
         events_created++;
       } else {
         await db.run(
-          `INSERT INTO schedule_tasks (
-            id, agency_id, user_id, bot_id, source_document_id,
-            title, due_at, status, notes, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO schedule_tasks
+           (id, agency_id, bot_id, document_id, title, due_at, status, notes, confidence, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
           makeId("tsk"),
           ctx.agencyId,
-          ctx.userId,
           doc.bot_id,
           doc.id,
           title,
-          due_at,
-          "open",
+          it?.due_at ? String(it.due_at) : null,
           notes,
+          confidence,
           now
         );
 
@@ -273,14 +235,12 @@ Return JSON only.`;
 
     await db.run(
       `INSERT INTO extractions
-       (id, agency_id, bot_id, document_id, events_created, tasks_created, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, agency_id, bot_id, document_id, kind, created_at)
+       VALUES (?, ?, ?, ?, 'success', ?)`,
       makeId("ext"),
       ctx.agencyId,
       doc.bot_id,
       doc.id,
-      events_created,
-      tasks_created,
       now
     );
 
@@ -290,14 +250,13 @@ Return JSON only.`;
       bot_id: doc.bot_id,
       events_created,
       tasks_created,
-      raw: text,
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
     if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
     if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
 
-    console.error("SCHEDULE_EXTRACT_ERROR", err);
+    console.error("EXTRACT_ROUTE_ERROR", err);
     return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }

@@ -3,33 +3,32 @@ import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { requireFeature } from "@/lib/plans";
+import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
 function requireScheduleOr403(plan: unknown) {
   const gate = requireFeature(plan, "schedule");
   if (gate.ok) return null;
-  return Response.json(gate.body, { status: gate.status }); // 403
+  return Response.json(gate.body, { status: gate.status });
 }
 
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
-    // ✅ Paid-only gate (canonical)
     const gated = requireScheduleOr403(ctx.plan);
     if (gated) return gated;
 
     const url = new URL(req.url);
-
     const botId = String(url.searchParams.get("bot_id") || "").trim();
     if (!botId) {
       return Response.json({ ok: false, error: "Missing bot_id" }, { status: 400 });
     }
 
     const db: Db = await getDb();
+    await ensureSchema(db);
 
-    // Ensure bot is in agency and user is allowed to access it
     const bot = (await db.get(
       `SELECT id
        FROM bots
@@ -45,7 +44,6 @@ export async function GET(req: NextRequest) {
       return Response.json({ ok: false, error: "Bot not found" }, { status: 404 });
     }
 
-    // Keep query conservative: only select columns that almost certainly exist.
     const tasks = await db.all(
       `SELECT id, title, status, due_at, created_at
        FROM schedule_tasks
