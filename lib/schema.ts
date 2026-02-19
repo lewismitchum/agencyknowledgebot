@@ -6,12 +6,7 @@ export const runtime = "nodejs";
 /**
  * Louis.Ai schema bootstrap + drift repair.
  *
- * Key requirement:
- * - MUST be safe to run on every request.
- * - MUST tolerate older DBs where tables existed with missing columns.
- *
- * Backwards compatibility:
- * - allow BOTH: ensureSchema() and ensureSchema(db)
+ * MUST be safe to run on every request.
  */
 
 type Db = Pick<RealDb, "exec" | "run" | "get" | "all">;
@@ -19,7 +14,6 @@ type Db = Pick<RealDb, "exec" | "run" | "get" | "all">;
 let _schemaEnsured = false;
 
 function qIdent(name: string) {
-  // Minimal identifier quoting for SQLite/libsql
   return `"${name.replace(/"/g, '""')}"`;
 }
 
@@ -28,7 +22,6 @@ async function tableExists(db: Db, tableName: string) {
     `SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`,
     tableName
   )) as { name: string } | undefined;
-
   return !!row?.name;
 }
 
@@ -47,14 +40,9 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
 
   const cols = await getTableColumns(db, "usage_daily");
 
-  // Canonical shape we want:
   const wants = ["agency_id", "date", "messages_count", "uploads_count"];
+  if (wants.every((c) => has(cols, c))) return;
 
-  // If it already has the canonical columns, we only need to patch missing ones (rare).
-  const hasAllCanonical = wants.every((c) => has(cols, c));
-  if (hasAllCanonical) return;
-
-  // Detect common legacy column names
   const legacyDateCol = has(cols, "day") ? "day" : has(cols, "date") ? "date" : null;
   const legacyMsgCol = has(cols, "count")
     ? "count"
@@ -66,12 +54,10 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
 
   const legacyUploadsCol = has(cols, "uploads_count") ? "uploads_count" : has(cols, "uploads") ? "uploads" : null;
 
-  // If we can't confidently map, still rebuild but set safe defaults.
   const dateExpr = legacyDateCol ? qIdent(legacyDateCol) : "''";
   const msgExpr = legacyMsgCol ? qIdent(legacyMsgCol) : "0";
   const upExpr = legacyUploadsCol ? qIdent(legacyUploadsCol) : "0";
 
-  // agency_id is required; if missing, we cannot reconstruct rows reliably.
   const legacyAgencyCol = has(cols, "agency_id") ? "agency_id" : null;
   if (!legacyAgencyCol) return;
 
@@ -109,7 +95,6 @@ async function ensureUsageDailyColumns(db: Db) {
 
   const cols = await getTableColumns(db, "usage_daily");
 
-  // If we are missing canonical columns, rebuild (best fix for old PK + naming drift).
   const missingCanonical =
     !has(cols, "agency_id") || !has(cols, "date") || !has(cols, "messages_count") || !has(cols, "uploads_count");
 
@@ -118,7 +103,6 @@ async function ensureUsageDailyColumns(db: Db) {
     return;
   }
 
-  // If only a subset is missing (rare), patch with ALTER TABLE.
   const cols2 = await getTableColumns(db, "usage_daily");
   if (!has(cols2, "messages_count")) {
     await db.exec(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER NOT NULL DEFAULT 0;`);
@@ -143,9 +127,11 @@ async function ensureCoreTables(db: Db) {
       agency_id TEXT NOT NULL,
       email TEXT NOT NULL,
       name TEXT,
+      email_verified INTEGER NOT NULL DEFAULT 0,
       role TEXT NOT NULL DEFAULT 'member',
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT,
       UNIQUE(agency_id, email)
     );
 
@@ -267,8 +253,6 @@ async function ensureAgenciesColumns(db: Db) {
 
   const cols = await getTableColumns(db, "agencies");
 
-  // Add columns that newer auth flows expect.
-  // Safe: ALTER TABLE will throw if column already exists; ignore.
   if (!has(cols, "password_hash")) {
     await db.exec(`ALTER TABLE agencies ADD COLUMN password_hash TEXT;`);
   }
@@ -289,13 +273,32 @@ async function ensureAgenciesColumns(db: Db) {
   }
 }
 
+async function ensureUsersColumns(db: Db) {
+  const exists = await tableExists(db, "users");
+  if (!exists) return;
+
+  const cols = await getTableColumns(db, "users");
+
+  if (!has(cols, "email_verified")) {
+    await db.exec(`ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!has(cols, "role")) {
+    await db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member';`);
+  }
+  if (!has(cols, "status")) {
+    await db.exec(`ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active';`);
+  }
+  if (!has(cols, "created_at")) {
+    await db.exec(`ALTER TABLE users ADD COLUMN created_at TEXT;`);
+  }
+  if (!has(cols, "updated_at")) {
+    await db.exec(`ALTER TABLE users ADD COLUMN updated_at TEXT;`);
+  }
+}
+
 /**
  * Ensure the full DB schema exists, plus apply drift repairs.
  * Safe to call in every API route before DB usage.
- *
- * Supports:
- *   await ensureSchema()
- *   await ensureSchema(db)
  */
 export async function ensureSchema(dbArg?: Db) {
   if (_schemaEnsured) return;
@@ -304,8 +307,8 @@ export async function ensureSchema(dbArg?: Db) {
 
   await ensureCoreTables(db);
 
-  // ✅ Patch older DBs that already have agencies table but lack auth columns.
   await ensureAgenciesColumns(db);
+  await ensureUsersColumns(db);
 
   await ensureUsageDailyColumns(db);
 
