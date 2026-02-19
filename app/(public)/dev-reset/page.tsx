@@ -1,8 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-
-export const runtime = "nodejs";
+import React, { useState } from "react";
 
 export default function DevResetPage() {
   const [secret, setSecret] = useState("");
@@ -10,13 +8,19 @@ export default function DevResetPage() {
   const [newPassword, setNewPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState("");
+  const [note, setNote] = useState("");
 
-  const canSubmit = useMemo(() => {
-    return secret.trim() && email.trim() && newPassword.trim();
-  }, [secret, email, newPassword]);
+  async function runReset() {
+    const s = secret.trim();
+    const e = email.trim().toLowerCase();
+    const p = newPassword;
 
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+    if (!s || !e || !p) {
+      setNote("Fill in DEV_ADMIN_SECRET, email, and new password.");
+      return;
+    }
+
+    setNote("");
     setLoading(true);
     setResult("");
 
@@ -25,12 +29,9 @@ export default function DevResetPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-dev-admin-secret": secret.trim(),
+          "x-dev-admin-secret": s,
         },
-        body: JSON.stringify({
-          email: email.trim(),
-          newPassword,
-        }),
+        body: JSON.stringify({ email: e, newPassword: p }),
       });
 
       const text = await res.text();
@@ -43,13 +44,22 @@ export default function DevResetPage() {
   }
 
   return (
-    <main style={{ maxWidth: 560, margin: "40px auto", padding: 16, fontFamily: "ui-sans-serif, system-ui" }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Dev Password Reset</h1>
+    <main
+      style={{
+        maxWidth: 560,
+        margin: "40px auto",
+        padding: 16,
+        fontFamily: "ui-sans-serif, system-ui",
+      }}
+    >
+      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
+        Dev Password Reset
+      </h1>
       <p style={{ color: "#555", marginBottom: 16 }}>
         Temporary page. Delete after use.
       </p>
 
-      <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
+      <div style={{ display: "grid", gap: 12 }}>
         <label style={{ display: "grid", gap: 6 }}>
           <span style={{ fontSize: 12, color: "#444" }}>DEV_ADMIN_SECRET</span>
           <input
@@ -81,37 +91,39 @@ export default function DevResetPage() {
         </label>
 
         <button
-          type="submit"
-          disabled={!canSubmit || loading}
+          type="button"
+          onClick={runReset}
           style={{
             padding: 10,
             borderRadius: 999,
             border: "1px solid #111",
             background: loading ? "#666" : "#111",
             color: "#fff",
-            cursor: !canSubmit || loading ? "not-allowed" : "pointer",
+            cursor: loading ? "not-allowed" : "pointer",
             fontWeight: 600,
           }}
         >
           {loading ? "Resetting..." : "Reset Password"}
         </button>
-      </form>
 
-      {result ? (
-        <pre
-          style={{
-            marginTop: 16,
-            padding: 12,
-            borderRadius: 12,
-            background: "#f6f6f6",
-            border: "1px solid #e5e5e5",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}
-        >
-          {result}
-        </pre>
-      ) : null}
+        {note ? <div style={{ color: "#b00", fontSize: 13 }}>{note}</div> : null}
+
+        {result ? (
+          <pre
+            style={{
+              marginTop: 8,
+              padding: 12,
+              borderRadius: 12,
+              background: "#f6f6f6",
+              border: "1px solid #e5e5e5",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {result}
+          </pre>
+        ) : null}
+      </div>
     </main>
   );
 }
