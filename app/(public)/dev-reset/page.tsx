@@ -10,28 +10,27 @@ export default function DevResetPage() {
   const [result, setResult] = useState("");
   const [note, setNote] = useState("");
 
-  async function runReset() {
+  async function callApi(method: "POST" | "PUT") {
     const s = secret.trim();
-    const e = email.trim().toLowerCase();
-    const p = newPassword;
-
-    if (!s || !e || !p) {
-      setNote("Fill in DEV_ADMIN_SECRET, email, and new password.");
+    if (!s) {
+      setNote("Fill in DEV_ADMIN_SECRET first.");
       return;
     }
-
     setNote("");
     setLoading(true);
     setResult("");
 
     try {
       const res = await fetch("/api/dev/reset-password", {
-        method: "POST",
+        method,
         headers: {
           "Content-Type": "application/json",
           "x-dev-admin-secret": s,
         },
-        body: JSON.stringify({ email: e, newPassword: p }),
+        body:
+          method === "POST"
+            ? JSON.stringify({ email: email.trim().toLowerCase(), newPassword })
+            : undefined,
       });
 
       const text = await res.text();
@@ -44,20 +43,9 @@ export default function DevResetPage() {
   }
 
   return (
-    <main
-      style={{
-        maxWidth: 560,
-        margin: "40px auto",
-        padding: 16,
-        fontFamily: "ui-sans-serif, system-ui",
-      }}
-    >
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
-        Dev Password Reset
-      </h1>
-      <p style={{ color: "#555", marginBottom: 16 }}>
-        Temporary page. Delete after use.
-      </p>
+    <main style={{ maxWidth: 560, margin: "40px auto", padding: 16, fontFamily: "ui-sans-serif, system-ui" }}>
+      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Dev Password Reset</h1>
+      <p style={{ color: "#555", marginBottom: 16 }}>Temporary page. Delete after use.</p>
 
       <div style={{ display: "grid", gap: 12 }}>
         <label style={{ display: "grid", gap: 6 }}>
@@ -69,6 +57,23 @@ export default function DevResetPage() {
             style={{ padding: 10, border: "1px solid #ddd", borderRadius: 10 }}
           />
         </label>
+
+        <button
+          type="button"
+          onClick={() => callApi("PUT")}
+          disabled={loading}
+          style={{
+            padding: 10,
+            borderRadius: 999,
+            border: "1px solid #111",
+            background: loading ? "#666" : "#111",
+            color: "#fff",
+            cursor: loading ? "not-allowed" : "pointer",
+            fontWeight: 600,
+          }}
+        >
+          {loading ? "Loading..." : "List agencies (debug)"}
+        </button>
 
         <label style={{ display: "grid", gap: 6 }}>
           <span style={{ fontSize: 12, color: "#444" }}>Email</span>
@@ -92,7 +97,8 @@ export default function DevResetPage() {
 
         <button
           type="button"
-          onClick={runReset}
+          onClick={() => callApi("POST")}
+          disabled={loading}
           style={{
             padding: 10,
             borderRadius: 999,
@@ -103,7 +109,7 @@ export default function DevResetPage() {
             fontWeight: 600,
           }}
         >
-          {loading ? "Resetting..." : "Reset Password"}
+          {loading ? "Resetting..." : "Reset password"}
         </button>
 
         {note ? <div style={{ color: "#b00", fontSize: 13 }}>{note}</div> : null}
