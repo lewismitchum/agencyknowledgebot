@@ -9,6 +9,38 @@ function mustGetEnv(name: string) {
 
 const resend = new Resend(mustGetEnv("RESEND_API_KEY"));
 
+/* =========================================================
+   Core Helpers (used by auth + invites)
+========================================================= */
+
+export function getAppUrl(): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
+  if (process.env.APP_URL) return process.env.APP_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return "http://localhost:3000";
+}
+
+export async function sendEmail(input: {
+  to: string;
+  subject: string;
+  html: string;
+  replyTo?: string;
+}) {
+  const RESEND_FROM = mustGetEnv("RESEND_FROM");
+
+  return resend.emails.send({
+    from: RESEND_FROM,
+    to: [input.to],
+    subject: input.subject,
+    html: input.html,
+    replyTo: input.replyTo,
+  });
+}
+
+/* =========================================================
+   Support Email (public form)
+========================================================= */
+
 export async function sendSupportEmail(input: {
   fromEmail?: string;
   fromName?: string;
@@ -43,18 +75,15 @@ export async function sendSupportEmail(input: {
     </div>
   `;
 
-  // Use replyTo so you can respond directly from your inbox.
   const replyTo = fromEmail || undefined;
 
-  const result = await resend.emails.send({
+  return resend.emails.send({
     from: RESEND_FROM,
     to: [SUPPORT_INBOX_EMAIL],
     subject,
     html,
     replyTo,
   });
-
-  return result;
 }
 
 function escapeHtml(s: string) {
