@@ -24,6 +24,14 @@ function summarizeThresholdForPlan(plan: string | null) {
   return 40;
 }
 
+function defaultDailyMessagesForPlan(plan: string) {
+  // Launch-safe defaults (avoid 0 limits due to misconfigured plans)
+  if (plan === "free") return 20;
+  if (plan === "starter") return 500;
+  // Pro+ is unlimited in your tier model
+  return null;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -111,8 +119,14 @@ async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string |
 
   const rawPlan = planRow?.plan ?? planFromCtx ?? null;
   const plan = normalizePlan(rawPlan);
+
   const limits = getPlanLimits(plan);
-  const dailyLimit = (limits as any).daily_messages ?? null;
+  let dailyLimit = (limits as any).daily_messages;
+
+  // 🔒 Launch-safe fallback: if undefined/null/0/negative, use tier defaults
+  if (dailyLimit == null || Number(dailyLimit) <= 0) {
+    dailyLimit = defaultDailyMessagesForPlan(plan);
+  }
 
   if (dailyLimit == null) {
     return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
@@ -120,11 +134,11 @@ async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string |
 
   const usage = await getDailyUsage(db, agencyId, todayYmd());
 
-  if (usage.messages_count >= dailyLimit) {
-    return { ok: false as const, used: usage.messages_count, dailyLimit, plan };
+  if (usage.messages_count >= Number(dailyLimit)) {
+    return { ok: false as const, used: usage.messages_count, dailyLimit: Number(dailyLimit), plan };
   }
 
-  return { ok: true as const, used: usage.messages_count, dailyLimit, plan };
+  return { ok: true as const, used: usage.messages_count, dailyLimit: Number(dailyLimit), plan };
 }
 
 async function getOrCreateConversation(
@@ -167,12 +181,7 @@ async function getOrCreateConversation(
   return { id, summary: null, message_count: 0 };
 }
 
-async function insertMessage(
-  db: Db,
-  convoId: string,
-  role: "user" | "assistant",
-  content: string
-) {
+async function insertMessage(db: Db, convoId: string, role: "user" | "assistant", content: string) {
   await db.run(
     `INSERT INTO conversation_messages
      (id, conversation_id, role, content, created_at)
@@ -241,46 +250,6 @@ async function maybeSummarize(
   return newSummary;
 }
 
-async function isClearlyInternalQuestion(message: string) {
-  const input = message.trim();
-  if (!input) return false;
-
-  const t = input.toLowerCase();
-  const heuristicHit =
-    t.includes("pricing") ||
-    t.includes("rate") ||
-    t.includes("sop") ||
-    t.includes("policy") ||
-    t.includes("handbook") ||
-    t.includes("onboarding") ||
-    t.includes("client") ||
-    t.includes("proposal") ||
-    t.includes("contract") ||
-    t.includes("invoice") ||
-    t.includes("refund") ||
-    t.includes("workflow") ||
-    t.includes("process") ||
-    t.includes("internal") ||
-    t.includes("our ") ||
-    t.includes("we ") ||
-    t.includes("my agency");
-
-  if (heuristicHit) return true;
-
-  try {
-    const r = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      instructions:
-        "Return ONLY 'YES' or 'NO'. Is the user's question clearly asking for private/internal business knowledge that should come from their uploaded docs (SOPs, policies, pricing, client data, internal processes)? If it's general knowledge or a normal explanation, return NO.",
-      input,
-    });
-    const out = String(r?.output_text ?? "").trim().toUpperCase();
-    return out === "YES";
-  } catch {
-    return false;
-  }
-}
-
 export async function GET() {
   return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
@@ -306,7 +275,12 @@ export async function POST(req: NextRequest) {
     const usage = await enforceDailyLimit(db, ctx.agencyId, ctx.plan);
     if (!usage.ok) {
       return Response.json(
-        { error: "DAILY_LIMIT_EXCEEDED", used: usage.used, daily_limit: usage.dailyLimit },
+        {
+          error: "DAILY_LIMIT_EXCEEDED",
+          used: usage.used,
+          daily_limit: usage.dailyLimit,
+          plan: usage.plan,
+        },
         { status: 429 }
       );
     }
@@ -342,7 +316,7 @@ export async function POST(req: NextRequest) {
 
     const recent = await loadRecentMessages(db, convo.id, 20);
 
-    // ✅ IMPORTANT: keep literal type "file_search" for TS
+    // ✅ Literal tool typing (prevents TS widening)
     const tools = bot.vector_store_id
       ? ([{ type: "file_search", vector_store_ids: [bot.vector_store_id] }] as const)
       : ([] as const);
@@ -352,47 +326,32 @@ export async function POST(req: NextRequest) {
       instructions: `
 You are Louis.Ai.
 
-Behavior rules:
-- Always answer normally for general questions (explanations, brainstorming, definitions, help, etc.).
-- For internal/business questions about the user's agency/workspace (policies, SOPs, pricing, client/project specifics), you MUST prioritize uploaded documents via file_search.
-- If the question is clearly internal/business AND there is no relevant evidence in the uploaded documents, reply exactly:
+Core behavior:
+- Docs are prioritized, not exclusive.
+- Always answer normal/general questions without requiring uploads.
+- For INTERNAL/BUSINESS questions about the user's agency/workspace (policies, SOPs, pricing, contracts, client/project specifics):
+  - Use file_search (if available) and base the answer on the uploaded docs.
+  - If you cannot find relevant evidence in the docs, reply exactly:
 ${FALLBACK}
 
-When you use docs, cite details from them in your answer.
 Never fabricate internal details.
 `.trim(),
       input:
         (summary ? `Conversation memory:\n${summary}\n\n` : "") +
         recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n"),
-      tools: (tools as any).attach ? tools : (tools as any), // keep safe for differing SDK tool typings
+      tools: tools as any, // compatible across SDK versions
     });
 
     const answer = String(resp?.output_text ?? "").trim() || FALLBACK;
 
-    let finalAnswer = answer;
-
-    if (tools.length > 0 && finalAnswer !== FALLBACK) {
-      const internal = await isClearlyInternalQuestion(message);
-      if (internal) {
-        try {
-          const check = await openai.responses.create({
-            model: "gpt-4.1-mini",
-            instructions:
-              "Return ONLY 'YES' or 'NO'. Did you find relevant evidence in the uploaded documents to answer the user's question? If you had to guess without docs, return NO.",
-            input: `USER QUESTION:\n${message}\n\nYOUR ANSWER:\n${finalAnswer}\n`,
-          });
-          const out = String(check?.output_text ?? "").trim().toUpperCase();
-          if (out !== "YES") finalAnswer = FALLBACK;
-        } catch {
-          finalAnswer = FALLBACK;
-        }
-      }
-    }
-
-    await insertMessage(db, convo.id, "assistant", finalAnswer);
+    await insertMessage(db, convo.id, "assistant", answer);
     await incrementMessages(db, ctx.agencyId, todayYmd());
 
-    return Response.json({ ok: true, answer: finalAnswer });
+    return Response.json({
+      ok: true,
+      answer,
+      usage: { used: usage.used + 1, daily_limit: usage.dailyLimit, plan: usage.plan },
+    });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
     if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
