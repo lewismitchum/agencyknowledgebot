@@ -1,18 +1,11 @@
-import { NextRequest } from "next/server";
+// app/api/me/route.ts
+import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
-import { getPlanLimits, normalizePlan } from "@/lib/plans";
 
 export const runtime = "nodejs";
-
-function todayYmd() {
-  const d = new Date();
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
@@ -27,45 +20,45 @@ export async function GET(req: NextRequest) {
        WHERE id = ?
        LIMIT 1`,
       ctx.agencyId
-    )) as { id: string; name: string; email: string; plan: string | null } | undefined;
+    )) as { id: string; name: string | null; email: string | null; plan: string | null } | undefined;
 
-    const plan = normalizePlan(agency?.plan ?? ctx.plan ?? null);
-    const limits = getPlanLimits(plan);
-
-    const usage = (await db.get(
-      `SELECT messages_count, uploads_count
-       FROM usage_daily
-       WHERE agency_id = ? AND date = ?
+    const user = (await db.get(
+      `SELECT id, email, email_verified, role, status
+       FROM users
+       WHERE agency_id = ? AND id = ?
        LIMIT 1`,
       ctx.agencyId,
-      todayYmd()
-    )) as { messages_count: number; uploads_count: number } | undefined;
+      ctx.userId
+    )) as
+      | {
+          id: string;
+          email: string;
+          email_verified: number | null;
+          role: string | null;
+          status: string | null;
+        }
+      | undefined;
 
     return Response.json({
       ok: true,
       agency: {
-        id: ctx.agencyId,
+        id: agency?.id ?? ctx.agencyId,
         name: agency?.name ?? null,
-        email: agency?.email ?? ctx.agencyEmail ?? null,
-        plan,
+        email: agency?.email ?? null,
+        plan: agency?.plan ?? (ctx.plan ?? "free"),
       },
       user: {
-        id: ctx.userId,
-      },
-      limits,
-      usage_today: {
-        messages_count: Number(usage?.messages_count ?? 0),
-        uploads_count: Number(usage?.uploads_count ?? 0),
+        id: user?.id ?? ctx.userId,
+        email: user?.email ?? ctx.agencyEmail, // fallback
+        email_verified: Number(user?.email_verified ?? 0),
+        role: user?.role ?? "member",
+        status: user?.status ?? "active",
       },
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
     if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
     if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
-    return Response.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
