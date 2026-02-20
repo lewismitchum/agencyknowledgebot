@@ -15,7 +15,7 @@ async function readBody(req: NextRequest) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     const j = await req.json().catch(() => ({}));
-    return { name: j?.name, email: j?.email, password: j?.password };
+    return { name: j?.name, email: j?.email, password: j?.password, isJson: true as const };
   }
   const text = await req.text().catch(() => "");
   const params = new URLSearchParams(text);
@@ -23,6 +23,7 @@ async function readBody(req: NextRequest) {
     name: params.get("name"),
     email: params.get("email"),
     password: params.get("password"),
+    isJson: false as const,
   };
 }
 
@@ -43,7 +44,6 @@ function smtpConfigured() {
   return Boolean(host && port && user && pass && from);
 }
 
-// ✅ Debug endpoint: confirms deployment + method routing
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const { name, email, password } = await readBody(req);
+    const { name, email, password, isJson } = await readBody(req);
 
     if (!name?.trim() || !email?.trim() || !password?.trim()) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
@@ -66,7 +66,6 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    // Enforce unique agency email
     const existing = (await db.get(
       "SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
@@ -148,13 +147,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Keep behavior: redirects for form posts
-    const res = willSendEmail
-      ? NextResponse.redirect(new URL("/check-email", req.url))
-      : NextResponse.redirect(new URL("/app/chat", req.url));
+    const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
 
+    // ✅ If client submitted JSON (fetch), return JSON (no redirect weirdness)
+    if (isJson) {
+      const res = NextResponse.json({ ok: true, redirectTo });
+      setSessionCookie(res, { agencyId, agencyEmail: normalizedEmail });
+      return res;
+    }
+
+    // ✅ Otherwise normal browser form submit: redirect
+    const res = NextResponse.redirect(new URL(redirectTo, req.url));
     setSessionCookie(res, { agencyId, agencyEmail: normalizedEmail });
-
     return res;
   } catch (err: any) {
     console.error("SIGNUP_ERROR", err);
