@@ -76,26 +76,6 @@ function todayYmd() {
   return `${y}-${m}-${day}`;
 }
 
-function looksInternalBusinessQuestion(message: string) {
-  const m = message.toLowerCase();
-  const keywords = [
-    "our",
-    "client",
-    "project",
-    "proposal",
-    "contract",
-    "invoice",
-    "pricing",
-    "internal",
-    "team",
-    "policy",
-    "roadmap",
-    "strategy",
-    "agency",
-  ];
-  return keywords.some((k) => m.includes(k));
-}
-
 async function getDailyUsage(db: Db, agencyId: string, date: string) {
   const row = (await db.get(
     `SELECT messages_count, uploads_count
@@ -261,6 +241,46 @@ async function maybeSummarize(
   return newSummary;
 }
 
+async function isClearlyInternalQuestion(message: string) {
+  const input = message.trim();
+  if (!input) return false;
+
+  const t = input.toLowerCase();
+  const heuristicHit =
+    t.includes("pricing") ||
+    t.includes("rate") ||
+    t.includes("sop") ||
+    t.includes("policy") ||
+    t.includes("handbook") ||
+    t.includes("onboarding") ||
+    t.includes("client") ||
+    t.includes("proposal") ||
+    t.includes("contract") ||
+    t.includes("invoice") ||
+    t.includes("refund") ||
+    t.includes("workflow") ||
+    t.includes("process") ||
+    t.includes("internal") ||
+    t.includes("our ") ||
+    t.includes("we ") ||
+    t.includes("my agency");
+
+  if (heuristicHit) return true;
+
+  try {
+    const r = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      instructions:
+        "Return ONLY 'YES' or 'NO'. Is the user's question clearly asking for private/internal business knowledge that should come from their uploaded docs (SOPs, policies, pricing, client data, internal processes)? If it's general knowledge or a normal explanation, return NO.",
+      input,
+    });
+    const out = String(r?.output_text ?? "").trim().toUpperCase();
+    return out === "YES";
+  } catch {
+    return false;
+  }
+}
+
 export async function GET() {
   return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
@@ -268,6 +288,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
+
     const db: Db = await getDb();
     await ensureSchema(db);
 
@@ -321,43 +342,57 @@ export async function POST(req: NextRequest) {
 
     const recent = await loadRecentMessages(db, convo.id, 20);
 
-    const instructions = `
-You are Louis.Ai.
-
-Rules:
-- Uploaded documents are the primary source for internal or business-specific questions.
-- If relevant documents exist, rely on them.
-- If no relevant documents are found:
-   • If the question clearly asks about internal agency knowledge, reply exactly:
-     ${FALLBACK}
-   • Otherwise, answer normally using general knowledge and reasoning.
-`.trim();
+    // ✅ IMPORTANT: keep literal type "file_search" for TS
+    const tools = bot.vector_store_id
+      ? ([{ type: "file_search", vector_store_ids: [bot.vector_store_id] }] as const)
+      : ([] as const);
 
     const resp = await openai.responses.create({
       model: "gpt-4.1-mini",
-      instructions,
+      instructions: `
+You are Louis.Ai.
+
+Behavior rules:
+- Always answer normally for general questions (explanations, brainstorming, definitions, help, etc.).
+- For internal/business questions about the user's agency/workspace (policies, SOPs, pricing, client/project specifics), you MUST prioritize uploaded documents via file_search.
+- If the question is clearly internal/business AND there is no relevant evidence in the uploaded documents, reply exactly:
+${FALLBACK}
+
+When you use docs, cite details from them in your answer.
+Never fabricate internal details.
+`.trim(),
       input:
         (summary ? `Conversation memory:\n${summary}\n\n` : "") +
         recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n"),
-      tools: bot.vector_store_id
-        ? [{ type: "file_search", vector_store_ids: [bot.vector_store_id] }]
-        : [],
+      tools: (tools as any).attach ? tools : (tools as any), // keep safe for differing SDK tool typings
     });
 
-    let answer = String(resp?.output_text ?? "").trim();
+    const answer = String(resp?.output_text ?? "").trim() || FALLBACK;
 
-    if (!answer) {
-      if (looksInternalBusinessQuestion(message)) {
-        answer = FALLBACK;
-      } else {
-        answer = "I'm not sure, but here's my best understanding based on general knowledge.";
+    let finalAnswer = answer;
+
+    if (tools.length > 0 && finalAnswer !== FALLBACK) {
+      const internal = await isClearlyInternalQuestion(message);
+      if (internal) {
+        try {
+          const check = await openai.responses.create({
+            model: "gpt-4.1-mini",
+            instructions:
+              "Return ONLY 'YES' or 'NO'. Did you find relevant evidence in the uploaded documents to answer the user's question? If you had to guess without docs, return NO.",
+            input: `USER QUESTION:\n${message}\n\nYOUR ANSWER:\n${finalAnswer}\n`,
+          });
+          const out = String(check?.output_text ?? "").trim().toUpperCase();
+          if (out !== "YES") finalAnswer = FALLBACK;
+        } catch {
+          finalAnswer = FALLBACK;
+        }
       }
     }
 
-    await insertMessage(db, convo.id, "assistant", answer);
+    await insertMessage(db, convo.id, "assistant", finalAnswer);
     await incrementMessages(db, ctx.agencyId, todayYmd());
 
-    return Response.json({ ok: true, answer });
+    return Response.json({ ok: true, answer: finalAnswer });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
     if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
