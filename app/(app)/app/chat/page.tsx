@@ -1,3 +1,4 @@
+// app/(app)/app/chat/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -58,6 +59,9 @@ export default function ChatPage() {
   const [meRole, setMeRole] = useState<string | null>(null);
 
   const [documentsCount, setDocumentsCount] = useState(0);
+
+  // Usage
+  const [usageLoaded, setUsageLoaded] = useState(false);
   const [dailyRemaining, setDailyRemaining] = useState(0);
   const [dailyResetsInSeconds, setDailyResetsInSeconds] = useState(0);
 
@@ -145,10 +149,14 @@ export default function ChatPage() {
         // dailyRemaining=0 means "unknown"; we won't block sending on it.
         const dr = Number(j?.daily_remaining ?? 0);
         const reset = Number(j?.daily_resets_in_seconds ?? 0);
+
         setDailyRemaining(dr);
         setDailyResetsInSeconds(reset);
       } catch (e: any) {
         setBootError(e?.message || "Failed to load session");
+      } finally {
+        // ✅ Always flip usageLoaded so UI doesn't get stuck on "Usage loading…"
+        setUsageLoaded(true);
       }
     })();
   }, []);
@@ -321,6 +329,9 @@ export default function ChatPage() {
 
       setMessages((m: Msg[]) => [...m, { role: "assistant", text: String(j?.answer ?? j?.text ?? "") }]);
 
+      // ✅ Mark usage as loaded once we successfully talk to the backend
+      setUsageLoaded(true);
+
       // Support both shapes:
       // - old: { daily_remaining }
       // - new: { usage: { used, daily_limit } }
@@ -361,8 +372,11 @@ export default function ChatPage() {
     setMessages([]);
   }
 
-  const dailyKnown = dailyResetsInSeconds > 0;
-  const dailyBlocked = dailyKnown && dailyRemaining === 0;
+  // ✅ "known" means we've loaded usage at least once (even if reset timer isn't provided yet)
+  const dailyKnown = usageLoaded;
+
+  // ✅ only block when we truly know you're at 0 and we have a reset countdown
+  const dailyBlocked = dailyResetsInSeconds > 0 && dailyRemaining === 0;
 
   const canSend =
     !!selectedBotId &&
@@ -429,14 +443,29 @@ export default function ChatPage() {
           {bootError ? <div className="text-sm text-destructive">{bootError}</div> : null}
 
           <div className="flex flex-wrap items-center gap-2">
-            {dailyKnown ? <Badge>{dailyRemaining} left today</Badge> : <Badge variant="outline">Usage loading…</Badge>}
+            {!dailyKnown ? (
+              <Badge variant="outline">Usage loading…</Badge>
+            ) : dailyRemaining > 0 ? (
+              <Badge>{dailyRemaining} left today</Badge>
+            ) : dailyResetsInSeconds > 0 ? (
+              <Badge>{dailyRemaining} left today</Badge>
+            ) : (
+              <Badge variant="outline">Usage unavailable</Badge>
+            )}
+
             <Badge variant={emailVerified ? "secondary" : "outline"}>
               {emailVerified ? "Verified" : "Unverified"}
             </Badge>
+
             {dailyResetsInSeconds > 0 ? (
               <Badge variant="outline">Resets in {formatCountdown(dailyResetsInSeconds)}</Badge>
             ) : null}
-            {documentsCount > 0 ? <Badge variant="secondary">{documentsCount} docs</Badge> : <Badge variant="outline">No docs yet</Badge>}
+
+            {documentsCount > 0 ? (
+              <Badge variant="secondary">{documentsCount} docs</Badge>
+            ) : (
+              <Badge variant="outline">No docs yet</Badge>
+            )}
           </div>
 
           <Separator />
