@@ -10,18 +10,18 @@ const PROTECTED_PAGE_PREFIXES = ["/app/chat", "/admin", "/launch"];
 const PROTECTED_API_PREFIXES = ["/api/chat", "/api/upload", "/api/me"];
 
 function isProtectedPage(pathname: string) {
-  return PROTECTED_PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
+  return PROTECTED_PAGE_PREFIXES.some(
+    (p) => pathname === p || pathname.startsWith(p + "/")
+  );
 }
 
 function isProtectedApi(pathname: string) {
-  return PROTECTED_API_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
+  return PROTECTED_API_PREFIXES.some(
+    (p) => pathname === p || pathname.startsWith(p + "/")
+  );
 }
 
 function applySecurityHeaders(res: NextResponse) {
-  // NOTE:
-  // - Turnstile script loads from challenges.cloudflare.com
-  // - Turnstile renders a widget using iframes from challenges.cloudflare.com
-  // - Keep Next hydration working (needs 'unsafe-inline'; sometimes 'unsafe-eval' in dev)
   const csp = [
     "default-src 'self'",
     "base-uri 'self'",
@@ -30,17 +30,14 @@ function applySecurityHeaders(res: NextResponse) {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
-
-    // Scripts
+    // Next needs inline scripts to hydrate App Router pages.
+    // Add Turnstile script domain so captcha can load.
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
     "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
     "script-src-attr 'self' 'unsafe-inline'",
-
-    // Turnstile uses iframes
-    "frame-src 'self' https://challenges.cloudflare.com",
-
-    // Network calls (add your own endpoints as needed)
-    "connect-src 'self' https://api.openai.com https://challenges.cloudflare.com wss:",
+    // Turnstile uses an iframe.
+    "frame-src https://challenges.cloudflare.com",
+    "connect-src 'self' https://api.openai.com wss:",
   ].join("; ");
 
   res.headers.set("Content-Security-Policy", csp);
@@ -50,7 +47,7 @@ function applySecurityHeaders(res: NextResponse) {
   return res;
 }
 
-// ✅ Next.js 16 proxy entrypoint
+// Next.js 16 proxy entrypoint
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
@@ -95,7 +92,7 @@ export function proxy(req: NextRequest) {
   return applySecurityHeaders(NextResponse.next());
 }
 
-// ✅ Run proxy on all routes so CSP applies to /signup /login /support too.
+// Run proxy on all routes so CSP applies to /signup too.
 // Exclude Next static assets.
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],

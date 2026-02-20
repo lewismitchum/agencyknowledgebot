@@ -1,61 +1,38 @@
-import { NextResponse } from "next/server";
+// app/api/support/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { sendSupportEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 
-async function verifyTurnstile(token: string, ip?: string | null) {
-  const secret = process.env.TURNSTILE_SECRET_KEY || "";
-  if (!secret) {
-    return { ok: false, error: "Server misconfigured (missing TURNSTILE_SECRET_KEY)." };
-  }
-
-  const body = new URLSearchParams();
-  body.set("secret", secret);
-  body.set("response", token);
-  if (ip) body.set("remoteip", ip);
-
-  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-
-  const j = (await r.json().catch(() => null)) as any;
-  if (!j || !j.success) return { ok: false, error: "Captcha verification failed." };
-  return { ok: true };
-}
-
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const json = (await req.json().catch(() => null)) as any;
-    const name = String(json?.name || "").trim();
-    const email = String(json?.email || "").trim();
-    const topic = String(json?.topic || "").trim();
-    const message = String(json?.message || "").trim();
-    const turnstileToken = String(json?.turnstile_token || "").trim();
+    const body = await req.json().catch(() => null);
 
-    if (!name || !email || !topic || !message) {
-      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
-    }
-    if (!turnstileToken) {
-      return NextResponse.json({ error: "Missing captcha token" }, { status: 400 });
-    }
+    const fromEmail = typeof body?.email === "string" ? body.email : "";
+    const fromName = typeof body?.name === "string" ? body.name : "";
+    const message = typeof body?.message === "string" ? body.message : "";
+    const pageUrl = typeof body?.pageUrl === "string" ? body.pageUrl : "";
 
-    const ip =
-      req.headers.get("cf-connecting-ip") ||
-      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-      null;
-
-    const v = await verifyTurnstile(turnstileToken, ip);
-    if (!v.ok) {
-      return NextResponse.json({ error: v.error }, { status: 400 });
+    if (!message.trim()) {
+      return NextResponse.json(
+        { ok: false, error: "Message is required" },
+        { status: 400 }
+      );
     }
 
-    // Minimal for launch: log to server so you at least receive it in Vercel logs.
-    // Later: wire Resend/SendGrid + store in DB.
-    console.log("[SUPPORT]", { name, email, topic, message });
+    await sendSupportEmail({
+      fromEmail,
+      fromName,
+      message,
+      pageUrl,
+    });
 
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
+  } catch (err: any) {
+    console.error("Support email failed:", err?.message || err);
+    return NextResponse.json(
+      { ok: false, error: "Failed to send support request" },
+      { status: 500 }
+    );
   }
 }

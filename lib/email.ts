@@ -1,58 +1,67 @@
-import nodemailer from "nodemailer";
+// lib/email.ts
+import { Resend } from "resend";
 
-export function getAppUrl() {
-  // Prefer APP_URL, fall back to localhost in dev
-  return (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
+function mustGetEnv(name: string) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
 }
 
-function getSmtpConfig() {
-  const host = process.env.SMTP_HOST;
-  const port = process.env.SMTP_PORT;
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM;
+const resend = new Resend(mustGetEnv("RESEND_API_KEY"));
 
-  if (!host || !port || !user || !pass || !from) return null;
-
-  return {
-    host,
-    port: Number(port),
-    user,
-    pass,
-    from,
-  };
-}
-
-export async function sendEmail(opts: {
-  to: string;
-  subject: string;
-  html: string;
+export async function sendSupportEmail(input: {
+  fromEmail?: string;
+  fromName?: string;
+  message: string;
+  pageUrl?: string;
 }) {
-  const smtp = getSmtpConfig();
+  const RESEND_FROM = mustGetEnv("RESEND_FROM");
+  const SUPPORT_INBOX_EMAIL = mustGetEnv("SUPPORT_INBOX_EMAIL");
 
-  // ✅ Dev-safe: don't crash the app if SMTP isn't configured
-  if (!smtp) {
-    console.warn(
-      "SMTP not configured. Skipping email send.",
-      "to=",
-      opts.to,
-      "subject=",
-      opts.subject
-    );
-    return;
-  }
+  const fromEmail = (input.fromEmail || "").trim();
+  const fromName = (input.fromName || "").trim();
+  const message = (input.message || "").trim();
+  const pageUrl = (input.pageUrl || "").trim();
 
-  const transporter = nodemailer.createTransport({
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.port === 465,
-    auth: { user: smtp.user, pass: smtp.pass },
+  const subject = fromEmail
+    ? `Support request from ${fromEmail}`
+    : "Support request";
+
+  const safeFromLine = fromEmail
+    ? `${fromName ? fromName + " " : ""}<${fromEmail}>`
+    : "Anonymous";
+
+  const html = `
+    <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
+      <h2>New Support Request</h2>
+      <p><strong>From:</strong> ${escapeHtml(safeFromLine)}</p>
+      ${pageUrl ? `<p><strong>Page:</strong> ${escapeHtml(pageUrl)}</p>` : ""}
+      <hr />
+      <pre style="white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${escapeHtml(
+        message
+      )}</pre>
+    </div>
+  `;
+
+  // Use replyTo so you can respond directly from your inbox.
+  const replyTo = fromEmail || undefined;
+
+  const result = await resend.emails.send({
+    from: RESEND_FROM,
+    to: [SUPPORT_INBOX_EMAIL],
+    subject,
+    html,
+    replyTo,
   });
 
-  await transporter.sendMail({
-    from: smtp.from,
-    to: opts.to,
-    subject: opts.subject,
-    html: opts.html,
-  });
+  return result;
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }

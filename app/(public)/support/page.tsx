@@ -1,254 +1,108 @@
+// app/(public)/support/page.tsx
 "use client";
 
-import Link from "next/link";
-import Script from "next/script";
-import { useEffect, useRef, useState } from "react";
-
-declare global {
-  interface Window {
-    turnstile?: {
-      render: (
-        el: HTMLElement,
-        opts: {
-          sitekey: string;
-          theme?: "light" | "dark" | "auto";
-          callback?: (token: string) => void;
-          "error-callback"?: () => void;
-          "expired-callback"?: () => void;
-        }
-      ) => string;
-      reset: (widgetId: string) => void;
-    };
-  }
-}
+import { useMemo, useState } from "react";
 
 export default function SupportPage() {
-  const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
-
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-  const [ok, setOk] = useState("");
-  const [tsToken, setTsToken] = useState<string>("");
+  const [done, setDone] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  const widgetRef = useRef<HTMLDivElement | null>(null);
-  const widgetIdRef = useRef<string | null>(null);
+  const pageUrl = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return window.location.href;
+  }, []);
 
-  useEffect(() => {
-    if (!siteKey) return;
-    if (!widgetRef.current) return;
-
-    const tryRender = () => {
-      if (!window.turnstile) return;
-      if (widgetIdRef.current) return;
-
-      widgetIdRef.current = window.turnstile.render(widgetRef.current!, {
-        sitekey: siteKey,
-        theme: "auto",
-        callback: (token) => setTsToken(token || ""),
-        "error-callback": () => setTsToken(""),
-        "expired-callback": () => setTsToken(""),
-      });
-    };
-
-    tryRender();
-    const t = window.setInterval(tryRender, 200);
-    return () => window.clearInterval(t);
-  }, [siteKey]);
-
-  function resetTurnstile() {
-    const id = widgetIdRef.current;
-    if (id && window.turnstile) {
-      try {
-        window.turnstile.reset(id);
-      } catch {}
-    }
-    setTsToken("");
-  }
-
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setErr("");
-    setOk("");
+    setErr(null);
+    setDone(null);
 
-    const fd = new FormData(e.currentTarget);
-    const name = String(fd.get("name") || "").trim();
-    const email = String(fd.get("email") || "").trim();
-    const topic = String(fd.get("topic") || "").trim();
-    const message = String(fd.get("message") || "").trim();
-
-    if (!name || !email || !topic || !message) {
-      setErr("Missing fields");
-      return;
-    }
-
-    if (!siteKey) {
-      setErr("Turnstile misconfigured (missing site key).");
-      return;
-    }
-
-    if (!tsToken) {
-      setErr("Please complete the captcha.");
+    if (!message.trim()) {
+      setErr("Please enter a message.");
       return;
     }
 
     setLoading(true);
-
     try {
-      const r = await fetch("/api/support", {
+      const res = await fetch("/api/support", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          email,
-          topic,
-          message,
-          turnstile_token: tsToken,
-        }),
+        body: JSON.stringify({ name, email, message, pageUrl }),
       });
 
-      const ct = r.headers.get("content-type") || "";
-      const raw = await r.text().catch(() => "");
-      let j: any = null;
+      const data = await res.json().catch(() => ({}));
 
-      if (ct.includes("application/json")) {
-        try {
-          j = raw ? JSON.parse(raw) : null;
-        } catch {}
-      }
-
-      if (!r.ok) {
-        setErr(j?.error || j?.message || raw || "Request failed");
-        resetTurnstile();
+      if (!res.ok || !data?.ok) {
+        setErr(data?.error || "Failed to send. Try again.");
         return;
       }
 
-      setOk("Message sent. We’ll get back to you ASAP.");
-      (e.currentTarget as HTMLFormElement).reset();
-      resetTurnstile();
-    } catch (e: any) {
-      setErr(e?.message || "Network error");
-      resetTurnstile();
+      setDone("Sent! We’ll get back to you shortly.");
+      setMessage("");
+    } catch {
+      setErr("Failed to send. Try again.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <>
-      {siteKey ? (
-        <Script
-          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
-          async
-          defer
-        />
-      ) : null}
+    <div className="min-h-dvh flex items-center justify-center p-6">
+      <div className="w-full max-w-lg rounded-2xl border bg-white/70 p-6 shadow-sm">
+        <h1 className="text-2xl font-semibold">Support</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Send us a message and we’ll reply as soon as possible.
+        </p>
 
-      <div className="mx-auto max-w-3xl px-4 py-14 md:py-20">
-        <div className="rounded-3xl border bg-card p-8 shadow-sm">
-          <div className="flex items-center justify-between gap-4">
-            <h1 className="text-2xl font-semibold tracking-tight">Support</h1>
-            <Link href="/" className="text-sm underline underline-offset-4">
-              Home
-            </Link>
+        <form onSubmit={onSubmit} className="mt-6 space-y-4">
+          <div>
+            <label className="text-sm font-medium">Name (optional)</label>
+            <input
+              className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+              autoComplete="name"
+            />
           </div>
 
-          <p className="mt-2 text-sm text-muted-foreground">
-            Send us a message and we’ll reply by email. (Human verification required.)
-          </p>
+          <div>
+            <label className="text-sm font-medium">Email (optional)</label>
+            <input
+              className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
+              type="email"
+            />
+          </div>
 
-          {err ? (
-            <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">
-              <div className="font-medium">Error</div>
-              <div className="mt-1 text-muted-foreground">{err}</div>
-            </div>
-          ) : null}
+          <div>
+            <label className="text-sm font-medium">Message</label>
+            <textarea
+              className="mt-1 w-full rounded-xl border px-3 py-2 bg-white min-h-[140px]"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="How can we help?"
+            />
+          </div>
 
-          {ok ? (
-            <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">
-              <div className="font-medium">Success</div>
-              <div className="mt-1 text-muted-foreground">{ok}</div>
-            </div>
-          ) : null}
+          {err ? <div className="text-sm text-red-600">{err}</div> : null}
+          {done ? <div className="text-sm text-green-700">{done}</div> : null}
 
-          <form className="mt-6 space-y-4" onSubmit={onSubmit}>
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="name">
-                Name
-              </label>
-              <input
-                id="name"
-                name="name"
-                type="text"
-                required
-                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Lewis"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="email">
-                Email
-              </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                required
-                autoComplete="email"
-                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-                placeholder="you@agency.com"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="topic">
-                Topic
-              </label>
-              <input
-                id="topic"
-                name="topic"
-                type="text"
-                required
-                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Login issue"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="message">
-                Message
-              </label>
-              <textarea
-                id="message"
-                name="message"
-                required
-                rows={6}
-                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Tell us what happened, what you expected, and any error message."
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Human verification</label>
-              <div className="rounded-2xl border bg-background p-3">
-                <div ref={widgetRef} />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
-            >
-              {loading ? "Sending..." : "Send message"}
-            </button>
-
-            <p className="text-xs text-muted-foreground">
-              Please don’t include passwords or private client data in your message.
-            </p>
-          </form>
-        </div>
+          <button
+            disabled={loading}
+            className="w-full rounded-xl bg-black text-white py-2 font-medium disabled:opacity-60"
+          >
+            {loading ? "Sending..." : "Send message"}
+          </button>
+        </form>
       </div>
-    </>
+    </div>
   );
 }
