@@ -7,15 +7,10 @@ import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { makeToken, hashToken, isoFromNowMinutes, nowIso } from "@/lib/tokens";
 import { getAppUrl, sendEmail } from "@/lib/email";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
-
-function pickMaxUsersFromLimits(limits: any): number | null {
-  const raw = limits?.max_users ?? limits?.users ?? limits?.seats ?? null;
-  if (raw == null) return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
+export const dynamic = "force-dynamic";
 
 async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | null) {
   const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
@@ -54,14 +49,15 @@ async function countActivePendingInvites(db: Db, agencyId: string): Promise<numb
 
 export async function POST(req: NextRequest) {
   try {
+    const db: Db = await getDb();
+    await ensureSchema(db);
     await ensureInviteTables();
+
     const session = await requireOwner(req);
 
     const body = await req.json().catch(() => ({}));
     const email = String(body?.email || "").trim().toLowerCase();
     if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
-
-    const db: Db = await getDb();
 
     const existing = (await db.get(
       "SELECT id FROM users WHERE agency_id = ? AND lower(email) = ? LIMIT 1",
@@ -75,7 +71,7 @@ export async function POST(req: NextRequest) {
 
     const plan = await getAgencyPlan(db, session.agencyId, (session as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
-const maxUsers = limits.max_users; // null => unlimited
+    const maxUsers = (limits as any).max_users ?? null; // null => unlimited
 
     if (maxUsers != null) {
       const used = await countBillableSeats(db, session.agencyId);
@@ -161,14 +157,15 @@ const maxUsers = limits.max_users; // null => unlimited
 
 export async function DELETE(req: NextRequest) {
   try {
+    const db: Db = await getDb();
+    await ensureSchema(db);
     await ensureInviteTables();
+
     const session = await requireOwner(req);
 
     const body = await req.json().catch(() => ({}));
     const invite_id = String(body?.invite_id || "").trim();
     if (!invite_id) return NextResponse.json({ error: "Missing invite_id" }, { status: 400 });
-
-    const db: Db = await getDb();
 
     // Only revoke invites for this agency, and only if not already accepted.
     const existing = (await db.get(

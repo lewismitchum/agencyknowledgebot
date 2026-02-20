@@ -1,14 +1,12 @@
+// app/api/auth/resend-verification/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import {
-  makeToken,
-  hashToken,
-  isoFromNowMinutes,
-  nowIso,
-  minutesSince,
-} from "@/lib/tokens";
+import { makeToken, hashToken, isoFromNowMinutes, nowIso, minutesSince } from "@/lib/tokens";
 import { getAppUrl, sendEmail } from "@/lib/email";
 import { ensureSchema } from "@/lib/schema";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   const { email } = await req.json().catch(() => ({}));
@@ -19,9 +17,11 @@ export async function POST(req: NextRequest) {
   if (!email?.trim()) return ok;
 
   const db = await getDb();
+  await ensureSchema(db);
+
   const normalizedEmail = email.trim().toLowerCase();
 
-  const agency = await db.get(
+  const agency: any = await db.get(
     `SELECT id, email, email_verified, email_verify_last_sent_at
      FROM agencies
      WHERE email = ?`,
@@ -55,7 +55,6 @@ export async function POST(req: NextRequest) {
 
   const verifyUrl = `${getAppUrl()}/verify-email?token=${token}`;
 
-  // Dev helper: click link from terminal
   if (process.env.NODE_ENV !== "production") {
     console.log("DEV verify link:", verifyUrl);
   }
@@ -79,11 +78,9 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     console.error("Resend verification failed:", e);
-
-    // In dev, show the failure
     if (process.env.NODE_ENV !== "production") {
       return NextResponse.json(
-        { error: "Email sending failed. Check SMTP env vars and server logs." },
+        { error: "Email sending failed. Check RESEND env vars and server logs." },
         { status: 500 }
       );
     }

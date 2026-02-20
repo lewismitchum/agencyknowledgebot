@@ -42,19 +42,15 @@ async function ensureUserRoleColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
 }
 
-function smtpConfigured() {
-  const host = process.env.SMTP_HOST;
-  const port = process.env.SMTP_PORT;
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM;
-  return Boolean(host && port && user && pass && from);
+function resendConfigured() {
+  const key = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM;
+  return Boolean(key && from);
 }
 
 async function verifyTurnstile(token: string, ip: string | null) {
   const secret = process.env.TURNSTILE_SECRET_KEY;
   if (!secret) return { ok: false as const, error: "TURNSTILE_SECRET_MISSING" };
-
   if (!token) return { ok: false as const, error: "TURNSTILE_REQUIRED" };
 
   const form = new URLSearchParams();
@@ -70,7 +66,6 @@ async function verifyTurnstile(token: string, ip: string | null) {
 
   const j = (await r.json().catch(() => null)) as any;
   if (j && j.success) return { ok: true as const };
-
   return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
 }
 
@@ -79,7 +74,7 @@ export async function GET() {
     ok: true,
     route: "/api/auth/signup",
     methods: ["GET", "POST"],
-    has_smtp: smtpConfigured(),
+    has_resend: resendConfigured(),
   });
 }
 
@@ -119,7 +114,7 @@ export async function POST(req: NextRequest) {
     const ownerUserId = randomUUID();
     const password_hash = await bcrypt.hash(password, 10);
 
-    const willSendEmail = smtpConfigured();
+    const willSendEmail = resendConfigured();
     const emailVerified = willSendEmail ? 0 : 1;
 
     let tokenHash: string | null = null;

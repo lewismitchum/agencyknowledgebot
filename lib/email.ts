@@ -1,53 +1,79 @@
 // lib/email.ts
 import { Resend } from "resend";
 
-function mustGetEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
-
-const resend = new Resend(mustGetEnv("RESEND_API_KEY"));
-
-/* =========================================================
-   Core Helpers (used by auth + invites)
-========================================================= */
-
-export function getAppUrl(): string {
-  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
-  if (process.env.APP_URL) return process.env.APP_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return "http://localhost:3000";
-}
-
-export async function sendEmail(input: {
+type SendEmailInput = {
   to: string;
   subject: string;
   html: string;
   replyTo?: string;
-}) {
-  const RESEND_FROM = mustGetEnv("RESEND_FROM");
+};
 
-  return resend.emails.send({
-    from: RESEND_FROM,
-    to: [input.to],
-    subject: input.subject,
-    html: input.html,
-    replyTo: input.replyTo,
-  });
+function getEnv(name: string) {
+  const v = process.env[name];
+  return v && String(v).trim() ? String(v).trim() : null;
 }
 
-/* =========================================================
-   Support Email (public form)
-========================================================= */
+function mustGetEnv(name: string) {
+  const v = getEnv(name);
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
 
+// ✅ Used by signup/resend/invites
+export function getAppUrl() {
+  const explicit =
+    getEnv("APP_URL") ||
+    getEnv("NEXT_PUBLIC_APP_URL") ||
+    getEnv("NEXT_PUBLIC_SITE_URL") ||
+    null;
+
+  if (explicit) return explicit.replace(/\/+$/, "");
+
+  // Vercel provides this at runtime in many contexts
+  const vercelUrl = getEnv("VERCEL_URL");
+  if (vercelUrl) return `https://${vercelUrl.replace(/^https?:\/\//, "")}`.replace(/\/+$/, "");
+
+  return "http://localhost:3000";
+}
+
+function getResendClient() {
+  const key = mustGetEnv("RESEND_API_KEY");
+  return new Resend(key);
+}
+
+// ✅ Generic email sender expected by existing routes
+export async function sendEmail(input: SendEmailInput) {
+  const RESEND_FROM = mustGetEnv("RESEND_FROM");
+
+  const to = String(input.to || "").trim();
+  const subject = String(input.subject || "").trim();
+  const html = String(input.html || "").trim();
+  const replyTo = input.replyTo ? String(input.replyTo).trim() : undefined;
+
+  if (!to) throw new Error("Missing to");
+  if (!subject) throw new Error("Missing subject");
+  if (!html) throw new Error("Missing html");
+
+  const resend = getResendClient();
+
+  const result = await resend.emails.send({
+    from: RESEND_FROM,
+    to: [to],
+    subject,
+    html,
+    replyTo,
+  });
+
+  return result;
+}
+
+// ✅ Your support sender (still used by /api/support)
 export async function sendSupportEmail(input: {
   fromEmail?: string;
   fromName?: string;
   message: string;
   pageUrl?: string;
 }) {
-  const RESEND_FROM = mustGetEnv("RESEND_FROM");
   const SUPPORT_INBOX_EMAIL = mustGetEnv("SUPPORT_INBOX_EMAIL");
 
   const fromEmail = (input.fromEmail || "").trim();
@@ -55,9 +81,7 @@ export async function sendSupportEmail(input: {
   const message = (input.message || "").trim();
   const pageUrl = (input.pageUrl || "").trim();
 
-  const subject = fromEmail
-    ? `Support request from ${fromEmail}`
-    : "Support request";
+  const subject = fromEmail ? `Support request from ${fromEmail}` : "Support request";
 
   const safeFromLine = fromEmail
     ? `${fromName ? fromName + " " : ""}<${fromEmail}>`
@@ -75,11 +99,11 @@ export async function sendSupportEmail(input: {
     </div>
   `;
 
+  // Use replyTo so you can respond directly from your inbox.
   const replyTo = fromEmail || undefined;
 
-  return resend.emails.send({
-    from: RESEND_FROM,
-    to: [SUPPORT_INBOX_EMAIL],
+  return sendEmail({
+    to: SUPPORT_INBOX_EMAIL,
     subject,
     html,
     replyTo,
