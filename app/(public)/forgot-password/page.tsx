@@ -18,7 +18,7 @@ export default function ForgotPasswordPage() {
     const email = String(fd.get("email") || "");
 
     try {
-      const r = await fetch("/api/auth/forgot-password", {
+      const r = await fetch("/api/auth/request-password-reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -70,7 +70,9 @@ export default function ForgotPasswordPage() {
 
           <form className="mt-6 space-y-4" onSubmit={onSubmit}>
             <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="email">Email</label>
+              <label className="text-sm font-medium" htmlFor="email">
+                Email
+              </label>
               <input
                 id="email"
                 name="email"
