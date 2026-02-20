@@ -9,17 +9,18 @@ import { ensureSchema } from "@/lib/schema";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function readBody(req: NextRequest): Promise<{ email?: string; password?: string }> {
+async function readBody(req: NextRequest): Promise<{ email?: string; password?: string; turnstile_token?: string }> {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     const j = await req.json().catch(() => ({}));
-    return { email: j?.email, password: j?.password };
+    return { email: j?.email, password: j?.password, turnstile_token: j?.turnstile_token };
   }
   const text = await req.text().catch(() => "");
   const params = new URLSearchParams(text);
   return {
     email: params.get("email") || undefined,
     password: params.get("password") || undefined,
+    turnstile_token: params.get("turnstile_token") || undefined,
   };
 }
 
@@ -33,6 +34,28 @@ async function ensureUserColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
+}
+
+async function verifyTurnstile(token: string, ip: string | null) {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) return { ok: false as const, error: "TURNSTILE_SECRET_MISSING" };
+  if (!token) return { ok: false as const, error: "TURNSTILE_REQUIRED" };
+
+  const form = new URLSearchParams();
+  form.set("secret", secret);
+  form.set("response", token);
+  if (ip) form.set("remoteip", ip);
+
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  const j = (await r.json().catch(() => null)) as any;
+  if (j && j.success) return { ok: true as const };
+
+  return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
 }
 
 /**
@@ -109,10 +132,20 @@ function normStatus(s: any): "active" | "pending" | "blocked" {
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password } = await readBody(req);
+    const { email, password, turnstile_token } = await readBody(req);
 
     if (!email?.trim() || !password?.trim()) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    }
+
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("x-real-ip") ||
+      null;
+
+    const ts = await verifyTurnstile(String(turnstile_token || ""), ip);
+    if (!ts.ok) {
+      return NextResponse.json({ error: ts.error }, { status: 400 });
     }
 
     const db: Db = await getDb();
@@ -127,12 +160,10 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; password_hash: string | null; email_verified: number | null }
       | undefined;
 
-    // Don’t leak existence
     if (!agency?.id) {
       return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
     }
 
-    // Hard guard: bcrypt.compare throws on null/empty hash
     const hash = String(agency.password_hash ?? "").trim();
     if (!hash) {
       return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
@@ -148,9 +179,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please verify your email before logging in." }, { status: 403 });
     }
 
-    // Ensure first owner exists (only if users table empty for agency)
     await ensureFirstOwner(db, { id: agency.id, email: agency.email });
-
     await ensureUserColumns(db);
 
     let user = (await db.get(
@@ -164,7 +193,6 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; email_verified: number; role: string | null; status: string | null }
       | undefined;
 
-    // Safety: if missing, create as pending member
     if (!user?.id) {
       const id = crypto.randomUUID();
       const t = nowIso();
@@ -180,13 +208,11 @@ export async function POST(req: NextRequest) {
       user = { id, email: normalizedEmail, email_verified: 1, role: "member", status: "pending" };
     }
 
-    // Normalize (kept for DB correctness / future use)
     void normRole(user.role);
     void normStatus(user.status);
 
     const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
 
-    // Identity-only cookie
     setSessionCookie(res, {
       agencyId: agency.id,
       agencyEmail: agency.email,

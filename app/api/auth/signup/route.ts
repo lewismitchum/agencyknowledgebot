@@ -15,7 +15,13 @@ async function readBody(req: NextRequest) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     const j = await req.json().catch(() => ({}));
-    return { name: j?.name, email: j?.email, password: j?.password, isJson: true as const };
+    return {
+      name: j?.name,
+      email: j?.email,
+      password: j?.password,
+      turnstile_token: j?.turnstile_token,
+      isJson: true as const,
+    };
   }
   const text = await req.text().catch(() => "");
   const params = new URLSearchParams(text);
@@ -23,6 +29,7 @@ async function readBody(req: NextRequest) {
     name: params.get("name"),
     email: params.get("email"),
     password: params.get("password"),
+    turnstile_token: params.get("turnstile_token"),
     isJson: false as const,
   };
 }
@@ -44,6 +51,29 @@ function smtpConfigured() {
   return Boolean(host && port && user && pass && from);
 }
 
+async function verifyTurnstile(token: string, ip: string | null) {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) return { ok: false as const, error: "TURNSTILE_SECRET_MISSING" };
+
+  if (!token) return { ok: false as const, error: "TURNSTILE_REQUIRED" };
+
+  const form = new URLSearchParams();
+  form.set("secret", secret);
+  form.set("response", token);
+  if (ip) form.set("remoteip", ip);
+
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  const j = (await r.json().catch(() => null)) as any;
+  if (j && j.success) return { ok: true as const };
+
+  return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -58,10 +88,20 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const { name, email, password, isJson } = await readBody(req);
+    const { name, email, password, turnstile_token, isJson } = await readBody(req);
 
     if (!name?.trim() || !email?.trim() || !password?.trim()) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    }
+
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("x-real-ip") ||
+      null;
+
+    const ts = await verifyTurnstile(String(turnstile_token || ""), ip);
+    if (!ts.ok) {
+      return NextResponse.json({ error: ts.error }, { status: 400 });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -149,14 +189,12 @@ export async function POST(req: NextRequest) {
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
 
-    // ✅ If client submitted JSON (fetch), return JSON (no redirect weirdness)
     if (isJson) {
       const res = NextResponse.json({ ok: true, redirectTo });
       setSessionCookie(res, { agencyId, agencyEmail: normalizedEmail });
       return res;
     }
 
-    // ✅ Otherwise normal browser form submit: redirect
     const res = NextResponse.redirect(new URL(redirectTo, req.url));
     setSessionCookie(res, { agencyId, agencyEmail: normalizedEmail });
     return res;
