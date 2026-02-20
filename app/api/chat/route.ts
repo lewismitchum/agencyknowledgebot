@@ -76,6 +76,26 @@ function todayYmd() {
   return `${y}-${m}-${day}`;
 }
 
+function looksInternalBusinessQuestion(message: string) {
+  const m = message.toLowerCase();
+  const keywords = [
+    "our",
+    "client",
+    "project",
+    "proposal",
+    "contract",
+    "invoice",
+    "pricing",
+    "internal",
+    "team",
+    "policy",
+    "roadmap",
+    "strategy",
+    "agency",
+  ];
+  return keywords.some((k) => m.includes(k));
+}
+
 async function getDailyUsage(db: Db, agencyId: string, date: string) {
   const row = (await db.get(
     `SELECT messages_count, uploads_count
@@ -248,7 +268,6 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-
     const db: Db = await getDb();
     await ensureSchema(db);
 
@@ -302,14 +321,21 @@ export async function POST(req: NextRequest) {
 
     const recent = await loadRecentMessages(db, convo.id, 20);
 
+    const instructions = `
+You are Louis.Ai.
+
+Rules:
+- Uploaded documents are the primary source for internal or business-specific questions.
+- If relevant documents exist, rely on them.
+- If no relevant documents are found:
+   • If the question clearly asks about internal agency knowledge, reply exactly:
+     ${FALLBACK}
+   • Otherwise, answer normally using general knowledge and reasoning.
+`.trim();
+
     const resp = await openai.responses.create({
       model: "gpt-4.1-mini",
-      instructions: `
-You are Louis.Ai.
-For internal/business answers you MUST rely on uploaded documents.
-If docs do not contain the answer, reply exactly:
-${FALLBACK}
-`.trim(),
+      instructions,
       input:
         (summary ? `Conversation memory:\n${summary}\n\n` : "") +
         recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n"),
@@ -318,7 +344,15 @@ ${FALLBACK}
         : [],
     });
 
-    const answer = String(resp?.output_text ?? "").trim() || FALLBACK;
+    let answer = String(resp?.output_text ?? "").trim();
+
+    if (!answer) {
+      if (looksInternalBusinessQuestion(message)) {
+        answer = FALLBACK;
+      } else {
+        answer = "I'm not sure, but here's my best understanding based on general knowledge.";
+      }
+    }
 
     await insertMessage(db, convo.id, "assistant", answer);
     await incrementMessages(db, ctx.agencyId, todayYmd());
