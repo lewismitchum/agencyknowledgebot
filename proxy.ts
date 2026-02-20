@@ -18,10 +18,10 @@ function isProtectedApi(pathname: string) {
 }
 
 function applySecurityHeaders(res: NextResponse) {
-  // Cloudflare Turnstile:
-  // - Script loads from https://challenges.cloudflare.com
-  // - Widget runs in an iframe from https://challenges.cloudflare.com
-  // - It may use XHR/fetch to challenges.cloudflare.com as well
+  // NOTE:
+  // - Turnstile script loads from challenges.cloudflare.com
+  // - Turnstile renders a widget using iframes from challenges.cloudflare.com
+  // - Keep Next hydration working (needs 'unsafe-inline'; sometimes 'unsafe-eval' in dev)
   const csp = [
     "default-src 'self'",
     "base-uri 'self'",
@@ -31,16 +31,16 @@ function applySecurityHeaders(res: NextResponse) {
     "font-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
 
-    // Next hydration / runtime
+    // Scripts
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
     "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
     "script-src-attr 'self' 'unsafe-inline'",
 
-    // Turnstile iframe
+    // Turnstile uses iframes
     "frame-src 'self' https://challenges.cloudflare.com",
 
-    // Turnstile + OpenAI
-    "connect-src 'self' https://api.openai.com wss: https://challenges.cloudflare.com",
+    // Network calls (add your own endpoints as needed)
+    "connect-src 'self' https://api.openai.com https://challenges.cloudflare.com wss:",
   ].join("; ");
 
   res.headers.set("Content-Security-Policy", csp);
@@ -59,11 +59,13 @@ export function proxy(req: NextRequest) {
     pathname === "/" ||
     pathname.startsWith("/login") ||
     pathname.startsWith("/signup") ||
+    pathname.startsWith("/support") ||
     pathname.startsWith("/verify-email") ||
     pathname.startsWith("/forgot-password") ||
     pathname.startsWith("/reset-password") ||
     pathname.startsWith("/check-email") ||
-    pathname.startsWith("/api/auth")
+    pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/api/support")
   ) {
     return applySecurityHeaders(NextResponse.next());
   }
@@ -93,7 +95,7 @@ export function proxy(req: NextRequest) {
   return applySecurityHeaders(NextResponse.next());
 }
 
-// ✅ Run proxy on all routes so CSP applies to /signup too.
+// ✅ Run proxy on all routes so CSP applies to /signup /login /support too.
 // Exclude Next static assets.
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],

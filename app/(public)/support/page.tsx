@@ -1,7 +1,7 @@
 "use client";
 
-import Script from "next/script";
 import Link from "next/link";
+import Script from "next/script";
 import { useEffect, useRef, useState } from "react";
 
 declare global {
@@ -36,16 +36,23 @@ export default function SupportPage() {
   useEffect(() => {
     if (!siteKey) return;
     if (!widgetRef.current) return;
-    if (!window.turnstile) return;
-    if (widgetIdRef.current) return;
 
-    widgetIdRef.current = window.turnstile.render(widgetRef.current, {
-      sitekey: siteKey,
-      theme: "auto",
-      callback: (token) => setTsToken(token || ""),
-      "error-callback": () => setTsToken(""),
-      "expired-callback": () => setTsToken(""),
-    });
+    const tryRender = () => {
+      if (!window.turnstile) return;
+      if (widgetIdRef.current) return;
+
+      widgetIdRef.current = window.turnstile.render(widgetRef.current!, {
+        sitekey: siteKey,
+        theme: "auto",
+        callback: (token) => setTsToken(token || ""),
+        "error-callback": () => setTsToken(""),
+        "expired-callback": () => setTsToken(""),
+      });
+    };
+
+    tryRender();
+    const t = window.setInterval(tryRender, 200);
+    return () => window.clearInterval(t);
   }, [siteKey]);
 
   function resetTurnstile() {
@@ -64,11 +71,13 @@ export default function SupportPage() {
     setOk("");
 
     const fd = new FormData(e.currentTarget);
+    const name = String(fd.get("name") || "").trim();
     const email = String(fd.get("email") || "").trim();
+    const topic = String(fd.get("topic") || "").trim();
     const message = String(fd.get("message") || "").trim();
 
-    if (!email || !message) {
-      setErr("Missing fields.");
+    if (!name || !email || !topic || !message) {
+      setErr("Missing fields");
       return;
     }
 
@@ -88,8 +97,13 @@ export default function SupportPage() {
       const r = await fetch("/api/support", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ email, message, turnstile_token: tsToken }),
+        body: JSON.stringify({
+          name,
+          email,
+          topic,
+          message,
+          turnstile_token: tsToken,
+        }),
       });
 
       const ct = r.headers.get("content-type") || "";
@@ -103,12 +117,12 @@ export default function SupportPage() {
       }
 
       if (!r.ok) {
-        setErr(j?.error || j?.message || raw || "Failed to send message.");
+        setErr(j?.error || j?.message || raw || "Request failed");
         resetTurnstile();
         return;
       }
 
-      setOk("Message sent. We’ll reply by email.");
+      setOk("Message sent. We’ll get back to you ASAP.");
       (e.currentTarget as HTMLFormElement).reset();
       resetTurnstile();
     } catch (e: any) {
@@ -122,42 +136,58 @@ export default function SupportPage() {
   return (
     <>
       {siteKey ? (
-        <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer />
+        <Script
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          async
+          defer
+        />
       ) : null}
 
       <div className="mx-auto max-w-3xl px-4 py-14 md:py-20">
         <div className="rounded-3xl border bg-card p-8 shadow-sm">
           <div className="flex items-center justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Support</h1>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Send us a message and we’ll get back to you by email.
-              </p>
-            </div>
-
+            <h1 className="text-2xl font-semibold tracking-tight">Support</h1>
             <Link href="/" className="text-sm underline underline-offset-4">
               Home
             </Link>
           </div>
 
+          <p className="mt-2 text-sm text-muted-foreground">
+            Send us a message and we’ll reply by email. (Human verification required.)
+          </p>
+
           {err ? (
             <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">
-              <div className="font-medium">Support error</div>
+              <div className="font-medium">Error</div>
               <div className="mt-1 text-muted-foreground">{err}</div>
             </div>
           ) : null}
 
           {ok ? (
             <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">
-              <div className="font-medium">Sent</div>
+              <div className="font-medium">Success</div>
               <div className="mt-1 text-muted-foreground">{ok}</div>
             </div>
           ) : null}
 
           <form className="mt-6 space-y-4" onSubmit={onSubmit}>
             <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="name">
+                Name
+              </label>
+              <input
+                id="name"
+                name="name"
+                type="text"
+                required
+                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Lewis"
+              />
+            </div>
+
+            <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="email">
-                Your email
+                Email
               </label>
               <input
                 id="email"
@@ -171,6 +201,20 @@ export default function SupportPage() {
             </div>
 
             <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="topic">
+                Topic
+              </label>
+              <input
+                id="topic"
+                name="topic"
+                type="text"
+                required
+                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Login issue"
+              />
+            </div>
+
+            <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="message">
                 Message
               </label>
@@ -179,8 +223,8 @@ export default function SupportPage() {
                 name="message"
                 required
                 rows={6}
-                className="w-full resize-none rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Tell us what happened, what you expected, and any screenshots/steps if possible."
+                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Tell us what happened, what you expected, and any error message."
               />
             </div>
 
@@ -200,7 +244,7 @@ export default function SupportPage() {
             </button>
 
             <p className="text-xs text-muted-foreground">
-              Please don’t include sensitive secrets (API keys, passwords). If needed, we’ll request details securely.
+              Please don’t include passwords or private client data in your message.
             </p>
           </form>
         </div>
