@@ -103,7 +103,6 @@ export default function ChatPage() {
           return;
         }
 
-        // ✅ handle pending/blocked (authz returns 403)
         if (r.status === 403) {
           const j = await safeJson(r);
           const message = String((j as any)?.message ?? "").toLowerCase();
@@ -141,8 +140,13 @@ export default function ChatPage() {
         }
 
         setDocumentsCount(Number(j?.documents_count ?? 0));
-        setDailyRemaining(Number(j?.daily_remaining ?? 0));
-        setDailyResetsInSeconds(Number(j?.daily_resets_in_seconds ?? 0));
+
+        // If /api/me hasn't been updated yet, keep safe defaults:
+        // dailyRemaining=0 means "unknown"; we won't block sending on it.
+        const dr = Number(j?.daily_remaining ?? 0);
+        const reset = Number(j?.daily_resets_in_seconds ?? 0);
+        setDailyRemaining(dr);
+        setDailyResetsInSeconds(reset);
       } catch (e: any) {
         setBootError(e?.message || "Failed to load session");
       }
@@ -241,10 +245,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (dailyResetsInSeconds <= 0) return;
-    const t = setInterval(
-      () => setDailyResetsInSeconds((s: number) => Math.max(0, s - 1)),
-      1000
-    );
+    const t = setInterval(() => setDailyResetsInSeconds((s: number) => Math.max(0, s - 1)), 1000);
     return () => clearInterval(t);
   }, [dailyResetsInSeconds]);
 
@@ -262,8 +263,11 @@ export default function ChatPage() {
 
   async function send() {
     if (!selectedBotId) return;
-    if (!input.trim() || loading || documentsCount === 0 || dailyRemaining === 0) return;
+    if (!input.trim() || loading) return;
     if (accessBlocked) return;
+
+    // If dailyRemaining is known and zero, block. If unknown (0 due to /api/me bug), allow sending.
+    if (dailyRemaining === 0 && dailyResetsInSeconds > 0) return;
 
     const userMsg = input.trim();
     setInput("");
@@ -315,19 +319,22 @@ export default function ChatPage() {
         return;
       }
 
-      setMessages((m: Msg[]) => [
-        ...m,
-        { role: "assistant", text: String(j?.answer ?? j?.text ?? "") },
-      ]);
+      setMessages((m: Msg[]) => [...m, { role: "assistant", text: String(j?.answer ?? j?.text ?? "") }]);
 
+      // Support both shapes:
+      // - old: { daily_remaining }
+      // - new: { usage: { used, daily_limit } }
       if (typeof j?.daily_remaining === "number") {
         setDailyRemaining(j.daily_remaining);
+      } else if (j?.usage && typeof j.usage === "object") {
+        const used = Number(j.usage.used ?? 0);
+        const limit = j.usage.daily_limit == null ? null : Number(j.usage.daily_limit);
+        if (limit != null && limit >= 0) {
+          setDailyRemaining(Math.max(0, limit - used));
+        }
       }
     } catch (e: any) {
-      setMessages((m: Msg[]) => [
-        ...m,
-        { role: "assistant", text: `Network error: ${String(e?.message ?? e)}` },
-      ]);
+      setMessages((m: Msg[]) => [...m, { role: "assistant", text: `Network error: ${String(e?.message ?? e)}` }]);
     } finally {
       setLoading(false);
     }
@@ -354,15 +361,16 @@ export default function ChatPage() {
     setMessages([]);
   }
 
+  const dailyKnown = dailyResetsInSeconds > 0;
+  const dailyBlocked = dailyKnown && dailyRemaining === 0;
+
   const canSend =
     !!selectedBotId &&
     !loading &&
     !accessBlocked &&
-    documentsCount > 0 &&
-    dailyRemaining > 0 &&
+    !dailyBlocked &&
     input.trim().length > 0;
 
-  // ✅ Pending / blocked UI (clean UX)
   if (accessBlocked) {
     const title = accessBlocked === "blocked" ? "Access blocked" : "Pending approval";
     const desc =
@@ -416,18 +424,19 @@ export default function ChatPage() {
       <Card className="overflow-hidden rounded-3xl">
         <CardHeader className="space-y-3">
           <CardTitle className="text-xl">Louis.Ai</CardTitle>
-          <CardDescription>Docs-only agency knowledge assistant</CardDescription>
+          <CardDescription>Docs-prioritized agency assistant (general questions allowed)</CardDescription>
 
           {bootError ? <div className="text-sm text-destructive">{bootError}</div> : null}
 
           <div className="flex flex-wrap items-center gap-2">
-            <Badge>{dailyRemaining} left today</Badge>
+            {dailyKnown ? <Badge>{dailyRemaining} left today</Badge> : <Badge variant="outline">Usage loading…</Badge>}
             <Badge variant={emailVerified ? "secondary" : "outline"}>
               {emailVerified ? "Verified" : "Unverified"}
             </Badge>
             {dailyResetsInSeconds > 0 ? (
               <Badge variant="outline">Resets in {formatCountdown(dailyResetsInSeconds)}</Badge>
             ) : null}
+            {documentsCount > 0 ? <Badge variant="secondary">{documentsCount} docs</Badge> : <Badge variant="outline">No docs yet</Badge>}
           </div>
 
           <Separator />
@@ -469,7 +478,9 @@ export default function ChatPage() {
           <div className="h-[460px] overflow-y-auto rounded-[28px] border border-white/10 bg-background/50 p-4 shadow-sm backdrop-blur-xl">
             {messages.length === 0 ? (
               <div className="text-sm text-muted-foreground">
-                {selectedBotId ? "Ask a question from your uploaded docs." : "Select a bot to start chatting."}
+                {selectedBotId
+                  ? "Ask anything. Louis will use your docs when relevant."
+                  : "Select a bot to start chatting."}
               </div>
             ) : (
               <div className="grid gap-3">
@@ -500,19 +511,18 @@ export default function ChatPage() {
             placeholder={
               !selectedBotId
                 ? "Select a bot first…"
-                : documentsCount === 0
-                ? "Upload documents to enable answers…"
-                : dailyRemaining === 0
+                : dailyBlocked
                 ? "Daily limit reached…"
-                : "Ask a question…"
+                : "Ask a question… (Ctrl/⌘ + Enter to send)"
             }
-            disabled={!selectedBotId || documentsCount === 0 || dailyRemaining === 0}
+            disabled={!selectedBotId || dailyBlocked}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send();
             }}
           />
+
           <Button onClick={send} disabled={!canSend}>
-            {loading ? "Sending…" : "Send"}
+            {loading ? "Sending…" : dailyBlocked ? "Daily limit reached" : "Send"}
           </Button>
         </CardContent>
       </Card>
