@@ -9,6 +9,7 @@ export const runtime = "nodejs";
 
 type Body = {
   email?: string;
+  turnstile_token?: string;
 };
 
 function normalizeEmail(email: string) {
@@ -19,7 +20,6 @@ function signResetToken(payload: { kind: "agency" | "user"; email: string }) {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET_MISSING");
 
-  // 60 minutes
   return jwt.sign(
     { typ: "password_reset", kind: payload.kind, email: payload.email },
     secret,
@@ -28,7 +28,6 @@ function signResetToken(payload: { kind: "agency" | "user"; email: string }) {
 }
 
 async function findAccountByEmail(db: Db, email: string) {
-  // Prefer agency account if it exists (since agencies has password_hash in your schema)
   const agency = (await db.get(
     `SELECT id, email FROM agencies WHERE LOWER(email) = ? LIMIT 1`,
     email
@@ -61,6 +60,28 @@ function buildEmailHtml(resetUrl: string) {
   `.trim();
 }
 
+async function verifyTurnstile(token: string, ip: string | null) {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) return { ok: false as const, error: "TURNSTILE_SECRET_MISSING" };
+  if (!token) return { ok: false as const, error: "TURNSTILE_REQUIRED" };
+
+  const form = new URLSearchParams();
+  form.set("secret", secret);
+  form.set("response", token);
+  if (ip) form.set("remoteip", ip);
+
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  const j = (await r.json().catch(() => null)) as any;
+  if (j && j.success) return { ok: true as const };
+
+  return { ok: false as const, error: "TURNSTILE_FAILED" };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const db: Db = await getDb();
@@ -68,10 +89,19 @@ export async function POST(req: NextRequest) {
 
     const body = (await req.json().catch(() => null)) as Body | null;
     const email = normalizeEmail(body?.email || "");
+    const turnstileToken = String(body?.turnstile_token || "");
 
-    if (!email) return Response.json({ error: "Missing email" }, { status: 400 });
+    if (!email) return Response.json({ error: "MISSING_EMAIL" }, { status: 400 });
 
-    // Avoid account enumeration: always return ok:true
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("x-real-ip") ||
+      null;
+
+    const ts = await verifyTurnstile(turnstileToken, ip);
+    if (!ts.ok) return Response.json({ error: ts.error }, { status: 400 });
+
+    // Avoid enumeration: always ok:true
     const acct = await findAccountByEmail(db, email);
     if (!acct) return Response.json({ ok: true });
 
@@ -90,14 +120,17 @@ export async function POST(req: NextRequest) {
     return Response.json({ ok: true });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
+    console.error("REQUEST_PASSWORD_RESET_ERROR", msg, err);
 
-    // If Resend env missing, surface clean error for you in prod logs
-    if (msg === "RESEND_API_KEY_MISSING" || msg === "RESEND_FROM_MISSING" || msg === "JWT_SECRET_MISSING") {
+    if (
+      msg.includes("RESEND_API_KEY") ||
+      msg.includes("RESEND_FROM") ||
+      msg.includes("JWT_SECRET")
+    ) {
       return Response.json({ error: msg }, { status: 500 });
     }
 
-    console.error("REQUEST_PASSWORD_RESET_ERROR", err);
-    return Response.json({ error: "Server error", message: msg }, { status: 500 });
+    return Response.json({ error: "SERVER_ERROR" }, { status: 500 });
   }
 }
 
