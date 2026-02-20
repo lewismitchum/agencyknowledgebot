@@ -1,3 +1,4 @@
+// app/(public)/signup/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -19,21 +20,34 @@ export default function SignupPage() {
     const email = String(fd.get("email") || "").trim();
     const password = String(fd.get("password") || "");
 
+    if (!name || !email || !password) {
+      setErr("Missing fields");
+      setLoading(false);
+      return;
+    }
+
     try {
       const r = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        redirect: "follow",
+        // IMPORTANT: do not follow redirects in fetch; we want to handle navigation ourselves.
+        redirect: "manual",
         body: JSON.stringify({ name, email, password }),
       });
 
-      // If the API redirects (302), fetch() with redirect: "follow" returns the final HTML,
-      // so we just navigate ourselves to the intended next page after success.
-      const ct = r.headers.get("content-type") || "";
+      // 302/303/etc come back here with redirect: "manual"
+      if (r.status >= 300 && r.status < 400) {
+        const loc = r.headers.get("location") || "";
+        setOk("Account created.");
+        window.location.href = loc || "/app/chat";
+        return;
+      }
 
+      const ct = r.headers.get("content-type") || "";
       const raw = await r.text().catch(() => "");
       let j: any = null;
+
       if (ct.includes("application/json")) {
         try {
           j = raw ? JSON.parse(raw) : null;
@@ -45,11 +59,11 @@ export default function SignupPage() {
         return;
       }
 
-      // Success. If backend returned JSON, honor redirectTo; otherwise assume check-email or chat.
+      // If backend ever returns JSON ok:true (instead of redirect), still handle it.
       const redirectTo =
         (j && (j.redirectTo || j.redirect_to)) ||
-        // if SMTP is configured: signup route redirects to /check-email
-        "/check-email";
+        // With SMTP off (your case), signup should go to chat
+        "/app/chat";
 
       setOk("Account created.");
       window.location.href = redirectTo;
