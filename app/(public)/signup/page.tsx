@@ -30,23 +30,32 @@ export default function SignupPage() {
   const [ok, setOk] = useState("");
   const [tsToken, setTsToken] = useState<string>("");
 
+  // ✅ ensure we only try render after script loads
+  const [turnstileReady, setTurnstileReady] = useState(false);
+
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!siteKey) return;
+    if (!turnstileReady) return;
     if (!widgetRef.current) return;
     if (!window.turnstile) return;
     if (widgetIdRef.current) return;
 
-    widgetIdRef.current = window.turnstile.render(widgetRef.current, {
-      sitekey: siteKey,
-      theme: "auto",
-      callback: (token) => setTsToken(token || ""),
-      "error-callback": () => setTsToken(""),
-      "expired-callback": () => setTsToken(""),
-    });
-  }, [siteKey]);
+    try {
+      widgetIdRef.current = window.turnstile.render(widgetRef.current, {
+        sitekey: siteKey,
+        theme: "auto",
+        callback: (token) => setTsToken(token || ""),
+        "error-callback": () => setTsToken(""),
+        "expired-callback": () => setTsToken(""),
+      });
+    } catch {
+      // if render fails, allow retry on next re-render
+      widgetIdRef.current = null;
+    }
+  }, [siteKey, turnstileReady]);
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
@@ -131,7 +140,12 @@ export default function SignupPage() {
   return (
     <>
       {siteKey ? (
-        <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer />
+        <Script
+          // ✅ explicit render mode is safer in App Router
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          strategy="afterInteractive"
+          onLoad={() => setTurnstileReady(true)}
+        />
       ) : null}
 
       <div className="mx-auto max-w-6xl px-4 py-14 md:py-20">
@@ -222,6 +236,11 @@ export default function SignupPage() {
               <div className="space-y-2">
                 <label className="text-sm font-medium">Human verification</label>
                 <div className="rounded-2xl border bg-background p-3">
+                  {!siteKey ? (
+                    <div className="text-xs text-muted-foreground">
+                      Turnstile missing site key (NEXT_PUBLIC_TURNSTILE_SITE_KEY).
+                    </div>
+                  ) : null}
                   <div ref={widgetRef} />
                 </div>
               </div>
