@@ -7,6 +7,7 @@ import { setSessionCookie } from "@/lib/session";
 import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 async function readBody(req: NextRequest): Promise<{ email?: string; password?: string }> {
   const ct = req.headers.get("content-type") || "";
@@ -26,11 +27,22 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+async function ensureUserColumns(db: Db) {
+  await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
+}
+
 /**
  * Ensures there is at least one owner for the agency.
  * Rule: if there are no users yet for this agency, the agency email becomes owner+active.
+ * Otherwise do nothing.
  */
 async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
+  await ensureUserColumns(db);
+
   const countRow = (await db.get(
     `SELECT COUNT(*) as c
      FROM users
@@ -39,9 +51,9 @@ async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
   )) as { c: number } | undefined;
 
   const c = Number(countRow?.c ?? 0);
-  if (c > 0) return;
-
   const normalizedEmail = agency.email.trim().toLowerCase();
+
+  if (c > 0) return;
 
   const existing = (await db.get(
     `SELECT id
@@ -97,9 +109,6 @@ function normStatus(s: any): "active" | "pending" | "blocked" {
 
 export async function POST(req: NextRequest) {
   try {
-    // 🔒 Canonical schema guarantee (no ad-hoc ALTERs anywhere else)
-    await ensureSchema();
-
     const { email, password } = await readBody(req);
 
     if (!email?.trim() || !password?.trim()) {
@@ -107,37 +116,43 @@ export async function POST(req: NextRequest) {
     }
 
     const db: Db = await getDb();
+    await ensureSchema(db).catch((e) => console.error("SCHEMA_ENSURE_FAILED", e));
+
     const normalizedEmail = email.trim().toLowerCase();
 
     const agency = (await db.get(
-      `SELECT id, email, password_hash, email_verified
-       FROM agencies
-       WHERE email = ?`,
+      "SELECT id, email, password_hash, email_verified FROM agencies WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
     )) as
-      | { id: string; email: string; password_hash: string; email_verified: number }
+      | { id: string; email: string; password_hash: string | null; email_verified: number | null }
       | undefined;
 
-    if (!agency) {
+    // Don’t leak existence
+    if (!agency?.id) {
       return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
     }
 
-    const ok = await bcrypt.compare(password, agency.password_hash);
+    // Hard guard: bcrypt.compare throws on null/empty hash
+    const hash = String(agency.password_hash ?? "").trim();
+    if (!hash) {
+      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+    }
+
+    const ok = await bcrypt.compare(password, hash);
     if (!ok) {
       return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
     }
 
-    if (agency.email_verified === 0) {
-      return NextResponse.json(
-        { error: "Please verify your email before logging in." },
-        { status: 403 }
-      );
+    const verified = Number(agency.email_verified ?? 0);
+    if (verified === 0) {
+      return NextResponse.json({ error: "Please verify your email before logging in." }, { status: 403 });
     }
 
-    // ✅ Ensure first owner exists
+    // Ensure first owner exists (only if users table empty for agency)
     await ensureFirstOwner(db, { id: agency.id, email: agency.email });
 
-    // ✅ Load user row (schema already guaranteed)
+    await ensureUserColumns(db);
+
     let user = (await db.get(
       `SELECT id, email, email_verified, role, status
        FROM users
@@ -149,7 +164,7 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; email_verified: number; role: string | null; status: string | null }
       | undefined;
 
-    // Safety: create pending member if missing
+    // Safety: if missing, create as pending member
     if (!user?.id) {
       const id = crypto.randomUUID();
       const t = nowIso();
@@ -162,25 +177,16 @@ export async function POST(req: NextRequest) {
         t,
         t
       );
-
-      user = {
-        id,
-        email: normalizedEmail,
-        email_verified: 1,
-        role: "member",
-        status: "pending",
-      };
+      user = { id, email: normalizedEmail, email_verified: 1, role: "member", status: "pending" };
     }
 
-    // Normalize (kept for correctness / future use)
-    const role = normRole(user.role);
-    const status = normStatus(user.status);
-    void role;
-    void status;
+    // Normalize (kept for DB correctness / future use)
+    void normRole(user.role);
+    void normStatus(user.status);
 
     const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
 
-    // 🔐 Identity-only session
+    // Identity-only cookie
     setSessionCookie(res, {
       agencyId: agency.id,
       agencyEmail: agency.email,
