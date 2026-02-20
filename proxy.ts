@@ -18,6 +18,10 @@ function isProtectedApi(pathname: string) {
 }
 
 function applySecurityHeaders(res: NextResponse) {
+  // Cloudflare Turnstile:
+  // - Script loads from https://challenges.cloudflare.com
+  // - Widget runs in an iframe from https://challenges.cloudflare.com
+  // - It may use XHR/fetch to challenges.cloudflare.com as well
   const csp = [
     "default-src 'self'",
     "base-uri 'self'",
@@ -26,11 +30,17 @@ function applySecurityHeaders(res: NextResponse) {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
-    // ✅ Next needs inline scripts to hydrate App Router pages.
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-    "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval'",
+
+    // Next hydration / runtime
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
+    "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
     "script-src-attr 'self' 'unsafe-inline'",
-    "connect-src 'self' https://api.openai.com wss:",
+
+    // Turnstile iframe
+    "frame-src 'self' https://challenges.cloudflare.com",
+
+    // Turnstile + OpenAI
+    "connect-src 'self' https://api.openai.com wss: https://challenges.cloudflare.com",
   ].join("; ");
 
   res.headers.set("Content-Security-Policy", csp);

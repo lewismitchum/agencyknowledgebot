@@ -29,33 +29,26 @@ export default function SignupPage() {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [tsToken, setTsToken] = useState<string>("");
-
-  // ✅ ensure we only try render after script loads
-  const [turnstileReady, setTurnstileReady] = useState(false);
+  const [tsReady, setTsReady] = useState(false);
 
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!siteKey) return;
-    if (!turnstileReady) return;
+    if (!tsReady) return;
     if (!widgetRef.current) return;
     if (!window.turnstile) return;
     if (widgetIdRef.current) return;
 
-    try {
-      widgetIdRef.current = window.turnstile.render(widgetRef.current, {
-        sitekey: siteKey,
-        theme: "auto",
-        callback: (token) => setTsToken(token || ""),
-        "error-callback": () => setTsToken(""),
-        "expired-callback": () => setTsToken(""),
-      });
-    } catch {
-      // if render fails, allow retry on next re-render
-      widgetIdRef.current = null;
-    }
-  }, [siteKey, turnstileReady]);
+    widgetIdRef.current = window.turnstile.render(widgetRef.current, {
+      sitekey: siteKey,
+      theme: "auto",
+      callback: (token) => setTsToken(token || ""),
+      "error-callback": () => setTsToken(""),
+      "expired-callback": () => setTsToken(""),
+    });
+  }, [siteKey, tsReady]);
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
@@ -84,6 +77,11 @@ export default function SignupPage() {
 
     if (!siteKey) {
       setErr("Turnstile misconfigured (missing site key).");
+      return;
+    }
+
+    if (!tsReady) {
+      setErr("Captcha is still loading. Please wait a moment and try again.");
       return;
     }
 
@@ -141,10 +139,10 @@ export default function SignupPage() {
     <>
       {siteKey ? (
         <Script
-          // ✅ explicit render mode is safer in App Router
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
-          strategy="afterInteractive"
-          onLoad={() => setTurnstileReady(true)}
+          async
+          defer
+          onLoad={() => setTsReady(true)}
         />
       ) : null}
 
@@ -236,12 +234,12 @@ export default function SignupPage() {
               <div className="space-y-2">
                 <label className="text-sm font-medium">Human verification</label>
                 <div className="rounded-2xl border bg-background p-3">
-                  {!siteKey ? (
-                    <div className="text-xs text-muted-foreground">
-                      Turnstile missing site key (NEXT_PUBLIC_TURNSTILE_SITE_KEY).
-                    </div>
-                  ) : null}
                   <div ref={widgetRef} />
+                  {!siteKey ? (
+                    <div className="mt-2 text-xs text-muted-foreground">Missing NEXT_PUBLIC_TURNSTILE_SITE_KEY</div>
+                  ) : !tsReady ? (
+                    <div className="mt-2 text-xs text-muted-foreground">Loading captcha…</div>
+                  ) : null}
                 </div>
               </div>
 
