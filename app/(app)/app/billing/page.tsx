@@ -1,23 +1,34 @@
+// app/(app)/app/billing/page.tsx
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 
+type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corporation";
+
 type MeResponse =
   | {
       ok: true;
-      agency: { id: string; name: string | null; email: string | null; plan: string };
+      agency: {
+        id: string;
+        name: string | null;
+        email: string | null;
+        plan: string;
+        stripe_current_period_end?: string | null;
+        stripe_customer_id?: string | null;
+      };
+      user: {
+        id: string;
+        email: string;
+        role: string;
+        status: string;
+        email_verified: number;
+      };
     }
   | { ok?: false; error?: string; message?: string };
 
@@ -67,17 +78,43 @@ function BillingStatusBanner() {
 
 function BillingContent() {
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
+
   const [currentPlan, setCurrentPlan] = useState<string | null>(null);
+  const [periodEnd, setPeriodEnd] = useState<string | null>(null);
+  const [hasStripeCustomer, setHasStripeCustomer] = useState(false);
+
+  const [isOwner, setIsOwner] = useState(false);
+  const [devPlan, setDevPlan] = useState<PlanKey>("free");
+  const [devSaving, setDevSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const res = await fetch("/api/me", { method: "GET" });
+        const res = await fetch("/api/me", { method: "GET", cache: "no-store" });
         const data = (await res.json().catch(() => ({}))) as MeResponse;
-        if (!cancelled && (data as any)?.ok && (data as any)?.agency?.plan) {
-          setCurrentPlan(String((data as any).agency.plan));
+
+        if (cancelled) return;
+
+        if ((data as any)?.ok && (data as any)?.agency) {
+          const a = (data as any).agency;
+          const u = (data as any).user;
+
+          if (a?.plan) {
+            const p = String(a.plan);
+            setCurrentPlan(p);
+            // keep dev dropdown in sync
+            if (["free", "starter", "pro", "enterprise", "corporation"].includes(p)) {
+              setDevPlan(p as PlanKey);
+            }
+          }
+
+          if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
+          if (a?.stripe_customer_id) setHasStripeCustomer(true);
+
+          setIsOwner(String(u?.role || "") === "owner");
         }
       } catch {}
     })();
@@ -87,7 +124,7 @@ function BillingContent() {
     };
   }, []);
 
-  async function startCheckout(plan: "starter" | "pro" | "enterprise") {
+  async function startCheckout(plan: "starter" | "pro" | "enterprise" | "corporation") {
     try {
       setLoadingPlan(plan);
 
@@ -113,18 +150,60 @@ function BillingContent() {
     }
   }
 
+  async function openPortal() {
+    try {
+      setPortalLoading(true);
+
+      const res = await fetch("/api/billing/portal", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data?.url) {
+        const msg = String(data?.error || data?.message || "Could not open billing portal");
+        alert(msg);
+        return;
+      }
+
+      window.location.href = String(data.url);
+    } catch (e: any) {
+      alert(String(e?.message ?? e));
+    } finally {
+      setPortalLoading(false);
+    }
+  }
+
+  async function setPlanForAgency(plan: PlanKey) {
+    try {
+      setDevSaving(true);
+      setDevPlan(plan);
+
+      const res = await fetch("/api/billing/dev-set-plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ plan }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        const msg = String(data?.error || data?.message || "Failed to set plan");
+        alert(msg);
+        return;
+      }
+
+      setCurrentPlan(plan);
+    } catch (e: any) {
+      alert(String(e?.message ?? e));
+    } finally {
+      setDevSaving(false);
+    }
+  }
+
   const plans = [
     {
       key: "free",
       name: "Free",
       price: "$0",
       badge: "Default",
-      bullets: [
-        "1 agency bot",
-        "5 daily uploads (docs only)",
-        "Daily chat limits",
-        "No schedule/to-do/calendar",
-      ],
+      bullets: ["1 agency bot", "5 daily uploads (docs only)", "Daily chat limits", "No schedule/to-do/calendar"],
       cta: { label: "Go to Chat", href: "/app/chat", variant: "secondary" as const },
     },
     {
@@ -185,9 +264,12 @@ function BillingContent() {
         "Schedule/to-do/calendar enabled",
         "Email page enabled (Gmail-like)",
       ],
-      cta: { label: "Contact us", href: "/app/docs", variant: "secondary" as const },
+      cta: { label: "Upgrade", variant: "default" as const },
+      onClick: () => startCheckout("corporation"),
     },
-  ];
+  ] as const;
+
+  const isPaid = currentPlan && currentPlan !== "free";
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8">
@@ -200,37 +282,82 @@ function BillingContent() {
             </p>
           </div>
 
-          <Badge variant="secondary">
-            Current: {currentPlan ? currentPlan : "…"}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary">Current: {currentPlan ? currentPlan : "…"}</Badge>
+
+            <Button
+              variant="outline"
+              onClick={openPortal}
+              disabled={!hasStripeCustomer || !isPaid || portalLoading}
+              title={!hasStripeCustomer ? "No Stripe customer yet" : !isPaid ? "Upgrade first" : "Manage subscription"}
+            >
+              {portalLoading ? "Opening…" : "Manage"}
+            </Button>
+          </div>
         </div>
+
+        {periodEnd ? (
+          <p className="text-xs text-muted-foreground mt-2">
+            Renews: <span className="font-mono">{periodEnd}</span>
+          </p>
+        ) : null}
       </div>
 
       <Suspense fallback={null}>
         <BillingStatusBanner />
       </Suspense>
 
+      {isOwner ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="text-base">Owner-only tier switcher</CardTitle>
+            <CardDescription>
+              This updates <code>agencies.plan</code> for your current agency only (manual override).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-muted-foreground">
+              Useful for testing paid gates without Stripe.
+            </div>
+
+            <div className="flex items-center gap-2">
+              <select
+                value={devPlan}
+                onChange={(e) => setPlanForAgency(e.target.value as PlanKey)}
+                disabled={devSaving}
+                className="rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="free">free</option>
+                <option value="starter">starter</option>
+                <option value="pro">pro</option>
+                <option value="enterprise">enterprise</option>
+                <option value="corporation">corporation</option>
+              </select>
+
+              <Badge variant="secondary">{devSaving ? "Saving…" : "Ready"}</Badge>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card className="mb-6">
         <CardHeader>
           <CardTitle className="text-base">How billing works</CardTitle>
-          <CardDescription>
-            Plan enforcement is server-side. This page is the UI for upgrades and status.
-          </CardDescription>
+          <CardDescription>Plan enforcement is server-side. This page is the UI for upgrades and status.</CardDescription>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
           <p>
             Louis.Ai is a multi-tenant agency knowledge system: agency bots/docs are shared across the agency; private bots/docs are isolated per user.
           </p>
-          <p>
-            Schedule/to-do/calendar extraction is a paid feature. Basic reminders/notifications UI can exist on all tiers.
-          </p>
+          <p>Schedule/to-do/calendar extraction is a paid feature. Basic reminders/notifications UI can exist on all tiers.</p>
         </CardContent>
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
         {plans.map((p) => {
           const isCurrent = currentPlan && currentPlan === p.key;
-          const isPaidCheckout = p.key === "starter" || p.key === "pro" || p.key === "enterprise";
+          const isPaidCheckout =
+            p.key === "starter" || p.key === "pro" || p.key === "enterprise" || p.key === "corporation";
 
           return (
             <Card key={p.key} className={isCurrent ? "ring-1 ring-border" : ""}>
@@ -240,7 +367,7 @@ function BillingContent() {
                     <CardTitle className="text-lg">{p.name}</CardTitle>
                     <CardDescription className="mt-1">{p.price}</CardDescription>
                   </div>
-                  <Badge variant="secondary">{isCurrent ? "Current plan" : p.badge}</Badge>
+                  <Badge variant="secondary">{isCurrent ? "Current plan" : (p as any).badge}</Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
