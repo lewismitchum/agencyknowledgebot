@@ -95,22 +95,29 @@ export async function GET(req: NextRequest) {
         }
       | undefined;
 
-    // Usage (messages)
-    const rawPlan = agency?.plan ?? ctx.plan ?? "free";
-    const plan = normalizePlan(rawPlan);
-    const limits = getPlanLimits(plan);
+   // Usage (messages)
+const rawPlan = agency?.plan ?? ctx.plan ?? "free";
+const plan = normalizePlan(rawPlan);
+const limits = getPlanLimits(plan);
 
-    let dailyLimit = (limits as any)?.daily_messages;
-    if (dailyLimit == null || Number(dailyLimit) <= 0) {
-      dailyLimit = defaultDailyMessagesForPlan(plan);
-    }
+let dailyLimit: number | null = (limits as any)?.daily_messages ?? null;
+if (dailyLimit != null && Number(dailyLimit) <= 0) dailyLimit = null;
 
-    const date = todayYmd();
-    const usage = await getDailyUsage(db, ctx.agencyId, date);
+// fallback only for tiers that should have a numeric default
+if (dailyLimit == null) {
+  const fallback = defaultDailyMessagesForPlan(plan);
+  if (fallback != null) dailyLimit = fallback;
+}
 
-    const daily_remaining =
-      dailyLimit == null ? 999999 : Math.max(0, Number(dailyLimit) - Number(usage.messages_count));
+const date = todayYmd();
+const usage = await getDailyUsage(db, ctx.agencyId, date);
 
+// ✅ unlimited => null
+const daily_remaining =
+  dailyLimit == null ? null : Math.max(0, Number(dailyLimit) - Number(usage.messages_count));
+
+// (optional but useful for UI)
+const daily_used = Number(usage.messages_count);
     // Documents count (agency-scoped)
     const docsRow = (await db.get(
       `SELECT COUNT(1) as c
