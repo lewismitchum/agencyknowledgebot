@@ -7,10 +7,10 @@ export const dynamic = "force-dynamic";
 export default function VerifyEmailPage({
   searchParams,
 }: {
-  searchParams?: { token?: string };
+  searchParams?: { [key: string]: string | string[] | undefined };
 }) {
-  const token = typeof searchParams?.token === "string" ? searchParams.token : "";
-  const VerifyEmailClientAny: any = VerifyEmailClient;
+  const raw = searchParams?.token;
+  const token = Array.isArray(raw) ? raw[0] : raw;
 
   return (
     <Suspense
@@ -24,7 +24,7 @@ export default function VerifyEmailPage({
         </div>
       }
     >
-      <VerifyEmailClientAny token={token} />
+      <VerifyEmailClient token={token || ""} />
     </Suspense>
   );
 }

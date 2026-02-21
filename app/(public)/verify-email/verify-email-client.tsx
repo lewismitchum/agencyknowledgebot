@@ -1,12 +1,12 @@
+// app/(public)/verify-email/verify-email-client.tsx
 "use client";
 
-// app/(public)/verify-email/verify-email-client.tsx
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
 export default function VerifyEmailClient({ token }: { token: string }) {
-  const [status, setStatus] = useState<"idle" | "verifying" | "ok" | "error">("idle");
-  const [message, setMessage] = useState("");
+  const [status, setStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
+  const [message, setMessage] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -18,35 +18,42 @@ export default function VerifyEmailClient({ token }: { token: string }) {
         return;
       }
 
-      setStatus("verifying");
+      setStatus("loading");
       setMessage("");
 
       try {
         const r = await fetch("/api/auth/verify-email", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({ token }),
         });
 
-        const j = await r.json().catch(() => ({}));
+        const ct = r.headers.get("content-type") || "";
+        const raw = await r.text().catch(() => "");
+        let j: any = null;
+
+        if (ct.includes("application/json")) {
+          try {
+            j = raw ? JSON.parse(raw) : null;
+          } catch {}
+        }
 
         if (!r.ok) {
+          const err = j?.error || j?.message || raw || "Verification failed";
+          if (cancelled) return;
           setStatus("error");
-          setMessage(j?.error || "Invalid or expired link.");
+          setMessage(err);
           return;
         }
 
+        if (cancelled) return;
         setStatus("ok");
-        setMessage("Email verified. Redirecting…");
-
-        // Give the user a beat to see success, then send them to login/chat.
-        setTimeout(() => {
-          window.location.href = "/login";
-        }, 700);
+        setMessage("Email verified. You can log in now.");
       } catch (e: any) {
         if (cancelled) return;
         setStatus("error");
-        setMessage(e?.message || "Network error.");
+        setMessage(e?.message || "Network error");
       }
     }
 
@@ -60,10 +67,10 @@ export default function VerifyEmailClient({ token }: { token: string }) {
     <div className="mx-auto max-w-6xl px-4 py-14 md:py-20">
       <div className="mx-auto max-w-xl">
         <div className="rounded-3xl border bg-card p-8 shadow-sm">
-          <h1 className="text-lg font-medium">Verify email</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Verify email</h1>
 
-          {status === "verifying" ? (
-            <p className="mt-2 text-sm text-muted-foreground">Verifying…</p>
+          {status === "loading" ? (
+            <p className="mt-3 text-sm text-muted-foreground">Verifying…</p>
           ) : null}
 
           {status === "ok" ? (
@@ -75,16 +82,27 @@ export default function VerifyEmailClient({ token }: { token: string }) {
 
           {status === "error" ? (
             <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">
-              <div className="font-medium">Missing verification token</div>
+              <div className="font-medium">Verification error</div>
               <div className="mt-1 text-muted-foreground">{message}</div>
             </div>
           ) : null}
 
-          <div className="mt-6 flex items-center gap-3 text-sm">
-            <Link href="/login" className="underline underline-offset-4">
+          <div className="mt-6 flex items-center gap-3">
+            <Link
+              href="/login"
+              className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
               Back to login
             </Link>
+
+            <Link href="/" className="text-sm underline underline-offset-4 text-muted-foreground">
+              Home
+            </Link>
           </div>
+
+          <p className="mt-6 text-xs text-muted-foreground">
+            Reminder: Louis prioritizes your uploaded docs for internal answers.
+          </p>
         </div>
       </div>
     </div>
