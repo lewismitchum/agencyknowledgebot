@@ -7,9 +7,15 @@ import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 
 export const runtime = "nodejs";
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
+
+export async function GET() {
+  return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -149,7 +155,6 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: false, error: "No files uploaded" }, { status: 400 });
     }
 
-    // Enforce daily upload limit BEFORE hitting OpenAI
     const uploadGate = await enforceUploadLimit(db, ctx.agencyId, ctx.plan, files.length);
     if (!uploadGate.ok) {
       return Response.json(
@@ -229,7 +234,7 @@ export async function POST(req: NextRequest) {
         bot_id,
         file.name,
         file.type || null,
-        file.size ?? 0,
+        (file as any).size ?? 0,
         uploadedFile.id,
         created_at
       );
@@ -252,7 +257,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // increment usage AFTER success
     await incrementUploads(db, ctx.agencyId, todayYmd(), files.length);
 
     return Response.json({ ok: true, bot_id, uploaded });
