@@ -44,20 +44,39 @@ async function getDailyUsage(db: Db, agencyId: string, date: string) {
   };
 }
 
+async function ensureAgencyBillingColumns(db: Db) {
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureAgencyBillingColumns(db);
 
     const agency = (await db.get(
-      `SELECT id, name, email, plan
+      `SELECT id, name, email, plan, stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_current_period_end
        FROM agencies
        WHERE id = ?
        LIMIT 1`,
       ctx.agencyId
-    )) as { id: string; name: string | null; email: string | null; plan: string | null } | undefined;
+    )) as
+      | {
+          id: string;
+          name: string | null;
+          email: string | null;
+          plan: string | null;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
+          stripe_price_id: string | null;
+          stripe_current_period_end: string | null;
+        }
+      | undefined;
 
     const user = (await db.get(
       `SELECT id, email, email_verified, role, status
@@ -107,6 +126,10 @@ export async function GET(req: NextRequest) {
         name: agency?.name ?? null,
         email: agency?.email ?? null,
         plan: agency?.plan ?? (ctx.plan ?? "free"),
+        stripe_customer_id: agency?.stripe_customer_id ?? null,
+        stripe_subscription_id: agency?.stripe_subscription_id ?? null,
+        stripe_price_id: agency?.stripe_price_id ?? null,
+        stripe_current_period_end: agency?.stripe_current_period_end ?? null,
       },
       user: {
         id: user?.id ?? ctx.userId,
