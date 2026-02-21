@@ -1,49 +1,22 @@
+// app/(app)/app/page.tsx
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
-import { headers } from "next/headers";
-
-type MeApiResponse =
-  | {
-      ok: true;
-      agency: { plan: string };
-      documents_count: number;
-      daily_remaining: number;
-      daily_resets_in_seconds: number;
-    }
-  | { ok?: false; error?: string; message?: string };
-
-async function getOriginFromHeaders() {
-  const h = await headers();
-
-  const proto = h.get("x-forwarded-proto") || "http";
-  const host = h.get("x-forwarded-host") || h.get("host");
-
-  if (host) return `${proto}://${host}`;
-
-  const vercel = process.env.VERCEL_URL;
-  if (vercel) return `https://${vercel}`;
-
-  return "http://localhost:3000";
-}
+type MePayload = {
+  ok?: boolean;
+  agency?: { plan?: string };
+  documents_count?: number;
+  daily_remaining?: number | null;
+  daily_resets_in_seconds?: number;
+};
 
 async function getMe() {
   try {
-    const h = await headers();
-    const cookie = h.get("cookie") || "";
-    const origin = await getOriginFromHeaders();
-
-    const res = await fetch(`${origin}/api/me`, {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || ""}/api/me`, {
       cache: "no-store",
-      headers: {
-        cookie, // ✅ forward auth cookie
-      },
+      credentials: "include",
     });
-
-    const data = (await res.json().catch(() => ({}))) as MeApiResponse;
-    if (!res.ok || !(data as any)?.ok) return null;
-
-    return data as Extract<MeApiResponse, { ok: true }>;
+    if (!res.ok) return null;
+    return (await res.json()) as MePayload;
   } catch {
     return null;
   }
@@ -61,14 +34,21 @@ function formatCountdown(totalSeconds: number) {
 export default async function DashboardPage() {
   const me = await getMe();
 
-  const docs = me?.documents_count ?? "—";
-  const remaining = me?.daily_remaining ?? "—";
+  const docs = me?.documents_count ?? null;
+  const remaining = me?.daily_remaining;
   const reset =
-    me?.daily_resets_in_seconds != null
-      ? formatCountdown(me.daily_resets_in_seconds)
-      : "—";
+    me?.daily_resets_in_seconds != null ? formatCountdown(me.daily_resets_in_seconds) : null;
 
-  const plan = me?.agency?.plan ? String(me.agency.plan).toUpperCase() : "—";
+  const remainingLabel =
+    remaining == null ? "Unlimited" : String(remaining);
+
+  const remainingSub =
+    remaining == null
+      ? "No daily chat limit on your plan"
+      : `Resets in ${reset ?? "—"} (America/Chicago)`;
+
+  const plan =
+    me?.agency?.plan ? String(me.agency.plan).toUpperCase() : "—";
 
   return (
     <div className="space-y-8">
@@ -82,14 +62,16 @@ export default async function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-3">
         <StatCard
           title="Documents"
-          value={String(docs)}
+          value={docs == null ? "—" : String(docs)}
           sub="Uploads in your workspace"
         />
+
         <StatCard
           title="Messages left today"
-          value={String(remaining)}
-          sub={`Resets in ${reset} (America/Chicago)`}
+          value={remainingLabel}
+          sub={remainingSub}
         />
+
         <StatCard
           title="Plan"
           value={plan}
@@ -100,7 +82,7 @@ export default async function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <Panel
           title="How Louis answers"
-          body="Docs are prioritized. For internal business questions, Louis won’t guess if your docs don’t contain the answer."
+          body="Docs are prioritized. For internal questions, Louis uses your uploaded files first."
           footer={
             <div className="rounded-xl bg-muted p-3 font-mono text-sm">
               I don’t have that information in the docs yet.
@@ -132,15 +114,7 @@ export default async function DashboardPage() {
   );
 }
 
-function StatCard({
-  title,
-  value,
-  sub,
-}: {
-  title: string;
-  value: string;
-  sub: string;
-}) {
+function StatCard({ title, value, sub }: { title: string; value: string; sub: string }) {
   return (
     <div className="rounded-2xl border bg-card p-5 shadow-sm">
       <div className="text-sm text-muted-foreground">{title}</div>
@@ -150,15 +124,7 @@ function StatCard({
   );
 }
 
-function Panel({
-  title,
-  body,
-  footer,
-}: {
-  title: string;
-  body: string;
-  footer?: React.ReactNode;
-}) {
+function Panel({ title, body, footer }: { title: string; body: string; footer?: React.ReactNode }) {
   return (
     <div className="rounded-2xl border bg-card p-6 shadow-sm">
       <h2 className="text-lg font-semibold">{title}</h2>
