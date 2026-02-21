@@ -1,47 +1,40 @@
 // lib/email.ts
 import { Resend } from "resend";
 
+function cleanUrl(u: string) {
+  return u.replace(/\/+$/, "");
+}
+
+export function getAppUrl() {
+  // Prefer an explicit URL you control
+  const explicit =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    process.env.NEXTAUTH_URL;
+
+  if (explicit) return cleanUrl(explicit);
+
+  // Vercel provides VERCEL_URL without protocol
+  const vercel = process.env.VERCEL_URL;
+  if (vercel) return cleanUrl(`https://${vercel}`);
+
+  // Local fallback
+  return "http://localhost:3000";
+}
+
+let resend: Resend | null = null;
+function getResend() {
+  if (resend) return resend;
+  const key = process.env.RESEND_API_KEY;
+  if (!key) throw new Error("Missing env: RESEND_API_KEY");
+  resend = new Resend(key);
+  return resend;
+}
+
 function mustGetEnv(name: string) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
   return v;
-}
-
-function normalizeBaseUrl(raw: string) {
-  const v = (raw || "").trim();
-  if (!v) return "";
-  // If someone sets "mydomain.com" without protocol, email clients often won't link it correctly.
-  if (!/^https?:\/\//i.test(v)) return `https://${v}`;
-  return v;
-}
-
-/**
- * Canonical base URL for links inside emails.
- * Priority:
- *  - APP_URL / NEXT_PUBLIC_APP_URL / PUBLIC_APP_URL / SITE_URL
- *  - VERCEL_URL (converted to https://)
- *  - localhost fallback
- */
-export function getAppUrl() {
-  const explicit =
-    process.env.APP_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.PUBLIC_APP_URL ||
-    process.env.SITE_URL;
-
-  const normalizedExplicit = normalizeBaseUrl(explicit || "");
-  if (normalizedExplicit) return normalizedExplicit.replace(/\/$/, "");
-
-  const vercel = (process.env.VERCEL_URL || "").trim();
-  if (vercel) return normalizeBaseUrl(vercel).replace(/\/$/, "");
-
-  return "http://localhost:3000";
-}
-
-function getResendClient() {
-  const key = process.env.RESEND_API_KEY;
-  if (!key) return null;
-  return new Resend(key);
 }
 
 export async function sendEmail(input: {
@@ -50,25 +43,16 @@ export async function sendEmail(input: {
   html: string;
   replyTo?: string;
 }) {
-  const resend = getResendClient();
-  if (!resend) {
-    throw new Error("Missing env: RESEND_API_KEY");
-  }
-
   const RESEND_FROM = mustGetEnv("RESEND_FROM");
 
-  const to = (input.to || "").trim();
-  const subject = (input.subject || "").trim();
-  const html = String(input.html || "");
-
+  const to = String(input.to || "").trim();
   if (!to) throw new Error("sendEmail: missing to");
-  if (!subject) throw new Error("sendEmail: missing subject");
 
-  return await resend.emails.send({
+  return await getResend().emails.send({
     from: RESEND_FROM,
     to: [to],
-    subject,
-    html,
+    subject: input.subject,
+    html: input.html,
     replyTo: input.replyTo,
   });
 }
@@ -79,11 +63,6 @@ export async function sendSupportEmail(input: {
   message: string;
   pageUrl?: string;
 }) {
-  const resend = getResendClient();
-  if (!resend) {
-    throw new Error("Missing env: RESEND_API_KEY");
-  }
-
   const RESEND_FROM = mustGetEnv("RESEND_FROM");
   const SUPPORT_INBOX_EMAIL = mustGetEnv("SUPPORT_INBOX_EMAIL");
 
@@ -92,7 +71,9 @@ export async function sendSupportEmail(input: {
   const message = (input.message || "").trim();
   const pageUrl = (input.pageUrl || "").trim();
 
-  const subject = fromEmail ? `Support request from ${fromEmail}` : "Support request";
+  const subject = fromEmail
+    ? `Support request from ${fromEmail}`
+    : "Support request";
 
   const safeFromLine = fromEmail
     ? `${fromName ? fromName + " " : ""}<${fromEmail}>`
@@ -112,7 +93,7 @@ export async function sendSupportEmail(input: {
 
   const replyTo = fromEmail || undefined;
 
-  return await resend.emails.send({
+  return await getResend().emails.send({
     from: RESEND_FROM,
     to: [SUPPORT_INBOX_EMAIL],
     subject,
