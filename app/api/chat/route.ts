@@ -292,8 +292,10 @@ Never fabricate internal details.
         : FALLBACK;
 
     await insertMessage(db, convo.id, "assistant", answer);
-    await incrementMessages(db, ctx.agencyId, todayYmd());
-
+    if (looksLikeTimeQuestion(message)) {
+  await incrementMessages(db, ctx.agencyId, todayYmd());
+  return Response.json({ ok: true, answer: chicagoTimeString(), source: "system" });
+}
     // auto-summarize + compact memory (plan-aware)
     const plan = normalizePlan(usage.plan);
     const newCount = Number(convo.message_count ?? 0) + 2;
