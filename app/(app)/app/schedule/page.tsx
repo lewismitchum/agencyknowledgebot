@@ -1,3 +1,4 @@
+// app/(app)/app/schedule/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -7,8 +8,8 @@ type BotLite = { id: string; name: string };
 type EventRow = {
   id: string;
   title: string;
-  starts_at: string;
-  ends_at?: string | null;
+  start_at: string;
+  end_at?: string | null;
   location?: string | null;
   notes?: string | null;
   created_at: string;
@@ -90,6 +91,12 @@ function sameMonth(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
+function weekdayLabels(weekStartsOn: "sun" | "mon") {
+  return weekStartsOn === "sun"
+    ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+}
+
 export default function SchedulePage() {
   const [bots, setBots] = useState<BotLite[]>([]);
   const [botId, setBotId] = useState<string>("");
@@ -155,8 +162,8 @@ export default function SchedulePage() {
       if (!re.ok) throw new Error(je?.error || je?.message || "Failed to load events");
       if (!rt.ok) throw new Error(jt?.error || jt?.message || "Failed to load tasks");
 
-      setEvents(Array.isArray(je?.events) ? je.events : []);
-      setTasks(Array.isArray(jt?.tasks) ? jt.tasks : []);
+      setEvents(Array.isArray(je?.events) ? (je.events as EventRow[]) : []);
+      setTasks(Array.isArray(jt?.tasks) ? (jt.tasks as TaskRow[]) : []);
     } catch (e: any) {
       setErr(e?.message || "Failed to load schedule");
     } finally {
@@ -193,10 +200,7 @@ export default function SchedulePage() {
       .filter((t) => (prefs.show_done_tasks ? true : t.status !== "done"))
       .filter((t) => {
         if (!q) return true;
-        return (
-          String(t.title || "").toLowerCase().includes(q) ||
-          String(t.notes || "").toLowerCase().includes(q)
-        );
+        return String(t.title || "").toLowerCase().includes(q) || String(t.notes || "").toLowerCase().includes(q);
       });
   }, [tasks, prefs.show_tasks, prefs.show_done_tasks, search]);
 
@@ -210,7 +214,6 @@ export default function SchedulePage() {
   }, [weekStart]);
 
   const monthDays = useMemo(() => {
-    // Month grid: start at week boundary containing the 1st, end at week boundary containing last day.
     const mStart = startOfMonth(day);
     const mEnd = endOfMonth(day);
     const gridStart = startOfWeek(mStart, prefs.week_starts_on);
@@ -220,7 +223,6 @@ export default function SchedulePage() {
     let cur = new Date(gridStart);
     cur.setHours(0, 0, 0, 0);
 
-    // iterate inclusive
     while (cur.getTime() <= gridEnd.getTime()) {
       arr.push(new Date(cur));
       cur = addDays(cur, 1);
@@ -231,12 +233,12 @@ export default function SchedulePage() {
   const eventsByDay = useMemo(() => {
     const m = new Map<string, EventRow[]>();
     for (const e of filteredEvents) {
-      const k = (e.starts_at || "").slice(0, 10);
+      const k = (e.start_at || "").slice(0, 10);
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(e);
     }
     for (const [k, arr] of m) {
-      arr.sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
+      arr.sort((a, b) => String(a.start_at).localeCompare(String(b.start_at)));
       m.set(k, arr);
     }
     return m;
@@ -268,6 +270,23 @@ export default function SchedulePage() {
     }
   }
 
+  async function deleteEvent(id: string) {
+    // optimistic: remove locally first
+    const prev = events;
+    setEvents((cur) => cur.filter((e) => e.id !== id));
+    try {
+      const r = await fetch("/api/schedule/events", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || "Failed to delete");
+    } catch {
+      setEvents(prev);
+    }
+  }
+
   function moveAnchor(deltaDays: number) {
     const d = new Date(day);
     d.setDate(day.getDate() + deltaDays);
@@ -277,9 +296,7 @@ export default function SchedulePage() {
   const headerLabel = useMemo(() => {
     if (view === "day") return dayKey;
     if (view === "week") return `${isoDayKey(weekDays[0])} → ${isoDayKey(weekDays[6])}`;
-    // month
-    const m = day.toLocaleString(undefined, { month: "long", year: "numeric" });
-    return m;
+    return day.toLocaleString(undefined, { month: "long", year: "numeric" });
   }, [view, dayKey, weekDays, day]);
 
   const prevDelta = view === "day" ? -1 : view === "week" ? -7 : -28;
@@ -290,9 +307,7 @@ export default function SchedulePage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Schedule</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {tzLabel} · personalized views · tasks + events
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">{tzLabel} · personalized views · tasks + events</p>
         </div>
 
         <div className="flex flex-col gap-2 md:flex-row md:items-center">
@@ -318,9 +333,7 @@ export default function SchedulePage() {
                 }}
                 className={[
                   "rounded-lg px-3 py-1.5 text-sm transition-colors",
-                  view === v
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  view === v ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 ].join(" ")}
               >
                 {v.toUpperCase()}
@@ -334,22 +347,13 @@ export default function SchedulePage() {
         <div className="rounded-3xl border bg-card p-5 shadow-sm md:col-span-2">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-2">
-              <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-                onClick={() => moveAnchor(prevDelta)}
-              >
+              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => moveAnchor(prevDelta)}>
                 ←
               </button>
-              <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-                onClick={() => setDay(new Date())}
-              >
+              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => setDay(new Date())}>
                 Today
               </button>
-              <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-                onClick={() => moveAnchor(nextDelta)}
-              >
+              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => moveAnchor(nextDelta)}>
                 →
               </button>
               <span className="ml-2 text-sm font-medium">{headerLabel}</span>
@@ -365,16 +369,8 @@ export default function SchedulePage() {
 
           <div className="mt-4 rounded-2xl border bg-background/40 p-3">
             <div className="flex flex-wrap items-center gap-3 text-sm">
-              <Toggle
-                label="Events"
-                checked={prefs.show_events}
-                onChange={(v) => savePrefs({ ...prefs, show_events: v })}
-              />
-              <Toggle
-                label="Tasks"
-                checked={prefs.show_tasks}
-                onChange={(v) => savePrefs({ ...prefs, show_tasks: v })}
-              />
+              <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
+              <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
               <Toggle
                 label="Show done"
                 checked={prefs.show_done_tasks}
@@ -385,19 +381,14 @@ export default function SchedulePage() {
                 <span className="text-xs text-muted-foreground">Week starts</span>
                 <select
                   value={prefs.week_starts_on}
-                  onChange={(e) =>
-                    savePrefs({ ...prefs, week_starts_on: e.target.value as any })
-                  }
+                  onChange={(e) => savePrefs({ ...prefs, week_starts_on: e.target.value as any })}
                   className="rounded-xl border bg-background px-2 py-1.5 text-xs outline-none"
                 >
                   <option value="mon">Mon</option>
                   <option value="sun">Sun</option>
                 </select>
 
-                <button
-                  onClick={() => loadData(botId)}
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-                >
+                <button onClick={() => botId && loadData(botId)} className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">
                   Refresh
                 </button>
               </div>
@@ -418,6 +409,7 @@ export default function SchedulePage() {
                 events={eventsByDay.get(dayKey) || []}
                 tasks={(tasksByDay.get(dayKey) || []).concat(tasksByDay.get("no_due") || [])}
                 onToggleTask={toggleTask}
+                onDeleteEvent={deleteEvent}
               />
             ) : view === "week" ? (
               <WeekView
@@ -425,11 +417,13 @@ export default function SchedulePage() {
                 eventsByDay={eventsByDay}
                 tasksByDay={tasksByDay}
                 onToggleTask={toggleTask}
+                onDeleteEvent={deleteEvent}
               />
             ) : (
               <MonthView
                 monthDays={monthDays}
                 anchorDay={day}
+                weekStartsOn={prefs.week_starts_on}
                 eventsByDay={eventsByDay}
                 tasksByDay={tasksByDay}
                 onToggleTask={toggleTask}
@@ -440,9 +434,7 @@ export default function SchedulePage() {
 
         <div className="rounded-3xl border bg-card p-5 shadow-sm">
           <div className="text-sm font-medium">Quick add</div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            Manual add is fine. Auto extraction becomes paid-only later.
-          </div>
+          <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
 
           <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
         </div>
@@ -451,23 +443,13 @@ export default function SchedulePage() {
   );
 }
 
-function Toggle({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
       onClick={() => onChange(!checked)}
       className={[
         "rounded-xl border px-3 py-2 text-sm transition-colors",
-        checked
-          ? "bg-accent text-foreground"
-          : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
+        checked ? "bg-accent text-foreground" : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
       ].join(" ")}
     >
       {label}
@@ -480,11 +462,13 @@ function DayView({
   events,
   tasks,
   onToggleTask,
+  onDeleteEvent,
 }: {
   dayKey: string;
   events: EventRow[];
   tasks: TaskRow[];
   onToggleTask: (id: string, status: "open" | "done") => void;
+  onDeleteEvent: (id: string) => void;
 }) {
   return (
     <div className="space-y-4">
@@ -497,11 +481,23 @@ function DayView({
           <div className="space-y-2">
             {events.map((e) => (
               <div key={e.id} className="rounded-2xl border p-3">
-                <div className="font-medium">{e.title}</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {e.starts_at}
-                  {e.ends_at ? ` → ${e.ends_at}` : ""}
-                  {e.location ? ` · ${e.location}` : ""}
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-medium">{e.title}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {e.start_at}
+                      {e.end_at ? ` → ${e.end_at}` : ""}
+                      {e.location ? ` · ${e.location}` : ""}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => onDeleteEvent(e.id)}
+                    className="rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                    title="Delete event"
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
             ))}
@@ -522,13 +518,9 @@ function DayView({
               >
                 <div>
                   <div className="font-medium">{t.title}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {t.due_at ? `due ${t.due_at}` : "no due date"}
-                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{t.due_at ? `due ${t.due_at}` : "no due date"}</div>
                 </div>
-                <span className="rounded-full border px-3 py-1 text-xs text-muted-foreground">
-                  {t.status}
-                </span>
+                <span className="rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
               </button>
             ))}
           </div>
@@ -545,11 +537,13 @@ function WeekView({
   eventsByDay,
   tasksByDay,
   onToggleTask,
+  onDeleteEvent,
 }: {
   weekDays: Date[];
   eventsByDay: Map<string, EventRow[]>;
   tasksByDay: Map<string, TaskRow[]>;
   onToggleTask: (id: string, status: "open" | "done") => void;
+  onDeleteEvent: (id: string) => void;
 }) {
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -566,13 +560,22 @@ function WeekView({
               <div className="mt-2 space-y-2">
                 {ev.slice(0, 4).map((e) => (
                   <div key={e.id} className="rounded-xl border p-2">
-                    <div className="text-sm font-medium">{e.title}</div>
-                    <div className="mt-1 text-[11px] text-muted-foreground">{e.starts_at}</div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">{e.title}</div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">{e.start_at}</div>
+                      </div>
+                      <button
+                        onClick={() => onDeleteEvent(e.id)}
+                        className="shrink-0 rounded-lg border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                        title="Delete event"
+                      >
+                        Del
+                      </button>
+                    </div>
                   </div>
                 ))}
-                {ev.length > 4 ? (
-                  <div className="text-xs text-muted-foreground">+{ev.length - 4} more</div>
-                ) : null}
+                {ev.length > 4 ? <div className="text-xs text-muted-foreground">+{ev.length - 4} more</div> : null}
               </div>
             ) : (
               <div className="mt-2 text-sm text-muted-foreground">—</div>
@@ -587,15 +590,11 @@ function WeekView({
                     onClick={() => onToggleTask(t.id, t.status)}
                     className="flex w-full items-center justify-between gap-3 rounded-xl border p-2 text-left hover:bg-accent"
                   >
-                    <div className="text-sm font-medium">{t.title}</div>
-                    <span className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
-                      {t.status}
-                    </span>
+                    <div className="truncate text-sm font-medium">{t.title}</div>
+                    <span className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">{t.status}</span>
                   </button>
                 ))}
-                {tk.length > 4 ? (
-                  <div className="text-xs text-muted-foreground">+{tk.length - 4} more</div>
-                ) : null}
+                {tk.length > 4 ? <div className="text-xs text-muted-foreground">+{tk.length - 4} more</div> : null}
               </div>
             ) : (
               <div className="mt-2 text-sm text-muted-foreground">—</div>
@@ -610,22 +609,25 @@ function WeekView({
 function MonthView({
   monthDays,
   anchorDay,
+  weekStartsOn,
   eventsByDay,
   tasksByDay,
   onToggleTask,
 }: {
   monthDays: Date[];
   anchorDay: Date;
+  weekStartsOn: "sun" | "mon";
   eventsByDay: Map<string, EventRow[]>;
   tasksByDay: Map<string, TaskRow[]>;
   onToggleTask: (id: string, status: "open" | "done") => void;
 }) {
+  const labels = weekdayLabels(weekStartsOn);
   const weeks = Math.ceil(monthDays.length / 7);
 
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-7 gap-2 text-xs text-muted-foreground">
-        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((x) => (
+        {labels.map((x) => (
           <div key={x} className="px-1">
             {x}
           </div>
@@ -658,7 +660,7 @@ function MonthView({
 
               <div className="mt-2 space-y-1">
                 {ev.slice(0, 2).map((e) => (
-                  <div key={e.id} className="truncate rounded-lg border px-2 py-1 text-xs">
+                  <div key={e.id} className="truncate rounded-lg border px-2 py-1 text-xs" title={e.title}>
                     {e.title}
                   </div>
                 ))}
@@ -674,9 +676,7 @@ function MonthView({
                   </button>
                 ))}
                 {ev.length + tk.length > 4 ? (
-                  <div className="text-[11px] text-muted-foreground">
-                    +{ev.length + tk.length - 4} more
-                  </div>
+                  <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div>
                 ) : null}
               </div>
             </div>
@@ -710,20 +710,21 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
     if (!botId) return;
     if (!title.trim()) return;
 
+    if (mode === "event" && !when.trim()) return;
+
     setLoading(true);
     try {
       if (mode === "event") {
-        if (!when.trim()) return;
         await fetch("/api/schedule/events", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ bot_id: botId, title, starts_at: when }),
+          body: JSON.stringify({ bot_id: botId, title: title.trim(), start_at: when.trim() }),
         });
       } else {
         await fetch("/api/schedule/tasks", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ bot_id: botId, title, due_at: when || null }),
+          body: JSON.stringify({ bot_id: botId, title: title.trim(), due_at: when.trim() ? when.trim() : null }),
         });
       }
 
@@ -744,9 +745,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
             onClick={() => setMode(m)}
             className={[
               "flex-1 rounded-lg px-3 py-2 text-sm transition-colors",
-              mode === m
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              mode === m ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
           >
             {m === "event" ? "Event" : "Task"}
@@ -764,7 +763,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
       <input
         value={when}
         onChange={(e) => setWhen(e.target.value)}
-        placeholder={mode === "event" ? "Starts at (ISO string)" : "Due at (ISO or blank)"}
+        placeholder={mode === "event" ? "Start at (ISO string)" : "Due at (ISO or blank)"}
         className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
       />
 
