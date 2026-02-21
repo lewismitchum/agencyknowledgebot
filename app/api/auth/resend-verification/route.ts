@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
   const normalizedEmail = email.trim().toLowerCase();
 
-  const agency: any = await db.get(
+  const agency = await db.get(
     `SELECT id, email, email_verified, email_verify_last_sent_at
      FROM agencies
      WHERE email = ?`,
@@ -53,7 +53,8 @@ export async function POST(req: NextRequest) {
     agency.id
   );
 
-  const verifyUrl = `${getAppUrl()}/verify-email?token=${token}`;
+  const tokenParam = encodeURIComponent(token);
+  const verifyUrl = `${getAppUrl()}/verify-email?token=${tokenParam}`;
 
   if (process.env.NODE_ENV !== "production") {
     console.log("DEV verify link:", verifyUrl);
@@ -78,12 +79,6 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     console.error("Resend verification failed:", e);
-    if (process.env.NODE_ENV !== "production") {
-      return NextResponse.json(
-        { error: "Email sending failed. Check RESEND env vars and server logs." },
-        { status: 500 }
-      );
-    }
   }
 
   return ok;

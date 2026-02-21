@@ -43,9 +43,8 @@ async function ensureUserRoleColumns(db: Db) {
 }
 
 function resendConfigured() {
-  const key = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM;
-  return Boolean(key && from);
+  // We’re using Resend now
+  return Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM);
 }
 
 async function verifyTurnstile(token: string, ip: string | null) {
@@ -74,7 +73,7 @@ export async function GET() {
     ok: true,
     route: "/api/auth/signup",
     methods: ["GET", "POST"],
-    has_resend: resendConfigured(),
+    has_email: resendConfigured(),
   });
 }
 
@@ -125,7 +124,10 @@ export async function POST(req: NextRequest) {
       const token = makeToken();
       tokenHash = hashToken(token);
       expiresAt = isoFromNowMinutes(60);
-      verifyUrl = `${getAppUrl()}/verify-email?token=${token}`;
+
+      // ✅ IMPORTANT: url-encode the token so email clients don’t destroy it
+      const tokenParam = encodeURIComponent(token);
+      verifyUrl = `${getAppUrl()}/verify-email?token=${tokenParam}`;
     }
 
     await db.run(
