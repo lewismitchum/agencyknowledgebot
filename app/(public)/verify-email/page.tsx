@@ -4,14 +4,7 @@ import VerifyEmailClient from "./verify-email-client";
 
 export const dynamic = "force-dynamic";
 
-export default function VerifyEmailPage({
-  searchParams,
-}: {
-  searchParams?: { [key: string]: string | string[] | undefined };
-}) {
-  const raw = searchParams?.token;
-  const token = Array.isArray(raw) ? raw[0] : raw;
-
+export default function VerifyEmailPage() {
   return (
     <Suspense
       fallback={
@@ -24,7 +17,7 @@ export default function VerifyEmailPage({
         </div>
       }
     >
-      <VerifyEmailClient token={token || ""} />
+      <VerifyEmailClient />
     </Suspense>
   );
 }
