@@ -1,3 +1,4 @@
+// app/api/billing/checkout/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { getDb, type Db } from "@/lib/db";
@@ -23,13 +24,15 @@ function getOrigin(req: NextRequest) {
 function getStripe() {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("Missing STRIPE_SECRET_KEY");
-  return new Stripe(key, { apiVersion: "2026-01-28.clover" });
+  // Avoid pinning to a non-standard/future API version string.
+  return new Stripe(key);
 }
 
 function priceIdForPlan(plan: PlanKey): string | null {
   if (plan === "starter") return process.env.STRIPE_PRICE_STARTER || null;
   if (plan === "pro") return process.env.STRIPE_PRICE_PRO || null;
   if (plan === "enterprise") return process.env.STRIPE_PRICE_ENTERPRISE || null;
+  if (plan === "corporation") return process.env.STRIPE_PRICE_CORPORATION || null;
   return null; // free has no price
 }
 
@@ -49,10 +52,7 @@ export async function POST(req: NextRequest) {
 
     const priceId = priceIdForPlan(desired);
     if (!priceId) {
-      return NextResponse.json(
-        { ok: false, error: "MISSING_PRICE_ID", plan: desired },
-        { status: 500 }
-      );
+      return NextResponse.json({ ok: false, error: "MISSING_PRICE_ID", plan: desired }, { status: 500 });
     }
 
     const origin = getOrigin(req);
@@ -85,9 +85,6 @@ export async function POST(req: NextRequest) {
     if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
 
     console.error("BILLING_CHECKOUT_ERROR", err);
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }

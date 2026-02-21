@@ -3,6 +3,8 @@ import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { openai } from "@/lib/openai";
 import { requireActiveMember } from "@/lib/authz";
+import { ensureSchema } from "@/lib/schema";
+import { getPlanLimits, normalizePlan } from "@/lib/plans";
 
 export const runtime = "nodejs";
 
@@ -10,8 +12,76 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function todayYmd() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+async function getDailyUsage(db: Db, agencyId: string, date: string) {
+  const row = (await db.get(
+    `SELECT messages_count, uploads_count
+     FROM usage_daily
+     WHERE agency_id = ? AND date = ?
+     LIMIT 1`,
+    agencyId,
+    date
+  )) as { messages_count?: number; uploads_count?: number } | undefined;
+
+  return {
+    messages_count: Number(row?.messages_count ?? 0),
+    uploads_count: Number(row?.uploads_count ?? 0),
+  };
+}
+
+async function incrementUploads(db: Db, agencyId: string, date: string, by: number) {
+  await db.run(
+    `INSERT INTO usage_daily (agency_id, date, messages_count, uploads_count)
+     VALUES (?, ?, 0, ?)
+     ON CONFLICT(agency_id, date)
+     DO UPDATE SET uploads_count = uploads_count + ?`,
+    agencyId,
+    date,
+    by,
+    by
+  );
+}
+
+async function enforceUploadLimit(db: Db, agencyId: string, planFromCtx: string | null, count: number) {
+  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { plan?: string | null }
+    | undefined;
+
+  const plan = normalizePlan(planRow?.plan ?? planFromCtx ?? null);
+  const limits = getPlanLimits(plan);
+  const dailyLimit = limits.daily_uploads;
+
+  if (dailyLimit == null) {
+    return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
+  }
+
+  const usage = await getDailyUsage(db, agencyId, todayYmd());
+
+  if (usage.uploads_count + count > Number(dailyLimit)) {
+    return {
+      ok: false as const,
+      used: usage.uploads_count,
+      dailyLimit: Number(dailyLimit),
+      plan,
+    };
+  }
+
+  return {
+    ok: true as const,
+    used: usage.uploads_count,
+    dailyLimit: Number(dailyLimit),
+    plan,
+  };
+}
+
 async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
-  // Prefer latest agency bot
   const agencyBot = (await db.get(
     `SELECT id
      FROM bots
@@ -23,7 +93,6 @@ async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
 
   if (agencyBot?.id) return agencyBot.id;
 
-  // Fall back to latest user bot
   const userBot = (await db.get(
     `SELECT id
      FROM bots
@@ -68,6 +137,9 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
     const form = await req.formData();
     const files = form.getAll("files") as File[];
 
@@ -75,9 +147,20 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: false, error: "No files uploaded" }, { status: 400 });
     }
 
-    const db: Db = await getDb();
+    // Enforce daily upload limit BEFORE hitting OpenAI
+    const uploadGate = await enforceUploadLimit(db, ctx.agencyId, ctx.plan, files.length);
+    if (!uploadGate.ok) {
+      return Response.json(
+        {
+          error: "DAILY_UPLOAD_LIMIT_EXCEEDED",
+          used: uploadGate.used,
+          daily_limit: uploadGate.dailyLimit,
+          plan: uploadGate.plan,
+        },
+        { status: 429 }
+      );
+    }
 
-    // Allow bot_id from client, but fallback safely if missing
     let bot_id = String(form.get("bot_id") ?? "").trim();
     if (!bot_id) {
       const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
@@ -113,18 +196,15 @@ export async function POST(req: NextRequest) {
     const uploaded: Array<{ document_id: string; filename: string; openai_file_id: string }> = [];
 
     for (const file of files) {
-      // 1) Upload file to OpenAI Files API
       const uploadedFile = await openai.files.create({
         file,
         purpose: "assistants",
       });
 
-      // 2) Attach file to the bot's vector store
       const vsFile = await openai.vectorStores.files.create(vectorStoreId, {
         file_id: uploadedFile.id,
       });
 
-      // 3) Poll until indexed
       const start = Date.now();
       while (true) {
         const cur = await openai.vectorStores.files.retrieve(vsFile.id, {
@@ -132,27 +212,22 @@ export async function POST(req: NextRequest) {
         });
 
         if (cur.status === "completed") break;
-
-        if (cur.status === "failed") {
-          throw new Error(`Indexing failed for ${file.name}`);
-        }
-
-        if (Date.now() - start > 120_000) {
-          throw new Error(`Indexing timed out for ${file.name}`);
-        }
+        if (cur.status === "failed") throw new Error(`Indexing failed for ${file.name}`);
+        if (Date.now() - start > 120_000) throw new Error(`Indexing timed out for ${file.name}`);
 
         await new Promise((r) => setTimeout(r, 1500));
       }
 
-      // 4) Save metadata in DB
       const created_at = nowIso();
 
       await db.run(
-        `INSERT INTO documents (id, agency_id, bot_id, filename, openai_file_id, created_at)
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)`,
+        `INSERT INTO documents (id, agency_id, bot_id, title, mime_type, bytes, openai_file_id, created_at)
+         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?)`,
         ctx.agencyId,
         bot_id,
         file.name,
+        file.type || null,
+        file.size ?? 0,
         uploadedFile.id,
         created_at
       );
@@ -174,6 +249,9 @@ export async function POST(req: NextRequest) {
         openai_file_id: uploadedFile.id,
       });
     }
+
+    // increment usage AFTER success
+    await incrementUploads(db, ctx.agencyId, todayYmd(), files.length);
 
     return Response.json({ ok: true, bot_id, uploaded });
   } catch (err: any) {

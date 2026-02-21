@@ -101,6 +101,9 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
+    // Upload enforcement happens in the upload route (vector store upload),
+    // not in this list endpoint.
+
     return Response.json(
       {
         ok: false,

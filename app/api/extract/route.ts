@@ -104,10 +104,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!bot.vector_store_id) {
-      return Response.json(
-        { error: "Bot has no vector_store_id (billing or quota issue)" },
-        { status: 400 }
-      );
+      return Response.json({ error: "Bot has no vector_store_id (billing or quota issue)" }, { status: 400 });
     }
 
     const instructions = `
@@ -131,17 +128,20 @@ Return ONLY valid JSON:
 }
 
 Rules:
-- If date exists but time doesn't, use T00:00:00Z.
+- Use ISO 8601. If date exists but time doesn't, use T00:00:00Z.
 - confidence must be between 0 and 1.
 - If none found, return {"items": []}.
 `.trim();
 
     let resp: any;
     try {
+      // IMPORTANT: scope file_search to THIS document by referencing it explicitly in the query.
+      // We can’t hard-filter a single file in vector store via file_search, so we do the next best:
+      // request excerpts only about the doc title + include the exact file id in the prompt.
       resp = await openai.responses.create({
         model: "gpt-4.1-mini",
         instructions,
-        input: `Extract from document "${doc.title}" only.`,
+        input: `Extract ONLY from the document titled "${doc.title}". The OpenAI file id is "${doc.openai_file_id}". Do not use any other document.`,
         tools: [
           {
             type: "file_search",
@@ -185,9 +185,7 @@ Rules:
       if (!type || !title) continue;
 
       const confidenceRaw = Number(it?.confidence ?? 0);
-      const confidence = Number.isFinite(confidenceRaw)
-        ? Math.max(0, Math.min(1, confidenceRaw))
-        : 0;
+      const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0;
 
       const notes = it?.source_excerpt
         ? `${String(it.source_excerpt).slice(0, 400)}\n\nconfidence: ${confidence}`

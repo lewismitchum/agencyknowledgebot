@@ -11,6 +11,10 @@ export const runtime = "nodejs";
  * - Idempotent
  * - Repairs legacy drift instead of assuming fresh DB
  * - Matches what routes actually expect (no “thin tables”)
+ *
+ * Billing note:
+ * - We add Stripe columns to agencies (customer/subscription ids, current_period_end)
+ *   using ALTER TABLE guards (SQLite safe/idempotent).
  */
 
 type Db = Pick<RealDb, "exec" | "run" | "get" | "all">;
@@ -30,14 +34,20 @@ async function tableExists(db: Db, tableName: string) {
 }
 
 async function getTableColumns(db: Db, tableName: string): Promise<string[]> {
-  const rows = (await db.all(
-    `PRAGMA table_info(${qIdent(tableName)})`
-  )) as Array<{ name: string }>;
+  const rows = (await db.all(`PRAGMA table_info(${qIdent(tableName)})`)) as Array<{
+    name: string;
+  }>;
   return rows.map((r) => r.name);
 }
 
 function has(cols: string[], col: string) {
   return cols.includes(col);
+}
+
+async function addColumnIfMissing(db: Db, table: string, col: string, sqlTypeAndDefault: string) {
+  const cols = await getTableColumns(db, table);
+  if (has(cols, col)) return;
+  await db.exec(`ALTER TABLE ${qIdent(table)} ADD COLUMN ${qIdent(col)} ${sqlTypeAndDefault};`);
 }
 
 /**
@@ -56,11 +66,7 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
   const legacyAgencyCol = has(cols, "agency_id") ? "agency_id" : null;
   if (!legacyAgencyCol) return;
 
-  const legacyDateCol = has(cols, "date")
-    ? "date"
-    : has(cols, "day")
-      ? "day"
-      : null;
+  const legacyDateCol = has(cols, "date") ? "date" : has(cols, "day") ? "day" : null;
 
   const legacyMsgCol = has(cols, "messages_count")
     ? "messages_count"
@@ -70,11 +76,7 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
         ? "count"
         : null;
 
-  const legacyUploadsCol = has(cols, "uploads_count")
-    ? "uploads_count"
-    : has(cols, "uploads")
-      ? "uploads"
-      : null;
+  const legacyUploadsCol = has(cols, "uploads_count") ? "uploads_count" : has(cols, "uploads") ? "uploads" : null;
 
   const dateExpr = legacyDateCol ? qIdent(legacyDateCol) : "''";
   const msgExpr = legacyMsgCol ? qIdent(legacyMsgCol) : "0";
@@ -266,6 +268,12 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+
+  // Stripe/billing columns (idempotent)
+  await addColumnIfMissing(db, "agencies", "stripe_customer_id", "TEXT");
+  await addColumnIfMissing(db, "agencies", "stripe_subscription_id", "TEXT");
+  await addColumnIfMissing(db, "agencies", "stripe_price_id", "TEXT");
+  await addColumnIfMissing(db, "agencies", "stripe_current_period_end", "TEXT");
 }
 
 /**

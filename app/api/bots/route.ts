@@ -11,10 +11,7 @@ export const runtime = "nodejs";
 
 function makeId(prefix: string) {
   const c: any = (globalThis as any).crypto;
-  const uuid =
-    c && typeof c.randomUUID === "function"
-      ? c.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const uuid = c && typeof c.randomUUID === "function" ? c.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}_${uuid}`;
 }
 
@@ -30,12 +27,22 @@ async function tryCreateVectorStore(name: string) {
 }
 
 async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | null) {
-  const planRow = (await db.get(
-    `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
-    agencyId
-  )) as { plan: string | null } | undefined;
+  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { plan: string | null }
+    | undefined;
 
   return normalizePlan(planRow?.plan ?? fallbackPlan ?? null);
+}
+
+async function getAgencyBotCount(db: Db, agencyId: string) {
+  const row = (await db.get(
+    `SELECT COUNT(*) as c
+     FROM bots
+     WHERE agency_id = ? AND owner_user_id IS NULL`,
+    agencyId
+  )) as { c: number } | undefined;
+
+  return Number(row?.c ?? 0);
 }
 
 /**
@@ -56,9 +63,7 @@ async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
 
   const botId = makeId("bot");
   const defaultName = "Agency Bot";
-  const vs = await tryCreateVectorStore(
-    `Louis.Ai • Agency Bot • ${defaultName} • ${agencyId}`
-  );
+  const vs = await tryCreateVectorStore(`Louis.Ai • Agency Bot • ${defaultName} • ${agencyId}`);
 
   await db.run(
     `INSERT INTO bots
@@ -108,16 +113,11 @@ export async function GET(req: NextRequest) {
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED")
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE")
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     console.error("BOTS_GET_ERROR", err);
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
 
@@ -132,8 +132,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => ({}));
     const name = typeof body?.name === "string" ? body.name.trim() : "";
-    const description =
-      typeof body?.description === "string" ? body.description.trim() : null;
+    const description = typeof body?.description === "string" ? body.description.trim() : null;
 
     if (!name) {
       return NextResponse.json({ error: "Missing name" }, { status: 400 });
@@ -142,36 +141,27 @@ export async function POST(req: NextRequest) {
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const limits = getPlanLimits(plan);
 
-    const maxAgencyBots =
-      limits?.max_agency_bots ?? null;
+    const maxAgencyBots = limits?.max_agency_bots ?? null;
 
     if (maxAgencyBots != null) {
-      const row = (await db.get(
-        `SELECT COUNT(*) as c
-         FROM bots
-         WHERE agency_id = ? AND owner_user_id IS NULL`,
-        ctx.agencyId
-      )) as { c: number } | undefined;
-
-      const current = Number(row?.c ?? 0);
+      const current = await getAgencyBotCount(db, ctx.agencyId);
       if (current >= Number(maxAgencyBots)) {
         return NextResponse.json(
           {
             ok: false,
             error: "BOT_LIMIT_EXCEEDED",
+            code: "BOT_LIMIT_EXCEEDED",
             plan,
             kind: "agency_bot",
             used: current,
-            limit: maxAgencyBots,
+            limit: Number(maxAgencyBots),
           },
           { status: 403 }
         );
       }
     }
 
-    const vs = await tryCreateVectorStore(
-      `Louis.Ai • Agency Bot • ${name} • ${ctx.agencyId}`
-    );
+    const vs = await tryCreateVectorStore(`Louis.Ai • Agency Bot • ${name} • ${ctx.agencyId}`);
     const botId = makeId("bot");
 
     await db.run(
@@ -214,17 +204,11 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED")
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE")
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    if (code === "FORBIDDEN_NOT_OWNER")
-      return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
 
     console.error("BOTS_POST_ERROR", err);
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }

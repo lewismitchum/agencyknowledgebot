@@ -1,3 +1,4 @@
+// lib/db.ts
 import { createClient, type Client } from "@libsql/client";
 
 let _client: Client | null = null;
@@ -19,14 +20,50 @@ function getClient(): Client {
   return _client;
 }
 
-type RunResult = { changes: number; lastID?: string | number };
+export type RunResult = { changes: number; lastID?: string | number };
 
 export type Db = {
-  run: (sql: string, ...args: any[]) => Promise<{ changes: number; lastID?: string | number }>;
+  run: (sql: string, ...args: any[]) => Promise<RunResult>;
   get: <T = any>(sql: string, ...args: any[]) => Promise<T | undefined>;
   all: <T = any>(sql: string, ...args: any[]) => Promise<T[]>;
   exec: (sql: string) => Promise<void>;
 };
+
+function stripSqlComments(sql: string) {
+  // Basic stripping for schema bootstrap blocks. Avoids breaking on semicolons inside comments.
+  return sql.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--.*$/gm, "");
+}
+
+function splitSqlStatements(sql: string): string[] {
+  // Minimal splitter: handles semicolons inside single/double quoted strings.
+  const s = stripSqlComments(sql);
+  const out: string[] = [];
+  let cur = "";
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    const prev = i > 0 ? s[i - 1] : "";
+
+    if (ch === "'" && !inDouble && prev !== "\\") inSingle = !inSingle;
+    if (ch === `"` && !inSingle && prev !== "\\") inDouble = !inDouble;
+
+    if (ch === ";" && !inSingle && !inDouble) {
+      const stmt = cur.trim();
+      if (stmt) out.push(stmt);
+      cur = "";
+      continue;
+    }
+
+    cur += ch;
+  }
+
+  const last = cur.trim();
+  if (last) out.push(last);
+
+  return out;
+}
 
 export async function getDb(): Promise<Db> {
   const client = getClient();
@@ -48,8 +85,10 @@ export async function getDb(): Promise<Db> {
     },
 
     async exec(sql: string) {
-      const parts = sql.split(";").map(s => s.trim()).filter(Boolean);
-      for (const part of parts) await client.execute(part);
+      const statements = splitSqlStatements(sql);
+      for (const stmt of statements) {
+        await client.execute(stmt);
+      }
     },
   };
 }
