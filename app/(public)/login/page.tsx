@@ -22,13 +22,24 @@ declare global {
   }
 }
 
+function looksLikeNotVerified(msg: string) {
+  const s = (msg || "").toLowerCase();
+  return s.includes("not verified") || s.includes("email_not_verified") || s.includes("verify your email");
+}
+
 export default function LoginPage() {
   const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
+
   const [tsToken, setTsToken] = useState<string>("");
+
+  // remember email user tried (for resend)
+  const [lastEmail, setLastEmail] = useState<string>("");
 
   // when script loads AFTER first render, we trigger another render attempt
   const [scriptReady, setScriptReady] = useState(false);
@@ -61,6 +72,40 @@ export default function LoginPage() {
     setTsToken("");
   }
 
+  async function onResendVerification() {
+    setErr("");
+    setOk("");
+
+    const email = (lastEmail || "").trim().toLowerCase();
+    if (!email) {
+      setErr("Enter your email, then try logging in once so I know where to resend.");
+      return;
+    }
+
+    setResending(true);
+    try {
+      const r = await fetch("/api/auth/resend-verification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email }),
+      });
+
+      // your API should return ok even if email doesn't exist (avoid enumeration)
+      if (!r.ok) {
+        const raw = await r.text().catch(() => "");
+        setErr(raw || "Could not resend verification email.");
+        return;
+      }
+
+      setOk("If an account exists for that email, we just sent a new verification link. Check your inbox/spam.");
+    } catch (e: any) {
+      setErr(e?.message || "Network error");
+    } finally {
+      setResending(false);
+    }
+  }
+
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErr("");
@@ -69,6 +114,8 @@ export default function LoginPage() {
     const fd = new FormData(e.currentTarget);
     const email = String(fd.get("email") || "").trim();
     const password = String(fd.get("password") || "");
+
+    setLastEmail(email);
 
     if (!email || !password) {
       setErr("Missing fields");
@@ -114,7 +161,8 @@ export default function LoginPage() {
       }
 
       if (!r.ok) {
-        setErr(j?.error || j?.message || raw || "Login failed");
+        const msg = j?.error || j?.message || raw || "Login failed";
+        setErr(msg);
         resetTurnstile();
         return;
       }
@@ -129,6 +177,8 @@ export default function LoginPage() {
       setLoading(false);
     }
   }
+
+  const showResend = looksLikeNotVerified(err);
 
   return (
     <>
@@ -150,6 +200,19 @@ export default function LoginPage() {
               <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">
                 <div className="font-medium">Login error</div>
                 <div className="mt-1 text-muted-foreground">{err}</div>
+
+                {showResend ? (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={onResendVerification}
+                      disabled={resending}
+                      className="rounded-xl border bg-background px-3 py-2 text-sm hover:opacity-90 disabled:opacity-60"
+                    >
+                      {resending ? "Sending..." : "Resend verification email"}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
