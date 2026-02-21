@@ -1,19 +1,49 @@
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+import { headers } from "next/headers";
+
+type MeApiResponse =
+  | {
+      ok: true;
+      agency: { plan: string };
+      documents_count: number;
+      daily_remaining: number;
+      daily_resets_in_seconds: number;
+    }
+  | { ok?: false; error?: string; message?: string };
+
+async function getOriginFromHeaders() {
+  const h = await headers();
+
+  const proto = h.get("x-forwarded-proto") || "http";
+  const host = h.get("x-forwarded-host") || h.get("host");
+
+  if (host) return `${proto}://${host}`;
+
+  const vercel = process.env.VERCEL_URL;
+  if (vercel) return `https://${vercel}`;
+
+  return "http://localhost:3000";
+}
 
 async function getMe() {
   try {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || ""}/api/me`, {
-      cache: "no-store",
-      credentials: "include",
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as {
-  plan: string;
-  documents_count: number;
-  daily_remaining: number;
-  daily_resets_in_seconds: number;
-};
+    const h = await headers();
+    const cookie = h.get("cookie") || "";
+    const origin = await getOriginFromHeaders();
 
+    const res = await fetch(`${origin}/api/me`, {
+      cache: "no-store",
+      headers: {
+        cookie, // ✅ forward auth cookie
+      },
+    });
+
+    const data = (await res.json().catch(() => ({}))) as MeApiResponse;
+    if (!res.ok || !(data as any)?.ok) return null;
+
+    return data as Extract<MeApiResponse, { ok: true }>;
   } catch {
     return null;
   }
@@ -33,36 +63,44 @@ export default async function DashboardPage() {
 
   const docs = me?.documents_count ?? "—";
   const remaining = me?.daily_remaining ?? "—";
-  const reset = me?.daily_resets_in_seconds != null ? formatCountdown(me.daily_resets_in_seconds) : "—";
+  const reset =
+    me?.daily_resets_in_seconds != null
+      ? formatCountdown(me.daily_resets_in_seconds)
+      : "—";
+
+  const plan = me?.agency?.plan ? String(me.agency.plan).toUpperCase() : "—";
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
         <p className="mt-2 text-muted-foreground">
-          Workspace health at a glance. Docs-only answers, always.
+          Workspace health at a glance.
         </p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard title="Documents" value={String(docs)} sub="Uploads in your workspace" />
+        <StatCard
+          title="Documents"
+          value={String(docs)}
+          sub="Uploads in your workspace"
+        />
         <StatCard
           title="Messages left today"
           value={String(remaining)}
           sub={`Resets in ${reset} (America/Chicago)`}
         />
         <StatCard
-  title="Plan"
-  value={me?.plan ? String(me.plan).toUpperCase() : "—"}
-  sub="Plan limits are enforced server-side"
-/>
-
+          title="Plan"
+          value={plan}
+          sub="Plan limits are enforced server-side"
+        />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <Panel
           title="How Louis answers"
-          body="Louis only uses your uploaded docs. If the answer isn’t in your files, it won’t guess."
+          body="Docs are prioritized. For internal business questions, Louis won’t guess if your docs don’t contain the answer."
           footer={
             <div className="rounded-xl bg-muted p-3 font-mono text-sm">
               I don’t have that information in the docs yet.
