@@ -10,15 +10,11 @@ const PROTECTED_PAGE_PREFIXES = ["/app/chat", "/admin", "/launch"];
 const PROTECTED_API_PREFIXES = ["/api/chat", "/api/upload", "/api/me"];
 
 function isProtectedPage(pathname: string) {
-  return PROTECTED_PAGE_PREFIXES.some(
-    (p) => pathname === p || pathname.startsWith(p + "/")
-  );
+  return PROTECTED_PAGE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
 }
 
 function isProtectedApi(pathname: string) {
-  return PROTECTED_API_PREFIXES.some(
-    (p) => pathname === p || pathname.startsWith(p + "/")
-  );
+  return PROTECTED_API_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
 }
 
 function applySecurityHeaders(res: NextResponse) {
@@ -30,12 +26,9 @@ function applySecurityHeaders(res: NextResponse) {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
-    // Next needs inline scripts to hydrate App Router pages.
-    // Add Turnstile script domain so captcha can load.
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
     "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
     "script-src-attr 'self' 'unsafe-inline'",
-    // Turnstile uses an iframe.
     "frame-src https://challenges.cloudflare.com",
     "connect-src 'self' https://api.openai.com wss:",
   ].join("; ");
@@ -67,14 +60,18 @@ export function proxy(req: NextRequest) {
     return applySecurityHeaders(NextResponse.next());
   }
 
+  // ✅ Always allow OPTIONS through (preflight / framework probes).
+  // Do NOT require session for OPTIONS.
+  if (req.method === "OPTIONS") {
+    return applySecurityHeaders(new NextResponse(null, { status: 204 }));
+  }
+
   const session = req.cookies.get(SESSION_COOKIE)?.value;
 
   // Protect API routes
   if (isProtectedApi(pathname)) {
     if (!session) {
-      return applySecurityHeaders(
-        NextResponse.json({ user: null, error: "Unauthorized" }, { status: 401 })
-      );
+      return applySecurityHeaders(NextResponse.json({ user: null, error: "Unauthorized" }, { status: 401 }));
     }
     return applySecurityHeaders(NextResponse.next());
   }

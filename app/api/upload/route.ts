@@ -7,7 +7,9 @@ import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 
 export const runtime = "nodejs";
-
+export async function OPTIONS() {
+  return new Response(null, { status: 204 });
+}
 function nowIso() {
   return new Date().toISOString();
 }
