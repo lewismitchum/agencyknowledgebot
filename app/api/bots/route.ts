@@ -89,13 +89,7 @@ export async function GET(req: NextRequest) {
 
     await ensureDefaultAgencyBot(db, ctx.agencyId);
 
-    // ✅ IMPORTANT: use the authenticated *userId* (per-user),
-    // not a lookup by agency email (which can be shared).
-    const meUserId = String((ctx as any).userId || "").trim();
-    if (!meUserId) {
-      return NextResponse.json({ error: "Server error", message: "Missing session userId" }, { status: 500 });
-    }
-
+    // ✅ CRITICAL: filter private bots by ctx.userId only
     const bots = (await db.all(
       `SELECT id, agency_id, owner_user_id, name, description, vector_store_id, created_at
        FROM bots
@@ -105,7 +99,7 @@ export async function GET(req: NextRequest) {
          CASE WHEN owner_user_id IS NULL THEN 0 ELSE 1 END,
          created_at DESC`,
       ctx.agencyId,
-      meUserId
+      ctx.userId
     )) as Array<{
       id: string;
       agency_id: string;
@@ -139,13 +133,11 @@ export async function POST(req: NextRequest) {
     const name = typeof body?.name === "string" ? body.name.trim() : "";
     const description = typeof body?.description === "string" ? body.description.trim() : null;
 
-    if (!name) {
-      return NextResponse.json({ error: "Missing name" }, { status: 400 });
-    }
+    if (!name) return NextResponse.json({ error: "Missing name" }, { status: 400 });
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const limits = getPlanLimits(plan);
-    const maxAgencyBots = (limits as any)?.max_agency_bots ?? null;
+    const maxAgencyBots = limits?.max_agency_bots ?? null;
 
     if (maxAgencyBots != null) {
       const current = await getAgencyBotCount(db, ctx.agencyId);
