@@ -170,7 +170,18 @@ export default function DocsPage() {
         return;
       }
 
-      setDocs(Array.isArray(json?.docs) ? json.docs : []);
+      // API returns { ok: true, bot_id, documents: [{ id, title, openai_file_id, created_at, ... }] }
+      const rows = Array.isArray(json?.documents) ? json.documents : [];
+      const mapped: DocRow[] = rows.map((d: any) => ({
+        id: String(d?.id ?? ""),
+        filename: String(d?.title ?? d?.filename ?? "Untitled"),
+        bot_id: botId,
+        openai_file_id: d?.openai_file_id ? String(d.openai_file_id) : null,
+        created_at: d?.created_at ? String(d.created_at) : null,
+        bytes: d?.bytes == null ? null : Number(d.bytes),
+      }));
+
+      setDocs(mapped.filter((d) => d.id));
     } catch (e: any) {
       setError(e?.message ?? "Failed to load documents");
       setDocs([]);
