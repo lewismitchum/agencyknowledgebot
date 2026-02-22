@@ -9,23 +9,29 @@ export type Session = {
   agencyId: string;
   agencyEmail: string;
 
-  // ✅ Optional for backward compatibility
+  // Per-user identity (required for private bots/docs isolation)
   userId?: string;
   userEmail?: string;
+
+  // Optional legacy/extra fields (not trusted for authz)
   role?: "owner" | "admin" | "member";
   status?: "active" | "pending" | "blocked";
 };
 
+// Minimal cookie header parser (no deps)
 function readCookieFromHeader(cookieHeader: string | null, name: string) {
   if (!cookieHeader) return null;
   const parts = cookieHeader.split(";").map((p) => p.trim());
   for (const part of parts) {
-    if (part.startsWith(name + "=")) return decodeURIComponent(part.slice(name.length + 1));
+    if (part.startsWith(name + "=")) {
+      return decodeURIComponent(part.slice(name.length + 1));
+    }
   }
   return null;
 }
 
 export function signSession(payload: Session): string {
+  // Keep it small & stable
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
 }
 
@@ -41,8 +47,9 @@ export function verifySession(token: string): Session | null {
 
     if (decoded.userId) s.userId = String(decoded.userId);
     if (decoded.userEmail) s.userEmail = String(decoded.userEmail).trim().toLowerCase();
-    if (decoded.role) s.role = String(decoded.role).toLowerCase() as Session["role"];
-    if (decoded.status) s.status = String(decoded.status).toLowerCase() as Session["status"];
+
+    if (decoded.role) s.role = (String(decoded.role).toLowerCase() as Session["role"]);
+    if (decoded.status) s.status = (String(decoded.status).toLowerCase() as Session["status"]);
 
     if (s.role !== undefined) {
       const r = String(s.role).toLowerCase();

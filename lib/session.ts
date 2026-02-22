@@ -5,30 +5,24 @@ import { signSession } from "@/lib/auth";
 export const SESSION_COOKIE = "louis_session";
 
 /**
- * Session token stored in cookie.
- * We include userId/userEmail when available to prevent identity ambiguity
- * (critical for private bots, ownership checks, etc).
- *
- * Back-compat: older cookies may only have agencyId/agencyEmail.
+ * Session cookie.
+ * Must include per-user identity (userId/userEmail) so private bots/docs are isolated.
  */
 export function setSessionCookie(
   res: NextResponse,
   opts: {
     agencyId: string;
-    agencyEmail: string;
-    userId?: string;
-    userEmail?: string;
+    agencyEmail: string; // agency contact email
+    userId?: string;     // per-user id (users.id)
+    userEmail?: string;  // per-user email
   }
 ) {
-  const payload: any = {
+  const token = signSession({
     agencyId: opts.agencyId,
     agencyEmail: opts.agencyEmail,
-  };
-
-  if (opts.userId) payload.userId = opts.userId;
-  if (opts.userEmail) payload.userEmail = opts.userEmail;
-
-  const token = signSession(payload);
+    userId: opts.userId,
+    userEmail: opts.userEmail,
+  } as any);
 
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
