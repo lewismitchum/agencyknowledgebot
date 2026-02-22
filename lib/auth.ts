@@ -8,8 +8,11 @@ export type Session = {
   agencyId: string;
   agencyEmail: string;
 
-  // ✅ New (but optional for backward compatibility)
+  // ✅ Optional identity fields (backward compatible)
   userId?: string;
+  userEmail?: string;
+
+  // Optional (legacy/extra) — authz should still read role/status from DB
   role?: "owner" | "admin" | "member";
   status?: "active" | "pending" | "blocked";
 };
@@ -43,8 +46,10 @@ export function verifySession(token: string): Session | null {
 
     // ✅ Backward compatible: only attach these if present
     if (decoded.userId) s.userId = String(decoded.userId);
-    if (decoded.role) s.role = (String(decoded.role).toLowerCase() as Session["role"]);
-    if (decoded.status) s.status = (String(decoded.status).toLowerCase() as Session["status"]);
+    if (decoded.userEmail) s.userEmail = String(decoded.userEmail);
+
+    if (decoded.role) s.role = String(decoded.role).toLowerCase() as Session["role"];
+    if (decoded.status) s.status = String(decoded.status).toLowerCase() as Session["status"];
 
     // normalize role/status if provided
     if (s.role !== undefined) {
