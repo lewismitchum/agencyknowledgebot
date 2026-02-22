@@ -34,6 +34,7 @@ async function ensureUserColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
 }
 
 async function verifyTurnstile(token: string, ip: string | null) {
@@ -150,6 +151,7 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db).catch((e) => console.error("SCHEMA_ENSURE_FAILED", e));
+    await ensureUserColumns(db);
 
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -180,8 +182,8 @@ export async function POST(req: NextRequest) {
     }
 
     await ensureFirstOwner(db, { id: agency.id, email: agency.email });
-    await ensureUserColumns(db);
 
+    // Find the user row for THIS agency email
     let user = (await db.get(
       `SELECT id, email, email_verified, role, status
        FROM users
@@ -193,6 +195,7 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; email_verified: number; role: string | null; status: string | null }
       | undefined;
 
+    // If missing, create as MEMBER + PENDING (approval flow)
     if (!user?.id) {
       const id = crypto.randomUUID();
       const t = nowIso();
@@ -208,15 +211,22 @@ export async function POST(req: NextRequest) {
       user = { id, email: normalizedEmail, email_verified: 1, role: "member", status: "pending" };
     }
 
-    void normRole(user.role);
-    void normStatus(user.status);
+    const role = normRole(user.role);
+    const status = normStatus(user.status);
 
-    const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
+    const res = NextResponse.json({
+      ok: true,
+      redirectTo: "/app/chat",
+      user: { id: user.id, email: user.email, role, status },
+    });
 
+    // ✅ CRITICAL: include userId + userEmail in cookie
     setSessionCookie(res, {
       agencyId: agency.id,
       agencyEmail: agency.email,
-    });
+      userId: user.id,
+      userEmail: user.email,
+    } as any);
 
     return res;
   } catch (err: any) {
