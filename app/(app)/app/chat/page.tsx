@@ -51,6 +51,196 @@ async function safeJson(r: Response) {
   });
 }
 
+/**
+ * Minimal markdown renderer for assistant output.
+ * Supports:
+ * - paragraphs / line breaks
+ * - bullet/numbered lists
+ * - headings (#, ##, ###)
+ * - inline code `...`
+ * - code blocks ```...```
+ *
+ * No external deps (keeps bundle light).
+ */
+function renderInline(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const re = /`([^`]+)`/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push(
+      <code
+        key={`i-${m.index}`}
+        className="rounded bg-black/10 px-1 py-0.5 font-mono text-[0.85em]"
+      >
+        {m[1]}
+      </code>
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function AssistantMarkdown({ text }: { text: string }) {
+  const src = String(text ?? "").replace(/\r\n/g, "\n");
+  const lines = src.split("\n");
+
+  const blocks: React.ReactNode[] = [];
+
+  let i = 0;
+
+  function flushParagraph(par: string[]) {
+    if (!par.length) return;
+    const joined = par.join(" ").trim();
+    if (!joined) return;
+    blocks.push(
+      <p key={`p-${blocks.length}`} className="whitespace-pre-wrap">
+        {renderInline(joined)}
+      </p>
+    );
+  }
+
+  function flushList(kind: "ul" | "ol", items: string[]) {
+    if (!items.length) return;
+    const ListTag: any = kind;
+    blocks.push(
+      <ListTag
+        key={`${kind}-${blocks.length}`}
+        className={kind === "ul" ? "ml-5 list-disc space-y-1" : "ml-5 list-decimal space-y-1"}
+      >
+        {items.map((it, idx) => (
+          <li key={idx} className="whitespace-pre-wrap">
+            {renderInline(it)}
+          </li>
+        ))}
+      </ListTag>
+    );
+  }
+
+  let paragraph: string[] = [];
+  let listKind: "ul" | "ol" | null = null;
+  let listItems: string[] = [];
+
+  function flushAllTextBlocks() {
+    flushParagraph(paragraph);
+    paragraph = [];
+    if (listKind) flushList(listKind, listItems);
+    listKind = null;
+    listItems = [];
+  }
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // code fence
+    if (line.trim().startsWith("```")) {
+      flushAllTextBlocks();
+      const fence = line.trim();
+      const lang = fence.slice(3).trim(); // optional
+      i++;
+
+      const codeLines: string[] = [];
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      // consume closing fence if present
+      if (i < lines.length && lines[i].trim().startsWith("```")) i++;
+
+      blocks.push(
+        <pre
+          key={`code-${blocks.length}`}
+          className="overflow-x-auto rounded-xl border border-white/10 bg-black/10 p-3 text-[12px] leading-relaxed"
+        >
+          <code className="font-mono">
+            {lang ? `${lang}\n` : ""}
+            {codeLines.join("\n")}
+          </code>
+        </pre>
+      );
+      continue;
+    }
+
+    const trimmed = line.trim();
+
+    // blank line
+    if (!trimmed) {
+      flushAllTextBlocks();
+      i++;
+      continue;
+    }
+
+    // heading
+    const h = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (h) {
+      flushAllTextBlocks();
+      const level = h[1].length;
+      const content = h[2].trim();
+      const cls =
+        level === 1
+          ? "text-base font-semibold"
+          : level === 2
+          ? "text-sm font-semibold"
+          : "text-sm font-medium";
+      const Tag: any = level === 1 ? "h3" : "h4";
+      blocks.push(
+        <Tag key={`h-${blocks.length}`} className={cls}>
+          {renderInline(content)}
+        </Tag>
+      );
+      i++;
+      continue;
+    }
+
+    // unordered list
+    const ul = trimmed.match(/^[-*]\s+(.*)$/);
+    if (ul) {
+      // switch into UL mode
+      if (listKind && listKind !== "ul") {
+        flushList(listKind, listItems);
+        listItems = [];
+      }
+      flushParagraph(paragraph);
+      paragraph = [];
+      listKind = "ul";
+      listItems.push(ul[1].trim());
+      i++;
+      continue;
+    }
+
+    // ordered list
+    const ol = trimmed.match(/^\d+\.\s+(.*)$/);
+    if (ol) {
+      if (listKind && listKind !== "ol") {
+        flushList(listKind, listItems);
+        listItems = [];
+      }
+      flushParagraph(paragraph);
+      paragraph = [];
+      listKind = "ol";
+      listItems.push(ol[1].trim());
+      i++;
+      continue;
+    }
+
+    // normal text line (part of paragraph)
+    if (listKind) {
+      // if we were in a list but now we're not matching list item, end list
+      flushList(listKind, listItems);
+      listKind = null;
+      listItems = [];
+    }
+    paragraph.push(trimmed);
+    i++;
+  }
+
+  flushAllTextBlocks();
+
+  return <div className="space-y-2">{blocks.length ? blocks : <span />}</div>;
+}
+
 export default function ChatPage() {
   const [email, setEmail] = useState<string | null>(null);
   const [emailVerified, setEmailVerified] = useState(false);
@@ -145,8 +335,6 @@ export default function ChatPage() {
 
         setDocumentsCount(Number(j?.documents_count ?? 0));
 
-        // If /api/me hasn't been updated yet, keep safe defaults:
-        // dailyRemaining=0 means "unknown"; we won't block sending on it.
         const dr = Number(j?.daily_remaining ?? 0);
         const reset = Number(j?.daily_resets_in_seconds ?? 0);
 
@@ -155,7 +343,6 @@ export default function ChatPage() {
       } catch (e: any) {
         setBootError(e?.message || "Failed to load session");
       } finally {
-        // ✅ Always flip usageLoaded so UI doesn't get stuck on "Usage loading…"
         setUsageLoaded(true);
       }
     })();
@@ -274,7 +461,6 @@ export default function ChatPage() {
     if (!input.trim() || loading) return;
     if (accessBlocked) return;
 
-    // If dailyRemaining is known and zero, block. If unknown (0 due to /api/me bug), allow sending.
     if (dailyRemaining === 0 && dailyResetsInSeconds > 0) return;
 
     const userMsg = input.trim();
@@ -329,12 +515,8 @@ export default function ChatPage() {
 
       setMessages((m: Msg[]) => [...m, { role: "assistant", text: String(j?.answer ?? j?.text ?? "") }]);
 
-      // ✅ Mark usage as loaded once we successfully talk to the backend
       setUsageLoaded(true);
 
-      // Support both shapes:
-      // - old: { daily_remaining }
-      // - new: { usage: { used, daily_limit } }
       if (typeof j?.daily_remaining === "number") {
         setDailyRemaining(j.daily_remaining);
       } else if (j?.usage && typeof j.usage === "object") {
@@ -372,18 +554,10 @@ export default function ChatPage() {
     setMessages([]);
   }
 
-  // ✅ "known" means we've loaded usage at least once (even if reset timer isn't provided yet)
   const dailyKnown = usageLoaded;
-
-  // ✅ only block when we truly know you're at 0 and we have a reset countdown
   const dailyBlocked = dailyResetsInSeconds > 0 && dailyRemaining === 0;
 
-  const canSend =
-    !!selectedBotId &&
-    !loading &&
-    !accessBlocked &&
-    !dailyBlocked &&
-    input.trim().length > 0;
+  const canSend = !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0;
 
   if (accessBlocked) {
     const title = accessBlocked === "blocked" ? "Access blocked" : "Pending approval";
@@ -473,9 +647,7 @@ export default function ChatPage() {
           <div className="flex flex-wrap items-center gap-3">
             <div className="text-sm text-muted-foreground">
               Bot:{" "}
-              <span className="text-foreground font-medium">
-                {botsLoading ? "Loading…" : selectedBotName || "None"}
-              </span>
+              <span className="text-foreground font-medium">{botsLoading ? "Loading…" : selectedBotName || "None"}</span>
             </div>
 
             <select
@@ -507,9 +679,7 @@ export default function ChatPage() {
           <div className="h-[460px] overflow-y-auto rounded-[28px] border border-white/10 bg-background/50 p-4 shadow-sm backdrop-blur-xl">
             {messages.length === 0 ? (
               <div className="text-sm text-muted-foreground">
-                {selectedBotId
-                  ? "Ask anything. Louis will use your docs when relevant."
-                  : "Select a bot to start chatting."}
+                {selectedBotId ? "Ask anything. Louis will use your docs when relevant." : "Select a bot to start chatting."}
               </div>
             ) : (
               <div className="grid gap-3">
@@ -520,14 +690,12 @@ export default function ChatPage() {
                         m.role === "user" ? "bg-foreground text-background" : "bg-background/60 text-foreground"
                       }`}
                     >
-                      {m.text}
+                      {m.role === "assistant" ? <AssistantMarkdown text={m.text} /> : <span className="whitespace-pre-wrap">{m.text}</span>}
                     </div>
                   </div>
                 ))}
                 {loading && (
-                  <div className="rounded-[22px] bg-background/60 px-4 py-3 text-sm text-muted-foreground">
-                    Thinking…
-                  </div>
+                  <div className="rounded-[22px] bg-background/60 px-4 py-3 text-sm text-muted-foreground">Thinking…</div>
                 )}
                 <div ref={bottomRef} />
               </div>
