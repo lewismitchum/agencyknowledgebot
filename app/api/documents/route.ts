@@ -100,14 +100,39 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    // Keep auth behavior consistent: if not authed, fail here (not via redirect).
+    // Keep auth behavior consistent: if not authed, fail here.
     await requireActiveMember(req);
 
     // Compatibility shim:
-    // Older builds/UI still POST /api/documents for uploads.
-    // Uploads are handled by POST /api/upload.
+    // Older UI still POSTs /api/documents with multipart form-data.
+    // We must NOT redirect (redirects can drop the body).
+    // Instead, forward the FormData server-side to POST /api/upload.
+    const formData = await req.formData();
+
+    const headers = new Headers();
+    const cookie = req.headers.get("cookie");
+    const authorization = req.headers.get("authorization");
+
+    if (cookie) headers.set("cookie", cookie);
+    if (authorization) headers.set("authorization", authorization);
+
     const target = new URL("/api/upload", req.url);
-    return Response.redirect(target, 307);
+
+    const upstream = await fetch(target.toString(), {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+
+    const contentType = upstream.headers.get("content-type") || "application/json";
+    const text = await upstream.text();
+
+    return new Response(text, {
+      status: upstream.status,
+      headers: {
+        "content-type": contentType,
+      },
+    });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
     if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
