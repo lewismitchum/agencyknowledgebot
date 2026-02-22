@@ -1,19 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
-type ExtractionRow = {
+type ExtractionRunRow = {
   id: string;
-  type: "event" | "task";
-  title: string;
-  start_at: string | null;
-  end_at: string | null;
-  due_at: string | null;
-  confidence: number | null;
-  source_excerpt: string | null;
-  document_id: string | null;
-  bot_id: string | null;
+  agency_id: string;
+  bot_id: string;
+  document_id: string;
   created_at: string | null;
 };
 
@@ -25,15 +19,17 @@ function formatDate(iso: string | null) {
 }
 
 export default function ExtractionsPage() {
-  const [rows, setRows] = useState<ExtractionRow[]>([]);
+  const [runs, setRuns] = useState<ExtractionRunRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+
+  const count = useMemo(() => runs.length, [runs]);
 
   async function load() {
     setLoading(true);
     setError("");
     try {
-      const r = await fetch("/api/extractions", { credentials: "include" });
+      const r = await fetch("/api/extractions", { credentials: "include", cache: "no-store" });
       const raw = await r.text();
       let j: any = null;
       try {
@@ -41,15 +37,26 @@ export default function ExtractionsPage() {
       } catch {}
 
       if (!r.ok) {
-        setError(j?.error || raw || `Failed (${r.status})`);
-        setRows([]);
+        setError(j?.error || j?.message || raw || `Failed (${r.status})`);
+        setRuns([]);
         return;
       }
 
-      setRows(Array.isArray(j?.items) ? j.items : []);
+      const rows = Array.isArray(j?.extractions) ? j.extractions : [];
+      const mapped: ExtractionRunRow[] = rows
+        .map((x: any) => ({
+          id: String(x?.id ?? ""),
+          agency_id: String(x?.agency_id ?? ""),
+          bot_id: String(x?.bot_id ?? ""),
+          document_id: String(x?.document_id ?? ""),
+          created_at: x?.created_at ? String(x.created_at) : null,
+        }))
+        .filter((x: ExtractionRunRow) => x.id);
+
+      setRuns(mapped);
     } catch (e: any) {
       setError(e?.message || "Failed to load");
-      setRows([]);
+      setRuns([]);
     } finally {
       setLoading(false);
     }
@@ -65,8 +72,11 @@ export default function ExtractionsPage() {
         <div>
           <h1 className="text-2xl font-semibold">Extractions</h1>
           <p className="text-sm text-muted-foreground">
-            Events & tasks extracted from your documents (dev preview).
+            Extraction runs (each time you clicked “Extract” on a document).
           </p>
+          <div className="mt-2 text-sm text-muted-foreground">
+            {loading ? "Loading…" : `${count} run${count === 1 ? "" : "s"}`}
+          </div>
         </div>
 
         <div className="flex gap-2">
@@ -77,10 +87,7 @@ export default function ExtractionsPage() {
           >
             Refresh
           </button>
-          <Link
-            href="/app/docs"
-            className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
-          >
+          <Link href="/app/docs" className="rounded-md border px-3 py-2 text-sm hover:bg-muted">
             Back to docs
           </Link>
         </div>
@@ -97,59 +104,46 @@ export default function ExtractionsPage() {
           <table className="w-full text-left text-sm">
             <thead className="border-b bg-muted/40">
               <tr>
-                <th className="px-4 py-3 font-medium">Type</th>
-                <th className="px-4 py-3 font-medium">Title</th>
-                <th className="px-4 py-3 font-medium">When</th>
-                <th className="px-4 py-3 font-medium">Confidence</th>
+                <th className="px-4 py-3 font-medium">Run ID</th>
+                <th className="px-4 py-3 font-medium">Document</th>
+                <th className="px-4 py-3 font-medium">Bot</th>
                 <th className="px-4 py-3 font-medium">Created</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td className="px-4 py-4 text-muted-foreground" colSpan={5}>
+                  <td className="px-4 py-4 text-muted-foreground" colSpan={4}>
                     Loading…
                   </td>
                 </tr>
-              ) : rows.length === 0 ? (
+              ) : runs.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-muted-foreground" colSpan={5}>
-                    No extractions yet. Run “Extract” on a document from Docs.
+                  <td className="px-4 py-4 text-muted-foreground" colSpan={4}>
+                    No extraction runs yet. Click “Extract” on a document from Docs.
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => {
-                  const when =
-                    r.type === "event"
-                      ? `${r.start_at ?? "—"} → ${r.end_at ?? "—"}`
-                      : `Due: ${r.due_at ?? "—"}`;
-
-                  return (
-                    <tr key={r.id} className="border-b last:border-b-0">
-                      <td className="px-4 py-3">{r.type}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{r.title}</div>
-                        {r.source_excerpt ? (
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {r.source_excerpt}
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{when}</td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {r.confidence == null ? "—" : String(r.confidence)}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {formatDate(r.created_at)}
-                      </td>
-                    </tr>
-                  );
-                })
+                runs.map((r) => (
+                  <tr key={r.id} className="border-b last:border-b-0">
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{r.id}</div>
+                      <div className="text-xs text-muted-foreground">Agency: {r.agency_id}</div>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{r.document_id}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{r.bot_id}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{formatDate(r.created_at)}</td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      <p className="mt-4 text-xs text-muted-foreground">
+        Note: This page lists extraction runs. Extracted events/tasks appear in Schedule.
+      </p>
     </div>
   );
 }
