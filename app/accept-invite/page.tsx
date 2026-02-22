@@ -44,20 +44,17 @@ function AcceptInviteInner() {
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          const msg =
-            (data && (data.error || data.message)) ||
-            `Invite failed (HTTP ${res.status})`;
+          const msg = (data && (data.error || data.message)) || `Invite failed (HTTP ${res.status})`;
           if (!cancelled) setState({ status: "error", message: msg });
           return;
         }
 
-        const agencyName =
-          (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
+        const agencyName = (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
 
         if (!cancelled) setState({ status: "success", agencyName });
 
         setTimeout(() => {
-          window.location.href = "/chat";
+          window.location.href = "/app/chat";
         }, 600);
       } catch (e: any) {
         if (!cancelled) {
@@ -107,9 +104,7 @@ function AcceptInviteInner() {
             </>
           )}
 
-          {state.status === "loading" && (
-            <p className="text-sm text-muted-foreground">Accepting invite… hang tight.</p>
-          )}
+          {state.status === "loading" && <p className="text-sm text-muted-foreground">Accepting invite… hang tight.</p>}
 
           {state.status === "success" && (
             <>
@@ -119,7 +114,7 @@ function AcceptInviteInner() {
               <p className="text-sm text-muted-foreground">Redirecting you to chat…</p>
               <div className="flex gap-2">
                 <Button asChild>
-                  <Link href="/chat">Go to chat now</Link>
+                  <Link href="/app/chat">Go to chat now</Link>
                 </Button>
               </div>
             </>
@@ -140,9 +135,7 @@ function AcceptInviteInner() {
             </>
           )}
 
-          {state.status === "idle" && (
-            <p className="text-sm text-muted-foreground">Preparing…</p>
-          )}
+          {state.status === "idle" && <p className="text-sm text-muted-foreground">Preparing…</p>}
         </CardContent>
       </Card>
     </div>
