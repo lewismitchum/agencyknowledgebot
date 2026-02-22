@@ -3,13 +3,32 @@ import { getDb } from "@/lib/db";
 
 let didRun = false;
 
-export async function ensureInviteTables() {
-  if (didRun) return;
+function qIdent(name: string) {
+  return `"${name.replace(/"/g, '""')}"`;
+}
 
-  const db = await getDb();
+async function tableExists(db: any, tableName: string) {
+  const row = await db.get(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`,
+    tableName
+  );
+  return !!row?.name;
+}
 
-  // 1) Create tables/indexes (safe + idempotent)
+async function getTableColumns(db: any, tableName: string): Promise<string[]> {
+  const rows = (await db.all(`PRAGMA table_info(${qIdent(tableName)})`)) as Array<{ name: string }>;
+  return (rows ?? []).map((r) => r.name);
+}
+
+function has(cols: string[], col: string) {
+  return cols.includes(col);
+}
+
+async function rebuildAgencyInvites(db: any) {
+  // Drop + recreate (invites are ephemeral; safest migration is rebuild)
   await db.exec(`
+    DROP TABLE IF EXISTS agency_invites;
+
     CREATE TABLE IF NOT EXISTS agency_invites (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -25,26 +44,43 @@ export async function ensureInviteTables() {
     CREATE INDEX IF NOT EXISTS idx_agency_invites_email ON agency_invites(email);
     CREATE INDEX IF NOT EXISTS idx_agency_invites_token ON agency_invites(token_hash);
   `);
+}
 
-  // 2) Best-effort user columns (MUST be per-statement, catch duplicates)
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN role TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN status TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN created_at TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER");
-  } catch {}
+export async function ensureInviteTables() {
+  if (didRun) return;
+
+  const db = await getDb();
+
+  // Ensure the table exists (might be legacy shape from ensureSchema)
+  const exists = await tableExists(db, "agency_invites");
+
+  if (!exists) {
+    await rebuildAgencyInvites(db);
+  } else {
+    const cols = await getTableColumns(db, "agency_invites");
+    const required = ["id", "agency_id", "email", "token_hash", "expires_at", "created_at", "accepted_at", "revoked_at"];
+
+    const ok = required.every((c) => has(cols, c));
+    if (!ok) {
+      // Legacy table shape detected -> rebuild
+      await rebuildAgencyInvites(db);
+    } else {
+      // Still ensure indexes exist
+      await db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_agency_invites_agency ON agency_invites(agency_id);
+        CREATE INDEX IF NOT EXISTS idx_agency_invites_email ON agency_invites(email);
+        CREATE INDEX IF NOT EXISTS idx_agency_invites_token ON agency_invites(token_hash);
+      `);
+    }
+  }
+
+  // Best-effort user columns (safe per-statement)
+  try { await db.run("ALTER TABLE users ADD COLUMN role TEXT"); } catch {}
+  try { await db.run("ALTER TABLE users ADD COLUMN status TEXT"); } catch {}
+  try { await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT"); } catch {}
+  try { await db.run("ALTER TABLE users ADD COLUMN created_at TEXT"); } catch {}
+  try { await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT"); } catch {}
+  try { await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER"); } catch {}
 
   didRun = true;
 }
