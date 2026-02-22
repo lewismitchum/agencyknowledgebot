@@ -3,6 +3,13 @@
 
 import { useMemo, useState } from "react";
 
+async function safeJson(r: Response) {
+  return await r.json().catch(async () => {
+    const t = await r.text().catch(() => "");
+    return { _raw: t };
+  });
+}
+
 export default function SupportPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -31,17 +38,24 @@ export default function SupportPage() {
       const res = await fetch("/api/support", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, message, pageUrl }),
+        // no credentials needed for public
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          message: message.trim(),
+          pageUrl,
+        }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const data: any = await safeJson(res);
 
       if (!res.ok || !data?.ok) {
-        setErr(data?.error || "Failed to send. Try again.");
+        setErr(String(data?.error ?? "Failed to send. Try again."));
         return;
       }
 
-      setDone("Sent! We’ll get back to you shortly.");
+      const emailSent = Boolean(data?.email_sent);
+      setDone(emailSent ? "Sent! We’ll get back to you shortly." : "Received! We’ll get back to you shortly.");
       setMessage("");
     } catch {
       setErr("Failed to send. Try again.");
@@ -54,9 +68,7 @@ export default function SupportPage() {
     <div className="min-h-dvh flex items-center justify-center p-6">
       <div className="w-full max-w-lg rounded-2xl border bg-white/70 p-6 shadow-sm">
         <h1 className="text-2xl font-semibold">Support</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Send us a message and we’ll reply as soon as possible.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">Send us a message and we’ll reply as soon as possible.</p>
 
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <div>

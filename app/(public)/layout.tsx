@@ -1,6 +1,6 @@
+// app/(public)/layout.tsx
 import "@/app/globals.css";
 import Link from "next/link";
-import PublicHeader from "./public-header";
 
 export default function PublicLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -23,6 +23,12 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
               Pricing
             </Link>
             <Link
+              href="/support"
+              className="rounded-xl px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Support
+            </Link>
+            <Link
               href="/login"
               className="rounded-xl px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
             >
@@ -42,12 +48,13 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
 
       <footer className="border-t">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-10 md:flex-row md:items-center md:justify-between">
-          <div className="text-sm text-muted-foreground">
-            © {new Date().getFullYear()} Louis.Ai • Let’s Alter Minds
-          </div>
+          <div className="text-sm text-muted-foreground">© {new Date().getFullYear()} Louis.Ai • Let’s Alter Minds</div>
           <div className="flex gap-3 text-sm">
             <Link className="text-muted-foreground hover:text-foreground" href="/pricing">
               Pricing
+            </Link>
+            <Link className="text-muted-foreground hover:text-foreground" href="/support">
+              Support
             </Link>
             <Link className="text-muted-foreground hover:text-foreground" href="/signup">
               Start
