@@ -15,14 +15,18 @@ type BotRow = {
   vector_store_id: string | null;
 };
 
-export async function DELETE(req: NextRequest, ctx: { params: { botId: string } }) {
+export async function DELETE(
+  req: NextRequest,
+  context: { params: Promise<{ botId: string }> }
+) {
   try {
     const session = await requireActiveMember(req);
 
-    const botId = String(ctx?.params?.botId || "").trim();
+    const { botId: rawBotId } = await context.params;
+    const botId = String(rawBotId || "").trim();
     if (!botId) return NextResponse.json({ ok: false, error: "Missing botId" }, { status: 400 });
 
-    // ✅ Critical: identify the caller by userId (NOT by agency email)
+    // ✅ Critical: identify caller by userId (NOT by agency email)
     const meUserId = String((session as any)?.userId || "").trim();
     if (!meUserId) {
       return NextResponse.json(
@@ -64,7 +68,7 @@ export async function DELETE(req: NextRequest, ctx: { params: { botId: string } 
       );
     }
 
-    // Delete docs owned by this user for this bot (and any derived schedule/extractions)
+    // Docs owned by this user for this bot (and derived schedule/extractions)
     const docs = (await db.all(
       `SELECT id, openai_file_id
        FROM documents
@@ -76,7 +80,7 @@ export async function DELETE(req: NextRequest, ctx: { params: { botId: string } 
       meUserId
     )) as Array<{ id: string; openai_file_id: string | null }>;
 
-    // Best-effort: remove files from the bot's vector store first
+    // Best-effort: remove files from vector store
     if (bot.vector_store_id) {
       for (const d of docs) {
         if (!d.openai_file_id) continue;
@@ -136,7 +140,7 @@ export async function DELETE(req: NextRequest, ctx: { params: { botId: string } 
       meUserId
     );
 
-    // Delete the bot row
+    // Delete bot row
     await db.run(
       `DELETE FROM bots
        WHERE id = ? AND agency_id = ? AND owner_user_id = ?`,
