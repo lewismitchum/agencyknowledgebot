@@ -45,6 +45,10 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
 }
 
+export async function OPTIONS() {
+  return new Response(null, { status: 204 });
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -96,22 +100,14 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const ctx = await requireActiveMember(req);
+    // Keep auth behavior consistent: if not authed, fail here (not via redirect).
+    await requireActiveMember(req);
 
-    const db: Db = await getDb();
-    await ensureSchema(db);
-
-    // Upload enforcement happens in the upload route (vector store upload),
-    // not in this list endpoint.
-
-    return Response.json(
-      {
-        ok: false,
-        error: "METHOD_NOT_ALLOWED",
-        hint: "Uploads are not handled by POST /api/documents in this build.",
-      },
-      { status: 405 }
-    );
+    // Compatibility shim:
+    // Older builds/UI still POST /api/documents for uploads.
+    // Uploads are handled by POST /api/upload.
+    const target = new URL("/api/upload", req.url);
+    return Response.redirect(target, 307);
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
     if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
