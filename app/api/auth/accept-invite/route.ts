@@ -21,21 +21,38 @@ async function ensureUserAuthColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
 }
 
-async function getAgencyPlan(db: Db, agencyId: string) {
-  const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { plan?: string | null }
-    | undefined;
-  return normalizePlan(row?.plan ?? null);
+function pickMaxUsersFromLimits(limits: any): number | null {
+  const raw = limits?.max_users ?? limits?.users ?? limits?.seats ?? null;
+  if (raw == null) return null; // unlimited or not configured
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
-// max_users counts billable members only (exclude owner/admin)
-async function countBillableMembers(db: Db, agencyId: string) {
+// Billable seats = members only (exclude owner/admin), ignore blocked
+async function countBillableSeats(db: Db, agencyId: string): Promise<number> {
   const row = (await db.get(
     `SELECT COUNT(*) as c
      FROM users
      WHERE agency_id = ?
-       AND (role IS NULL OR role NOT IN ('owner','admin'))`,
+       AND COALESCE(status,'active') != 'blocked'
+       AND COALESCE(role,'member') NOT IN ('owner','admin')`,
     agencyId
+  )) as { c: number } | undefined;
+
+  return Number(row?.c ?? 0);
+}
+
+// Pending invites count toward seats too (same as /api/agency/invites)
+async function countActivePendingInvites(db: Db, agencyId: string): Promise<number> {
+  const row = (await db.get(
+    `SELECT COUNT(*) as c
+     FROM agency_invites
+     WHERE agency_id = ?
+       AND accepted_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > ?`,
+    agencyId,
+    nowIso()
   )) as { c: number } | undefined;
 
   return Number(row?.c ?? 0);
@@ -111,20 +128,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User already exists" }, { status: 409 });
     }
 
-    // Enforce max_users BEFORE inserting
+    // ✅ Enforce seat limits BEFORE inserting
     const plan = normalizePlan(agency.plan);
     const limits = getPlanLimits(plan);
-    const maxUsers = limits.max_users;
+    const maxUsers = pickMaxUsersFromLimits(limits);
 
     if (maxUsers != null) {
-      const used = await countBillableMembers(db, invite.agency_id);
-      if (used >= Number(maxUsers)) {
+      const used = await countBillableSeats(db, invite.agency_id);
+      const pendingInvites = await countActivePendingInvites(db, invite.agency_id);
+
+      // This invite is currently pending; after accept it becomes a pending user.
+      // Counting pendingInvites is still important to prevent multiple simultaneous accepts.
+      if (used + pendingInvites >= Number(maxUsers)) {
         return NextResponse.json(
           {
-            error: "USER_LIMIT_EXCEEDED",
-            code: "USER_LIMIT_EXCEEDED",
+            ok: false,
+            error: "SEAT_LIMIT_EXCEEDED",
+            code: "SEAT_LIMIT_EXCEEDED",
             plan,
             used,
+            pending_invites: pendingInvites,
             limit: Number(maxUsers),
           },
           { status: 403 }
