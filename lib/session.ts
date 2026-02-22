@@ -5,20 +5,30 @@ import { signSession } from "@/lib/auth";
 export const SESSION_COOKIE = "louis_session";
 
 /**
- * Identity-only session.
- * Role/status/userId come from DB via `getOrCreateUser` + `requireActiveMember/requireOwner` in `lib/authz.ts`.
+ * Session token stored in cookie.
+ * We include userId/userEmail when available to prevent identity ambiguity
+ * (critical for private bots, ownership checks, etc).
+ *
+ * Back-compat: older cookies may only have agencyId/agencyEmail.
  */
 export function setSessionCookie(
   res: NextResponse,
   opts: {
     agencyId: string;
     agencyEmail: string;
+    userId?: string;
+    userEmail?: string;
   }
 ) {
-  const token = signSession({
+  const payload: any = {
     agencyId: opts.agencyId,
     agencyEmail: opts.agencyEmail,
-  });
+  };
+
+  if (opts.userId) payload.userId = opts.userId;
+  if (opts.userEmail) payload.userEmail = opts.userEmail;
+
+  const token = signSession(payload);
 
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
