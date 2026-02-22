@@ -2,7 +2,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { openai } from "@/lib/openai";
-import { getOrCreateUser } from "@/lib/users";
 import { requireActiveMember, requireOwner } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
@@ -11,7 +10,10 @@ export const runtime = "nodejs";
 
 function makeId(prefix: string) {
   const c: any = (globalThis as any).crypto;
-  const uuid = c && typeof c.randomUUID === "function" ? c.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const uuid =
+    c && typeof c.randomUUID === "function"
+      ? c.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}_${uuid}`;
 }
 
@@ -85,9 +87,14 @@ export async function GET(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const user = await getOrCreateUser(ctx.agencyId, ctx.agencyEmail);
-
     await ensureDefaultAgencyBot(db, ctx.agencyId);
+
+    // ✅ IMPORTANT: use the authenticated *userId* (per-user),
+    // not a lookup by agency email (which can be shared).
+    const meUserId = String((ctx as any).userId || "").trim();
+    if (!meUserId) {
+      return NextResponse.json({ error: "Server error", message: "Missing session userId" }, { status: 500 });
+    }
 
     const bots = (await db.all(
       `SELECT id, agency_id, owner_user_id, name, description, vector_store_id, created_at
@@ -98,7 +105,7 @@ export async function GET(req: NextRequest) {
          CASE WHEN owner_user_id IS NULL THEN 0 ELSE 1 END,
          created_at DESC`,
       ctx.agencyId,
-      user.id
+      meUserId
     )) as Array<{
       id: string;
       agency_id: string;
@@ -128,8 +135,6 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    await getOrCreateUser(ctx.agencyId, ctx.agencyEmail);
-
     const body = await req.json().catch(() => ({}));
     const name = typeof body?.name === "string" ? body.name.trim() : "";
     const description = typeof body?.description === "string" ? body.description.trim() : null;
@@ -138,10 +143,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing name" }, { status: 400 });
     }
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
-
-    const maxAgencyBots = limits?.max_agency_bots ?? null;
+    const maxAgencyBots = (limits as any)?.max_agency_bots ?? null;
 
     if (maxAgencyBots != null) {
       const current = await getAgencyBotCount(db, ctx.agencyId);
