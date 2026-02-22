@@ -1,3 +1,4 @@
+// lib/auth.ts
 import jwt from "jsonwebtoken";
 import type { NextRequest } from "next/server";
 
@@ -8,29 +9,23 @@ export type Session = {
   agencyId: string;
   agencyEmail: string;
 
-  // ✅ Optional identity fields (backward compatible)
+  // ✅ Optional for backward compatibility
   userId?: string;
   userEmail?: string;
-
-  // Optional (legacy/extra) — authz should still read role/status from DB
   role?: "owner" | "admin" | "member";
   status?: "active" | "pending" | "blocked";
 };
 
-// Minimal cookie header parser (no deps)
 function readCookieFromHeader(cookieHeader: string | null, name: string) {
   if (!cookieHeader) return null;
   const parts = cookieHeader.split(";").map((p) => p.trim());
   for (const part of parts) {
-    if (part.startsWith(name + "=")) {
-      return decodeURIComponent(part.slice(name.length + 1));
-    }
+    if (part.startsWith(name + "=")) return decodeURIComponent(part.slice(name.length + 1));
   }
   return null;
 }
 
 export function signSession(payload: Session): string {
-  // Keep it small & stable
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
 }
 
@@ -44,14 +39,11 @@ export function verifySession(token: string): Session | null {
       agencyEmail: String(decoded.agencyEmail),
     };
 
-    // ✅ Backward compatible: only attach these if present
     if (decoded.userId) s.userId = String(decoded.userId);
-    if (decoded.userEmail) s.userEmail = String(decoded.userEmail);
-
+    if (decoded.userEmail) s.userEmail = String(decoded.userEmail).trim().toLowerCase();
     if (decoded.role) s.role = String(decoded.role).toLowerCase() as Session["role"];
     if (decoded.status) s.status = String(decoded.status).toLowerCase() as Session["status"];
 
-    // normalize role/status if provided
     if (s.role !== undefined) {
       const r = String(s.role).toLowerCase();
       s.role = r === "owner" ? "owner" : r === "admin" ? "admin" : "member";
@@ -68,10 +60,8 @@ export function verifySession(token: string): Session | null {
 }
 
 export function getSessionFromRequest(req: NextRequest): Session | null {
-  // 1) Normal Next cookie API
   let token = req.cookies.get(COOKIE_NAME)?.value;
 
-  // 2) Fallback: raw Cookie header (needed in some Next proxy paths)
   if (!token) {
     token = readCookieFromHeader(req.headers.get("cookie"), COOKIE_NAME) || undefined;
   }
