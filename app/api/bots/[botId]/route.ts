@@ -1,8 +1,10 @@
 // app/api/bots/[botId]/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
+import { getOrCreateUser } from "@/lib/users";
 import { openai } from "@/lib/openai";
 
 export const runtime = "nodejs";
@@ -15,26 +17,28 @@ type BotRow = {
   vector_store_id: string | null;
 };
 
-export async function DELETE(
-  req: NextRequest,
-  context: { params: Promise<{ botId: string }> }
-) {
+type RouteCtx = { params: Promise<{ botId: string }> };
+
+export async function DELETE(req: NextRequest, context: RouteCtx) {
   try {
     const session = await requireActiveMember(req);
 
-    const params = await context.params;
-    const botId = String(params?.botId || "").trim();
-    if (!botId) return NextResponse.json({ ok: false, error: "Missing botId" }, { status: 400 });
+    const { botId } = await context.params;
+    const id = String(botId || "").trim();
+    if (!id) return NextResponse.json({ ok: false, error: "Missing botId" }, { status: 400 });
 
     const db: Db = await getDb();
     await ensureSchema(db);
+
+    // IMPORTANT: user.id is the actual users table id (not agency email)
+    const user = await getOrCreateUser(session.agencyId, session.agencyEmail);
 
     const bot = (await db.get(
       `SELECT id, agency_id, owner_user_id, name, vector_store_id
        FROM bots
        WHERE id = ? AND agency_id = ?
        LIMIT 1`,
-      botId,
+      id,
       session.agencyId
     )) as BotRow | undefined;
 
@@ -42,7 +46,9 @@ export async function DELETE(
       return NextResponse.json({ ok: false, error: "Bot not found" }, { status: 404 });
     }
 
-    // NEVER delete agency bots here
+    // HARD RULES:
+    // - Never delete agency bots here
+    // - Only delete your own private bots
     if (!bot.owner_user_id) {
       return NextResponse.json(
         { ok: false, error: "FORBIDDEN", message: "Agency bots cannot be deleted." },
@@ -50,15 +56,14 @@ export async function DELETE(
       );
     }
 
-    // ONLY delete your own private bots
-    if (bot.owner_user_id !== session.userId) {
+    if (bot.owner_user_id !== user.id) {
       return NextResponse.json(
         { ok: false, error: "FORBIDDEN", message: "You can only delete your own private bots." },
         { status: 403 }
       );
     }
 
-    // Collect docs for this private bot (owned by this user)
+    // Delete docs owned by this user for this bot
     const docs = (await db.all(
       `SELECT id, openai_file_id
        FROM documents
@@ -66,11 +71,11 @@ export async function DELETE(
          AND bot_id = ?
          AND owner_user_id = ?`,
       session.agencyId,
-      botId,
-      session.userId
+      bot.id,
+      user.id
     )) as Array<{ id: string; openai_file_id: string | null }>;
 
-    // Best-effort: remove files from vector store first
+    // Best-effort: remove files from vector store
     if (bot.vector_store_id) {
       for (const d of docs) {
         if (!d.openai_file_id) continue;
@@ -85,30 +90,30 @@ export async function DELETE(
       await db.run(
         `DELETE FROM schedule_events WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
         session.agencyId,
-        botId,
+        bot.id,
         d.id
       );
       await db.run(
         `DELETE FROM schedule_tasks WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
         session.agencyId,
-        botId,
+        bot.id,
         d.id
       );
       await db.run(
         `DELETE FROM extractions WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
         session.agencyId,
-        botId,
+        bot.id,
         d.id
       );
     }
 
-    // Delete docs
+    // Delete docs rows
     await db.run(
       `DELETE FROM documents
        WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?`,
       session.agencyId,
-      botId,
-      session.userId
+      bot.id,
+      user.id
     );
 
     // Delete conversations for this private bot owned by this user
@@ -118,28 +123,28 @@ export async function DELETE(
          SELECT id FROM conversations WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?
        )`,
       session.agencyId,
-      botId,
-      session.userId
+      bot.id,
+      user.id
     );
 
     await db.run(
       `DELETE FROM conversations
        WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?`,
       session.agencyId,
-      botId,
-      session.userId
+      bot.id,
+      user.id
     );
 
-    // Delete bot row
+    // Delete the bot row
     await db.run(
       `DELETE FROM bots
        WHERE id = ? AND agency_id = ? AND owner_user_id = ?`,
-      botId,
+      bot.id,
       session.agencyId,
-      session.userId
+      user.id
     );
 
-    // Best-effort: delete vector store (private bot only)
+    // Best-effort: delete vector store
     if (bot.vector_store_id) {
       try {
         await (openai as any).vectorStores.del(bot.vector_store_id);
