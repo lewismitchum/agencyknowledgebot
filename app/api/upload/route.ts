@@ -141,6 +141,10 @@ async function assertBotAccessAndGetVectorStore(db: Db, args: { bot_id: string; 
   return { ok: true as const, bot, vector_store_id: bot.vector_store_id };
 }
 
+function isFileLike(v: any): v is File {
+  return v && typeof v === "object" && typeof v.name === "string" && typeof v.arrayBuffer === "function";
+}
+
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -149,10 +153,27 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
 
     const form = await req.formData();
-    const files = form.getAll("files") as File[];
 
-    if (!files?.length) {
-      return Response.json({ ok: false, error: "No files uploaded" }, { status: 400 });
+    // Compatibility:
+    // Some UIs send a single "file" field; others send multiple under "files".
+    const rawA = form.getAll("files");
+    const rawB = form.getAll("file");
+    const files = [...rawA, ...rawB].filter(isFileLike) as File[];
+
+    if (!files.length) {
+      const keys: string[] = [];
+      try {
+        for (const [k] of (form as any).entries?.() ?? []) keys.push(String(k));
+      } catch {}
+      return Response.json(
+        {
+          ok: false,
+          error: "No files uploaded",
+          hint: "Expected multipart field name 'files' (multiple) or 'file' (single).",
+          received_fields: Array.from(new Set(keys)).slice(0, 50),
+        },
+        { status: 400 }
+      );
     }
 
     const uploadGate = await enforceUploadLimit(db, ctx.agencyId, ctx.plan, files.length);
