@@ -267,6 +267,17 @@ async function ensureCoreTables(db: Db) {
       token TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS support_tickets (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      from_email TEXT,
+      from_name TEXT,
+      message TEXT NOT NULL,
+      page_url TEXT,
+      email_sent INTEGER NOT NULL DEFAULT 0,
+      email_error TEXT
+    );
   `);
 
   // Stripe/billing columns (idempotent)
