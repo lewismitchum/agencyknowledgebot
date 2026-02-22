@@ -1,4 +1,3 @@
-// app/api/schedule/events/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -8,31 +7,6 @@ export const runtime = "nodejs";
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
-  const agencyBot = (await db.get(
-    `SELECT id
-     FROM bots
-     WHERE agency_id = ? AND owner_user_id IS NULL
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    agencyId
-  )) as { id: string } | undefined;
-
-  if (agencyBot?.id) return agencyBot.id;
-
-  const userBot = (await db.get(
-    `SELECT id
-     FROM bots
-     WHERE agency_id = ? AND owner_user_id = ?
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    agencyId,
-    userId
-  )) as { id: string } | undefined;
-
-  return userBot?.id ?? null;
 }
 
 async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
@@ -56,17 +30,12 @@ export async function OPTIONS() {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-    const db: Db = await getDb();
+    const db = await getDb();
     await ensureSchema(db);
 
     const url = new URL(req.url);
-    let bot_id = String(url.searchParams.get("bot_id") || "").trim();
-
-    if (!bot_id) {
-      const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
-      if (!fallback) return Response.json({ ok: false, error: "NO_BOTS" }, { status: 404 });
-      bot_id = fallback;
-    }
+    const bot_id = String(url.searchParams.get("bot_id") || "").trim();
+    if (!bot_id) return Response.json({ ok: false, error: "BOT_REQUIRED" }, { status: 400 });
 
     await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
@@ -81,45 +50,30 @@ export async function GET(req: NextRequest) {
 
     return Response.json({ ok: true, bot_id, events: events ?? [] });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
-    const msg = String(err?.message ?? err);
-    if (msg === "BOT_NOT_FOUND") return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
-    if (msg === "FORBIDDEN_BOT") return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
-
     console.error("SCHEDULE_EVENTS_GET_ERROR", err);
-    return Response.json({ error: "Server error", message: msg }, { status: 500 });
+    return Response.json({ error: "Server error" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-    const db: Db = await getDb();
+    const db = await getDb();
     await ensureSchema(db);
 
     const body = (await req.json().catch(() => null)) as any;
     const title = String(body?.title ?? "").trim();
-    let bot_id = String(body?.bot_id ?? "").trim();
+    const bot_id = String(body?.bot_id ?? "").trim();
     const start_at = String(body?.start_at ?? "").trim();
-    const end_at = body?.end_at == null ? null : String(body.end_at);
-    const location = body?.location == null ? null : String(body.location);
-    const notes = body?.notes == null ? null : String(body.notes);
+    const end_at = body?.end_at ?? null;
+    const location = body?.location ?? null;
+    const notes = body?.notes ?? null;
 
-    if (!title) return Response.json({ ok: false, error: "TITLE_REQUIRED" }, { status: 400 });
-    if (!start_at) return Response.json({ ok: false, error: "START_REQUIRED" }, { status: 400 });
-
-    if (!bot_id) {
-      const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
-      if (!fallback) return Response.json({ ok: false, error: "NO_BOTS" }, { status: 404 });
-      bot_id = fallback;
-    }
+    if (!title || !start_at || !bot_id)
+      return Response.json({ ok: false, error: "MISSING_FIELDS" }, { status: 400 });
 
     await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
-    const created_at = nowIso();
     await db.run(
       `INSERT INTO schedule_events (id, agency_id, bot_id, title, start_at, end_at, location, notes, created_at)
        VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -130,28 +84,30 @@ export async function POST(req: NextRequest) {
       end_at,
       location,
       notes,
-      created_at
+      nowIso()
     );
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
     console.error("SCHEDULE_EVENTS_POST_ERROR", err);
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return Response.json({ error: "Server error" }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-    const db: Db = await getDb();
+    const db = await getDb();
     await ensureSchema(db);
 
-    const body = (await req.json().catch(() => null)) as any;
-    const id = String(body?.id ?? "").trim();
+    const url = new URL(req.url);
+    let id = String(url.searchParams.get("id") || "").trim();
+
+    if (!id) {
+      const body = (await req.json().catch(() => null)) as any;
+      id = String(body?.id ?? "").trim();
+    }
+
     if (!id) return Response.json({ ok: false, error: "ID_REQUIRED" }, { status: 400 });
 
     const row = (await db.get(
@@ -167,15 +123,16 @@ export async function DELETE(req: NextRequest) {
 
     await assertBotAccess(db, { bot_id: row.bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
-    await db.run(`DELETE FROM schedule_events WHERE id = ? AND agency_id = ?`, id, ctx.agencyId);
+    await db.run(
+      `DELETE FROM schedule_events
+       WHERE id = ? AND agency_id = ?`,
+      id,
+      ctx.agencyId
+    );
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
     console.error("SCHEDULE_EVENTS_DELETE_ERROR", err);
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return Response.json({ error: "Server error" }, { status: 500 });
   }
 }

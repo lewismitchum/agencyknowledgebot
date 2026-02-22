@@ -1,4 +1,3 @@
-// app/api/schedule/tasks/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -56,7 +55,7 @@ export async function OPTIONS() {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-    const db: Db = await getDb();
+    const db = await getDb();
     await ensureSchema(db);
 
     const url = new URL(req.url);
@@ -84,30 +83,22 @@ export async function GET(req: NextRequest) {
 
     return Response.json({ ok: true, bot_id, tasks: tasks ?? [] });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
-    const msg = String(err?.message ?? err);
-    if (msg === "BOT_NOT_FOUND") return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
-    if (msg === "FORBIDDEN_BOT") return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
-
     console.error("SCHEDULE_TASKS_GET_ERROR", err);
-    return Response.json({ error: "Server error", message: msg }, { status: 500 });
+    return Response.json({ error: "Server error" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-    const db: Db = await getDb();
+    const db = await getDb();
     await ensureSchema(db);
 
     const body = (await req.json().catch(() => null)) as any;
     const title = String(body?.title ?? "").trim();
     let bot_id = String(body?.bot_id ?? "").trim();
-    const due_at = body?.due_at == null ? null : String(body.due_at);
-    const notes = body?.notes == null ? null : String(body.notes);
+    const due_at = body?.due_at ?? null;
+    const notes = body?.notes ?? null;
 
     if (!title) return Response.json({ ok: false, error: "TITLE_REQUIRED" }, { status: 400 });
 
@@ -119,7 +110,6 @@ export async function POST(req: NextRequest) {
 
     await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
-    const created_at = nowIso();
     await db.run(
       `INSERT INTO schedule_tasks (id, agency_id, bot_id, title, due_at, status, notes, created_at)
        VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, 'open', ?, ?)`,
@@ -128,24 +118,20 @@ export async function POST(req: NextRequest) {
       title,
       due_at,
       notes,
-      created_at
+      nowIso()
     );
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
     console.error("SCHEDULE_TASKS_POST_ERROR", err);
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return Response.json({ error: "Server error" }, { status: 500 });
   }
 }
 
 export async function PATCH(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-    const db: Db = await getDb();
+    const db = await getDb();
     await ensureSchema(db);
 
     const body = (await req.json().catch(() => null)) as any;
@@ -153,9 +139,8 @@ export async function PATCH(req: NextRequest) {
     const status = String(body?.status ?? "").trim();
 
     if (!id) return Response.json({ ok: false, error: "ID_REQUIRED" }, { status: 400 });
-    if (status !== "open" && status !== "done") {
+    if (status !== "open" && status !== "done")
       return Response.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
-    }
 
     const row = (await db.get(
       `SELECT id, bot_id
@@ -181,23 +166,25 @@ export async function PATCH(req: NextRequest) {
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
     console.error("SCHEDULE_TASKS_PATCH_ERROR", err);
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return Response.json({ error: "Server error" }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-    const db: Db = await getDb();
+    const db = await getDb();
     await ensureSchema(db);
 
-    const body = (await req.json().catch(() => null)) as any;
-    const id = String(body?.id ?? "").trim();
+    const url = new URL(req.url);
+    let id = String(url.searchParams.get("id") || "").trim();
+
+    if (!id) {
+      const body = (await req.json().catch(() => null)) as any;
+      id = String(body?.id ?? "").trim();
+    }
+
     if (!id) return Response.json({ ok: false, error: "ID_REQUIRED" }, { status: 400 });
 
     const row = (await db.get(
@@ -213,15 +200,16 @@ export async function DELETE(req: NextRequest) {
 
     await assertBotAccess(db, { bot_id: row.bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
-    await db.run(`DELETE FROM schedule_tasks WHERE id = ? AND agency_id = ?`, id, ctx.agencyId);
+    await db.run(
+      `DELETE FROM schedule_tasks
+       WHERE id = ? AND agency_id = ?`,
+      id,
+      ctx.agencyId
+    );
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
     console.error("SCHEDULE_TASKS_DELETE_ERROR", err);
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return Response.json({ error: "Server error" }, { status: 500 });
   }
 }
