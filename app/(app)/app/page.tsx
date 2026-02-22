@@ -1,6 +1,8 @@
 // app/(app)/app/page.tsx
 export const runtime = "nodejs";
 
+import { cookies } from "next/headers";
+
 type MePayload = {
   ok?: boolean;
   agency?: { plan?: string };
@@ -9,12 +11,32 @@ type MePayload = {
   daily_resets_in_seconds?: number;
 };
 
+function getBaseUrl() {
+  const explicit =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    process.env.NEXTAUTH_URL ||
+    "";
+
+  if (explicit) return String(explicit).replace(/\/+$/, "");
+
+  // safe local fallback
+  return "http://localhost:3000";
+}
+
 async function getMe() {
   try {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || ""}/api/me`, {
+    const allCookies = await cookies();
+    const cookieHeader = allCookies
+      .getAll()
+      .map((c: { name: string; value: string }) => `${c.name}=${encodeURIComponent(c.value)}`)
+      .join("; ");
+
+    const res = await fetch(`${getBaseUrl()}/api/me`, {
       cache: "no-store",
-      credentials: "include",
+      headers: cookieHeader ? { cookie: cookieHeader } : undefined,
     });
+
     if (!res.ok) return null;
     return (await res.json()) as MePayload;
   } catch {
@@ -39,44 +61,26 @@ export default async function DashboardPage() {
   const reset =
     me?.daily_resets_in_seconds != null ? formatCountdown(me.daily_resets_in_seconds) : null;
 
-  const remainingLabel =
-    remaining == null ? "Unlimited" : String(remaining);
+  const remainingLabel = remaining == null ? "Unlimited" : String(remaining);
 
   const remainingSub =
-    remaining == null
-      ? "No daily chat limit on your plan"
-      : `Resets in ${reset ?? "—"} (America/Chicago)`;
+    remaining == null ? "No daily chat limit on your plan" : `Resets in ${reset ?? "—"} (America/Chicago)`;
 
-  const plan =
-    me?.agency?.plan ? String(me.agency.plan).toUpperCase() : "—";
+  const plan = me?.agency?.plan ? String(me.agency.plan).toUpperCase() : "—";
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="mt-2 text-muted-foreground">
-          Workspace health at a glance.
-        </p>
+        <p className="mt-2 text-muted-foreground">Workspace health at a glance.</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard
-          title="Documents"
-          value={docs == null ? "—" : String(docs)}
-          sub="Uploads in your workspace"
-        />
+        <StatCard title="Documents" value={docs == null ? "—" : String(docs)} sub="Uploads in your workspace" />
 
-        <StatCard
-          title="Messages left today"
-          value={remainingLabel}
-          sub={remainingSub}
-        />
+        <StatCard title="Messages left today" value={remainingLabel} sub={remainingSub} />
 
-        <StatCard
-          title="Plan"
-          value={plan}
-          sub="Plan limits are enforced server-side"
-        />
+        <StatCard title="Plan" value={plan} sub="Plan limits are enforced server-side" />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -100,10 +104,7 @@ export default async function DashboardPage() {
               >
                 Upload docs
               </a>
-              <a
-                href="/app/chat"
-                className="inline-flex rounded-xl border px-4 py-2 text-sm hover:bg-accent"
-              >
+              <a href="/app/chat" className="inline-flex rounded-xl border px-4 py-2 text-sm hover:bg-accent">
                 Open chat
               </a>
             </div>
