@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type BotLite = { id: string; name: string };
+type BotRow = { id: string; name: string; owner_user_id: string | null };
 
 type EventRow = {
   id: string;
@@ -41,6 +41,8 @@ const DEFAULT_PREFS: Prefs = {
   show_events: true,
   show_done_tasks: false,
 };
+
+const BOT_STORAGE_KEY = "louis.schedule.selectedBotId";
 
 function isoDayKey(d: Date) {
   const x = new Date(d);
@@ -97,8 +99,15 @@ function weekdayLabels(weekStartsOn: "sun" | "mon") {
     : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 }
 
+function safeIso(iso: string | null | undefined) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
 export default function SchedulePage() {
-  const [bots, setBots] = useState<BotLite[]>([]);
+  const [bots, setBots] = useState<BotRow[]>([]);
   const [botId, setBotId] = useState<string>("");
 
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
@@ -121,16 +130,33 @@ export default function SchedulePage() {
   }, [prefs.timezone]);
 
   async function loadBots() {
-    const r = await fetch("/api/bots", { cache: "no-store" });
+    const r = await fetch("/api/bots", { cache: "no-store", credentials: "include" });
     const j = await r.json().catch(() => ({}));
     const list = Array.isArray(j?.bots) ? j.bots : [];
-    const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
-    setBots(lite);
-    if (!botId && lite.length) setBotId(lite[0].id);
+
+    const nextBots: BotRow[] = list.map((b: any) => ({
+      id: String(b.id),
+      name: String(b.name || "Bot"),
+      owner_user_id: (b.owner_user_id ?? null) as string | null,
+    }));
+
+    setBots(nextBots);
+
+    // Prefer: (1) localStorage selection, (2) agency bot, (3) first bot
+    let fromStorage: string | null = null;
+    try {
+      fromStorage = typeof window !== "undefined" ? window.localStorage.getItem(BOT_STORAGE_KEY) : null;
+    } catch {}
+
+    const storageOk = fromStorage && nextBots.some((b) => b.id === fromStorage);
+    const agencyBot = nextBots.find((b) => b.owner_user_id == null)?.id ?? null;
+    const initial = (storageOk ? fromStorage : null) ?? agencyBot ?? nextBots[0]?.id ?? "";
+
+    setBotId((prev) => prev || initial);
   }
 
   async function loadPrefs() {
-    const r = await fetch("/api/schedule/prefs", { cache: "no-store" });
+    const r = await fetch("/api/schedule/prefs", { cache: "no-store", credentials: "include" });
     const j = await r.json().catch(() => ({}));
     if (r.ok && j?.ok) {
       const p = j.prefs ? { ...DEFAULT_PREFS, ...j.prefs } : DEFAULT_PREFS;
@@ -144,6 +170,7 @@ export default function SchedulePage() {
     await fetch("/api/schedule/prefs", {
       method: "POST",
       headers: { "content-type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(next),
     }).catch(() => {});
   }
@@ -153,8 +180,14 @@ export default function SchedulePage() {
     setErr("");
     try {
       const [re, rt] = await Promise.all([
-        fetch(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, { cache: "no-store" }),
-        fetch(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, { cache: "no-store" }),
+        fetch(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, {
+          cache: "no-store",
+          credentials: "include",
+        }),
+        fetch(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, {
+          cache: "no-store",
+          credentials: "include",
+        }),
       ]);
       const je = await re.json().catch(() => ({}));
       const jt = await rt.json().catch(() => ({}));
@@ -177,7 +210,11 @@ export default function SchedulePage() {
   }, []);
 
   useEffect(() => {
-    if (botId) loadData(botId);
+    if (!botId) return;
+    try {
+      window.localStorage.setItem(BOT_STORAGE_KEY, botId);
+    } catch {}
+    loadData(botId);
   }, [botId]);
 
   const filteredEvents = useMemo(() => {
@@ -254,6 +291,33 @@ export default function SchedulePage() {
     return m;
   }, [filteredTasks]);
 
+  const recentItems = useMemo(() => {
+    const recEvents = [...events]
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, 5)
+      .map((e) => ({
+        kind: "event" as const,
+        id: e.id,
+        title: e.title,
+        when: `${safeIso(e.start_at)}${e.end_at ? ` → ${safeIso(e.end_at)}` : ""}`,
+        created_at: e.created_at,
+      }));
+
+    const recTasks = [...tasks]
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, 5)
+      .map((t) => ({
+        kind: "task" as const,
+        id: t.id,
+        title: t.title,
+        when: t.due_at ? `Due: ${safeIso(t.due_at)}` : "No due date",
+        created_at: t.created_at,
+      }));
+
+    const merged = [...recEvents, ...recTasks].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    return merged.slice(0, 8);
+  }, [events, tasks]);
+
   async function toggleTask(id: string, status: "open" | "done") {
     const nextStatus = status === "open" ? "done" : "open";
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: nextStatus } : t)));
@@ -261,6 +325,7 @@ export default function SchedulePage() {
       const r = await fetch("/api/schedule/tasks", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ id, status: nextStatus }),
       });
       const j = await r.json().catch(() => ({}));
@@ -271,13 +336,13 @@ export default function SchedulePage() {
   }
 
   async function deleteEvent(id: string) {
-    // optimistic: remove locally first
     const prev = events;
     setEvents((cur) => cur.filter((e) => e.id !== id));
     try {
       const r = await fetch("/api/schedule/events", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ id }),
       });
       const j = await r.json().catch(() => ({}));
@@ -308,6 +373,11 @@ export default function SchedulePage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Schedule</h1>
           <p className="mt-2 text-sm text-muted-foreground">{tzLabel} · personalized views · tasks + events</p>
+          {botId ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Viewing bot: <span className="font-mono">{botId}</span>
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-2 md:flex-row md:items-center">
@@ -319,6 +389,7 @@ export default function SchedulePage() {
             {bots.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
+                {b.owner_user_id == null ? " (Agency)" : ""}
               </option>
             ))}
           </select>
@@ -432,11 +503,42 @@ export default function SchedulePage() {
           </div>
         </div>
 
-        <div className="rounded-3xl border bg-card p-5 shadow-sm">
-          <div className="text-sm font-medium">Quick add</div>
-          <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
+        <div className="space-y-4">
+          <div className="rounded-3xl border bg-card p-5 shadow-sm">
+            <div className="text-sm font-medium">Recently created</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              Shows the latest events/tasks created (including from extraction), even if they’re outside the current calendar view.
+            </div>
 
-          <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
+            <div className="mt-4 space-y-2">
+              {loading ? (
+                <div className="text-sm text-muted-foreground">Loading…</div>
+              ) : recentItems.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No items yet for this bot.</div>
+              ) : (
+                recentItems.map((x) => (
+                  <div key={`${x.kind}:${x.id}`} className="rounded-2xl border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">{x.title}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{x.when}</div>
+                      </div>
+                      <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+                        {x.kind}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border bg-card p-5 shadow-sm">
+            <div className="text-sm font-medium">Quick add</div>
+            <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
+
+            <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
+          </div>
         </div>
       </div>
     </div>
@@ -718,12 +820,14 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
         await fetch("/api/schedule/events", {
           method: "POST",
           headers: { "content-type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({ bot_id: botId, title: title.trim(), start_at: when.trim() }),
         });
       } else {
         await fetch("/api/schedule/tasks", {
           method: "POST",
           headers: { "content-type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({ bot_id: botId, title: title.trim(), due_at: when.trim() ? when.trim() : null }),
         });
       }
