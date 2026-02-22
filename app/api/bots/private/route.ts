@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { openai } from "@/lib/openai";
 import { requireActiveMember } from "@/lib/authz";
-import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { getPlanLimits } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
@@ -28,14 +28,6 @@ async function tryCreateVectorStore(name: string) {
   }
 }
 
-async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | null) {
-  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { plan: string | null }
-    | undefined;
-
-  return normalizePlan(planRow?.plan ?? fallbackPlan ?? null);
-}
-
 function pickMaxPrivateBotsFromLimits(limits: any): number | null {
   const raw = limits?.max_private_bots ?? limits?.private_bots ?? limits?.user_bots ?? null;
   if (raw == null) return null;
@@ -43,47 +35,9 @@ function pickMaxPrivateBotsFromLimits(limits: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-async function ensureUserRow(db: Db, agencyId: string, userId: string, email: string) {
-  // best-effort drift patching for legacy columns
-  await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
-
-  // Create if missing (do NOT overwrite existing)
-  const existing = (await db.get(
-    `SELECT id FROM users WHERE id = ? AND agency_id = ? LIMIT 1`,
-    userId,
-    agencyId
-  )) as { id: string } | undefined;
-
-  if (existing?.id) return;
-
-  const ts = new Date().toISOString();
-  await db.run(
-    `INSERT INTO users (id, agency_id, email, role, status, created_at, updated_at, email_verified)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    userId,
-    agencyId,
-    email,
-    "member",
-    "active",
-    ts,
-    ts,
-    1
-  );
-}
-
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-
-    const userId = String((ctx as any)?.userId || "").trim();
-    if (!userId) {
-      return NextResponse.json({ error: "Server error", message: "Session missing userId" }, { status: 500 });
-    }
 
     const db: Db = await getDb();
     await ensureSchema(db);
@@ -94,7 +48,7 @@ export async function GET(req: NextRequest) {
        WHERE agency_id = ? AND owner_user_id = ?
        ORDER BY created_at DESC`,
       ctx.agencyId,
-      userId
+      ctx.userId
     );
 
     return NextResponse.json({ ok: true, bots: bots ?? [] });
@@ -112,16 +66,6 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
-    const userId = String((ctx as any)?.userId || "").trim();
-    const userEmail = String((ctx as any)?.userEmail || (ctx as any)?.email || (ctx as any)?.agencyEmail || "").trim();
-
-    if (!userId) {
-      return NextResponse.json({ error: "Server error", message: "Session missing userId" }, { status: 500 });
-    }
-    if (!userEmail) {
-      return NextResponse.json({ error: "Server error", message: "Session missing user email" }, { status: 500 });
-    }
-
     const body = await req.json().catch(() => ({}));
     const name = typeof body?.name === "string" ? body.name.trim() : "";
     const description = typeof body?.description === "string" ? body.description.trim() : null;
@@ -131,12 +75,8 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    // Make sure user row exists (private bots belong to a real user id)
-    await ensureUserRow(db, ctx.agencyId, userId, userEmail.toLowerCase());
-
     // Optional: enforce private bot cap by plan
-    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
-    const limits = getPlanLimits(plan);
+    const limits = getPlanLimits(ctx.plan);
     const maxPrivateBots = pickMaxPrivateBotsFromLimits(limits);
 
     if (maxPrivateBots != null) {
@@ -145,7 +85,7 @@ export async function POST(req: NextRequest) {
          FROM bots
          WHERE agency_id = ? AND owner_user_id = ?`,
         ctx.agencyId,
-        userId
+        ctx.userId
       )) as { c: number } | undefined;
 
       const current = Number(row?.c ?? 0);
@@ -154,7 +94,7 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "BOT_LIMIT_EXCEEDED",
-            plan,
+            plan: ctx.plan,
             kind: "private_bot",
             used: current,
             limit: Number(maxPrivateBots),
@@ -164,7 +104,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const vs = await tryCreateVectorStore(`Louis.Ai • Private Bot • ${name} • ${ctx.agencyId} • ${userId}`);
+    const vs = await tryCreateVectorStore(
+      `Louis.Ai • Private Bot • ${name} • ${ctx.agencyId} • ${ctx.userId}`
+    );
     const botId = makeId("bot");
 
     await db.run(
@@ -172,7 +114,7 @@ export async function POST(req: NextRequest) {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       botId,
       ctx.agencyId,
-      userId,
+      ctx.userId,
       name,
       description,
       vs.id,
@@ -205,12 +147,11 @@ export async function POST(req: NextRequest) {
       openai_error: vs.ok ? null : vs.error,
     });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-
-    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
 
     console.error("BOTS_PRIVATE_POST_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }
