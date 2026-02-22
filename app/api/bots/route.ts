@@ -47,10 +47,6 @@ async function getAgencyBotCount(db: Db, agencyId: string) {
   return Number(row?.c ?? 0);
 }
 
-/**
- * Ensures there is at least 1 agency bot.
- * Does NOT silently repair vector stores.
- */
 async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
   const existing = (await db.get(
     `SELECT id
@@ -89,7 +85,6 @@ export async function GET(req: NextRequest) {
 
     await ensureDefaultAgencyBot(db, ctx.agencyId);
 
-    // ✅ CRITICAL: filter private bots by ctx.userId only
     const bots = (await db.all(
       `SELECT id, agency_id, owner_user_id, name, description, vector_store_id, created_at
        FROM bots
@@ -100,23 +95,18 @@ export async function GET(req: NextRequest) {
          created_at DESC`,
       ctx.agencyId,
       ctx.userId
-    )) as Array<{
-      id: string;
-      agency_id: string;
-      owner_user_id: string | null;
-      name: string;
-      description: string | null;
-      vector_store_id: string | null;
-      created_at: string;
-    }>;
+    )) as any[];
 
-    return NextResponse.json({ ok: true, bots: bots ?? [] });
+    // ✅ TEMP DEBUG (remove after you confirm)
+    return NextResponse.json({
+      ok: true,
+      debug: { agencyId: ctx.agencyId, userId: ctx.userId, email: ctx.agencyEmail },
+      bots: bots ?? [],
+    });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
-
     if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
     console.error("BOTS_GET_ERROR", err);
     return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
@@ -143,15 +133,7 @@ export async function POST(req: NextRequest) {
       const current = await getAgencyBotCount(db, ctx.agencyId);
       if (current >= Number(maxAgencyBots)) {
         return NextResponse.json(
-          {
-            ok: false,
-            error: "BOT_LIMIT_EXCEEDED",
-            code: "BOT_LIMIT_EXCEEDED",
-            plan,
-            kind: "agency_bot",
-            used: current,
-            limit: Number(maxAgencyBots),
-          },
+          { ok: false, error: "BOT_LIMIT_EXCEEDED", code: "BOT_LIMIT_EXCEEDED", plan, kind: "agency_bot", used: current, limit: Number(maxAgencyBots) },
           { status: 403 }
         );
       }
@@ -172,38 +154,25 @@ export async function POST(req: NextRequest) {
       new Date().toISOString()
     );
 
-    const created = (await db.get(
+    const created = await db.get(
       `SELECT id, name, description, owner_user_id, vector_store_id, created_at
        FROM bots
        WHERE id = ?
        LIMIT 1`,
       botId
-    )) as
-      | {
-          id: string;
-          name: string;
-          description: string | null;
-          owner_user_id: string | null;
-          vector_store_id: string | null;
-          created_at: string;
-        }
-      | undefined;
+    );
 
     return NextResponse.json({
       ok: true,
       bot: created ?? null,
-      warning: vs.ok
-        ? null
-        : "Vector store creation failed (bot created, but uploads/chat won’t work until billing/quota is fixed).",
+      warning: vs.ok ? null : "Vector store creation failed (bot created, but uploads/chat won’t work until billing/quota is fixed).",
       openai_error: vs.ok ? null : vs.error,
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
-
     if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
-
     console.error("BOTS_POST_ERROR", err);
     return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
