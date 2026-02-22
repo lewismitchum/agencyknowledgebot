@@ -3,7 +3,6 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
-import { getOrCreateUser } from "@/lib/users";
 import { openai } from "@/lib/openai";
 import { ensureSchema } from "@/lib/schema";
 
@@ -36,14 +35,42 @@ async function tryCreateVectorStore(name: string, agencyId: string, userId: stri
   }
 }
 
+async function ensureUserRow(db: Db, agencyId: string, userId: string, email: string) {
+  const existing = await db.get(
+    `SELECT id FROM users WHERE id = ? AND agency_id = ? LIMIT 1`,
+    userId,
+    agencyId
+  );
+
+  if (existing?.id) return;
+
+  const ts = new Date().toISOString();
+
+  await db.run(
+    `INSERT INTO users (id, agency_id, email, role, status, created_at, updated_at, email_verified)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    userId,
+    agencyId,
+    email,
+    "member",
+    "active",
+    ts,
+    ts,
+    1
+  );
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
+    const userId = String((ctx as any)?.userId || "").trim();
+    if (!userId) {
+      return NextResponse.json({ error: "Server error", message: "Session missing userId" }, { status: 500 });
+    }
+
     const db: Db = await getDb();
     await ensureSchema(db);
-
-    const user = await getOrCreateUser(ctx.agencyId, ctx.agencyEmail);
 
     const bots = await db.all(
       `SELECT id, name, description, owner_user_id, vector_store_id, created_at
@@ -52,7 +79,7 @@ export async function GET(req: NextRequest) {
          AND owner_user_id = ?
        ORDER BY created_at DESC`,
       ctx.agencyId,
-      user.id
+      userId
     );
 
     return NextResponse.json({ ok: true, bots: bots ?? [] });
@@ -70,6 +97,13 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
+    const userId = String((ctx as any)?.userId || "").trim();
+    const userEmail = String((ctx as any)?.userEmail || (ctx as any)?.email || "").trim();
+
+    if (!userId) {
+      return NextResponse.json({ error: "Server error", message: "Session missing userId" }, { status: 500 });
+    }
+
     const body = (await req.json().catch(() => null)) as Body | null;
     const name = String(body?.name ?? "").trim();
     const description = typeof body?.description === "string" ? body.description.trim() : null;
@@ -79,10 +113,12 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    // ✅ CRITICAL: resolve real user row id (never trust ctx.userId)
-    const user = await getOrCreateUser(ctx.agencyId, ctx.agencyEmail);
+    // Ensure user exists
+    if (userEmail) {
+      await ensureUserRow(db, ctx.agencyId, userId, userEmail.toLowerCase());
+    }
 
-    const vs = await tryCreateVectorStore(name, ctx.agencyId, user.id);
+    const vs = await tryCreateVectorStore(name, ctx.agencyId, userId);
 
     const botId = makeId("bot");
     const createdAt = new Date().toISOString();
@@ -92,7 +128,7 @@ export async function POST(req: NextRequest) {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       botId,
       ctx.agencyId,
-      user.id,
+      userId,
       name,
       description || null,
       vs.id,
