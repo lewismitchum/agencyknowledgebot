@@ -65,6 +65,10 @@ export default function DocsPage() {
   // Repair state
   const [repairing, setRepairing] = useState(false);
 
+  // Extraction state
+  const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [extractMsg, setExtractMsg] = useState<string>("");
+
   // Plan / uploads
   const [plan, setPlan] = useState<string | null>(null);
   const [uploadsUsed, setUploadsUsed] = useState<number>(0);
@@ -94,7 +98,7 @@ export default function DocsPage() {
 
   async function refreshMe() {
     try {
-      const r = await fetch("/api/me", { credentials: "include" });
+      const r = await fetch("/api/me", { credentials: "include", cache: "no-store" });
       if (r.status === 401) {
         window.location.href = "/login";
         return;
@@ -111,7 +115,7 @@ export default function DocsPage() {
 
   async function loadBots() {
     try {
-      const r = await fetch("/api/bots", { credentials: "include" });
+      const r = await fetch("/api/bots", { credentials: "include", cache: "no-store" });
       const text = await r.text();
       let j: any = null;
       try {
@@ -156,6 +160,7 @@ export default function DocsPage() {
       const res = await fetch(`/api/documents${qs}`, {
         method: "GET",
         credentials: "include",
+        cache: "no-store",
       });
 
       const text = await res.text();
@@ -165,17 +170,21 @@ export default function DocsPage() {
       } catch {}
 
       if (!res.ok) {
-        setError(json?.error ?? text ?? `Failed to load documents (${res.status})`);
+        setError(json?.error ?? json?.message ?? text ?? `Failed to load documents (${res.status})`);
         setDocs([]);
         return;
       }
 
-      // API returns { ok: true, bot_id, documents: [{ id, title, openai_file_id, created_at, ... }] }
-      const rows = Array.isArray(json?.documents) ? json.documents : [];
+      const rows = Array.isArray(json?.documents)
+        ? json.documents
+        : Array.isArray(json?.docs)
+          ? json.docs
+          : [];
+
       const mapped: DocRow[] = rows.map((d: any) => ({
         id: String(d?.id ?? ""),
         filename: String(d?.title ?? d?.filename ?? "Untitled"),
-        bot_id: botId,
+        bot_id: String(d?.bot_id ?? botId),
         openai_file_id: d?.openai_file_id ? String(d.openai_file_id) : null,
         created_at: d?.created_at ? String(d.created_at) : null,
         bytes: d?.bytes == null ? null : Number(d.bytes),
@@ -243,6 +252,7 @@ export default function DocsPage() {
 
     setRepairing(true);
     setUploadMsg("");
+    setExtractMsg("");
     setError(null);
 
     try {
@@ -274,8 +284,68 @@ export default function DocsPage() {
     }
   }
 
+  async function onExtract(doc: DocRow) {
+    setExtractMsg("");
+    setUploadMsg("");
+    setError(null);
+
+    if (!selectedBotId) {
+      setExtractMsg("Pick a bot first.");
+      return;
+    }
+
+    setExtractingId(doc.id);
+
+    try {
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          bot_id: selectedBotId,
+          document_id: doc.id,
+        }),
+      });
+
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {}
+
+      if (!res.ok) {
+        // Plan gating / auth
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (res.status === 403) {
+          setExtractMsg("Extraction is a paid feature. Upgrade to unlock schedule/to-do extraction.");
+          return;
+        }
+        const msg = json?.error ?? json?.message ?? text ?? `Extraction failed (${res.status})`;
+        setExtractMsg(msg);
+        return;
+      }
+
+      const events = Array.isArray(json?.events) ? json.events.length : Number(json?.events_count ?? 0);
+      const tasks = Array.isArray(json?.tasks) ? json.tasks.length : Number(json?.tasks_count ?? 0);
+
+      setExtractMsg(
+        events || tasks
+          ? `Extracted ${events} event${events === 1 ? "" : "s"} and ${tasks} task${tasks === 1 ? "" : "s"}.`
+          : "Extraction complete."
+      );
+    } catch (e: any) {
+      setExtractMsg(e?.message ?? "Extraction failed");
+    } finally {
+      setExtractingId(null);
+    }
+  }
+
   async function onUpload() {
     setUploadMsg("");
+    setExtractMsg("");
     setError(null);
 
     if (!selectedBotId) {
@@ -329,7 +399,6 @@ export default function DocsPage() {
       } catch {}
 
       if (!res.ok) {
-        // Friendlier, canonical errors
         if (res.status === 403 && json?.error === "DAILY_UPLOAD_LIMIT_EXCEEDED") {
           await refreshMe();
           setUploadMsg(
@@ -473,6 +542,10 @@ export default function DocsPage() {
         </div>
       ) : null}
 
+      {extractMsg ? (
+        <div className="mb-4 rounded-md border bg-muted/40 p-3 text-sm">{extractMsg}</div>
+      ) : null}
+
       <div className="mb-4 rounded-lg border p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex-1">
@@ -560,14 +633,26 @@ export default function DocsPage() {
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(doc.created_at)}</td>
 
                     <td className="px-4 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => onDelete(doc)}
-                        disabled={deletingId === doc.id}
-                        className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-                      >
-                        {deletingId === doc.id ? "Deleting…" : "Delete"}
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onExtract(doc)}
+                          disabled={extractingId === doc.id || !selectedBotId}
+                          className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                          title="Extract schedule events / tasks from this document"
+                        >
+                          {extractingId === doc.id ? "Extracting…" : "Extract"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => onDelete(doc)}
+                          disabled={deletingId === doc.id}
+                          className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                        >
+                          {deletingId === doc.id ? "Deleting…" : "Delete"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
