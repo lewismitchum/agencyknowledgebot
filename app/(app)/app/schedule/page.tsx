@@ -121,7 +121,7 @@ export default function SchedulePage() {
   }, [prefs.timezone]);
 
   async function loadBots() {
-    const r = await fetch("/api/bots", { cache: "no-store" });
+    const r = await fetch("/api/bots", { cache: "no-store", credentials: "include" });
     const j = await r.json().catch(() => ({}));
     const list = Array.isArray(j?.bots) ? j.bots : [];
     const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
@@ -130,7 +130,7 @@ export default function SchedulePage() {
   }
 
   async function loadPrefs() {
-    const r = await fetch("/api/schedule/prefs", { cache: "no-store" });
+    const r = await fetch("/api/schedule/prefs", { cache: "no-store", credentials: "include" });
     const j = await r.json().catch(() => ({}));
     if (r.ok && j?.ok) {
       const p = j.prefs ? { ...DEFAULT_PREFS, ...j.prefs } : DEFAULT_PREFS;
@@ -145,6 +145,7 @@ export default function SchedulePage() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(next),
+      credentials: "include",
     }).catch(() => {});
   }
 
@@ -153,8 +154,14 @@ export default function SchedulePage() {
     setErr("");
     try {
       const [re, rt] = await Promise.all([
-        fetch(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, { cache: "no-store" }),
-        fetch(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, { cache: "no-store" }),
+        fetch(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, {
+          cache: "no-store",
+          credentials: "include",
+        }),
+        fetch(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, {
+          cache: "no-store",
+          credentials: "include",
+        }),
       ]);
       const je = await re.json().catch(() => ({}));
       const jt = await rt.json().catch(() => ({}));
@@ -255,6 +262,7 @@ export default function SchedulePage() {
   }, [filteredTasks]);
 
   async function toggleTask(id: string, status: "open" | "done") {
+    setErr("");
     const nextStatus = status === "open" ? "done" : "open";
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: nextStatus } : t)));
     try {
@@ -262,11 +270,13 @@ export default function SchedulePage() {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id, status: nextStatus }),
+        credentials: "include",
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) throw new Error(j?.error || "Failed to update");
-    } catch {
+      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to update");
+    } catch (e: any) {
       setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
+      setErr(e?.message || "Failed to update task");
     }
   }
 
@@ -274,34 +284,45 @@ export default function SchedulePage() {
     const ok = window.confirm("Delete this task?\n\nThis can’t be undone.");
     if (!ok) return;
 
+    setErr("");
     const prev = tasks;
     setTasks((cur) => cur.filter((t) => t.id !== id));
+
     try {
       const r = await fetch("/api/schedule/tasks", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id }),
+        credentials: "include",
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) throw new Error(j?.error || "Failed to delete task");
-    } catch {
+      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to delete task");
+    } catch (e: any) {
       setTasks(prev);
+      setErr(e?.message || "Failed to delete task");
     }
   }
 
   async function deleteEvent(id: string) {
+    const ok = window.confirm("Delete this event?\n\nThis can’t be undone.");
+    if (!ok) return;
+
+    setErr("");
     const prev = events;
     setEvents((cur) => cur.filter((e) => e.id !== id));
+
     try {
       const r = await fetch("/api/schedule/events", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id }),
+        credentials: "include",
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) throw new Error(j?.error || "Failed to delete");
-    } catch {
+      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to delete event");
+    } catch (e: any) {
       setEvents(prev);
+      setErr(e?.message || "Failed to delete event");
     }
   }
 
@@ -361,6 +382,12 @@ export default function SchedulePage() {
         </div>
       </div>
 
+      {err ? (
+        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {err}
+        </div>
+      ) : null}
+
       <div className="mt-6 grid gap-4 md:grid-cols-3">
         <div className="rounded-3xl border bg-card p-5 shadow-sm md:col-span-2">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -416,11 +443,6 @@ export default function SchedulePage() {
           <div className="mt-6">
             {loading ? (
               <div className="text-sm text-muted-foreground">Loading…</div>
-            ) : err ? (
-              <div className="rounded-2xl border bg-muted p-4 text-sm">
-                <div className="font-medium">Schedule error</div>
-                <div className="mt-1 text-muted-foreground">{err}</div>
-              </div>
             ) : view === "day" ? (
               <DayView
                 dayKey={dayKey}
@@ -766,7 +788,6 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
   async function submit() {
     if (!botId) return;
     if (!title.trim()) return;
-
     if (mode === "event" && !when.trim()) return;
 
     setLoading(true);
@@ -776,12 +797,14 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ bot_id: botId, title: title.trim(), start_at: when.trim() }),
+          credentials: "include",
         });
       } else {
         await fetch("/api/schedule/tasks", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ bot_id: botId, title: title.trim(), due_at: when.trim() ? when.trim() : null }),
+          credentials: "include",
         });
       }
 
