@@ -1,3 +1,4 @@
+// app/(app)/app/settings/members/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -60,6 +61,20 @@ function formatWhen(iso: string | null | undefined) {
   return d.toLocaleString();
 }
 
+function normRole(r: string | null): "owner" | "admin" | "member" {
+  const v = String(r || "").toLowerCase();
+  if (v === "owner") return "owner";
+  if (v === "admin") return "admin";
+  return "member";
+}
+
+function normStatus(s: string | null): "active" | "pending" | "blocked" {
+  const v = String(s || "").toLowerCase();
+  if (v === "active") return "active";
+  if (v === "blocked") return "blocked";
+  return "pending";
+}
+
 export default function MembersPage() {
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState("");
@@ -67,6 +82,7 @@ export default function MembersPage() {
 
   const [meRole, setMeRole] = useState<string | null>(null);
   const [meStatus, setMeStatus] = useState<string | null>(null);
+  const [meUserId, setMeUserId] = useState<string | null>(null);
 
   const [plan, setPlan] = useState<string | null>(null);
   const [seats, setSeats] = useState<SeatsInfo | null>(null);
@@ -116,6 +132,7 @@ export default function MembersPage() {
       const meJson = await meRes.json().catch(() => null);
       setMeRole(meJson?.user?.role ?? null);
       setMeStatus(meJson?.user?.status ?? null);
+      setMeUserId(meJson?.user?.id ?? null);
 
       if ((meJson?.user?.role ?? "") !== "owner") {
         setBootError("Owner only. You don’t have permission to manage members.");
@@ -273,7 +290,7 @@ export default function MembersPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Members</h1>
-          <p className="mt-2 text-muted-foreground">Approve users, block access, manage invites, and track seats.</p>
+          <p className="mt-2 text-muted-foreground">Approve users, block access, manage roles, and track seats.</p>
         </div>
         <div className="flex gap-2">
           <Button asChild variant="outline" className="rounded-full">
@@ -346,11 +363,7 @@ export default function MembersPage() {
                 placeholder="Invite by email…"
                 className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
-              <Button
-                className="rounded-full"
-                disabled={inviteBusy || !inviteEmail.trim() || seatsAtCap}
-                onClick={sendInvite}
-              >
+              <Button className="rounded-full" disabled={inviteBusy || !inviteEmail.trim() || seatsAtCap} onClick={sendInvite}>
                 Send invite
               </Button>
             </div>
@@ -359,9 +372,7 @@ export default function MembersPage() {
           {seatsAtCap ? (
             <div className="rounded-2xl border bg-muted p-3 text-sm">
               <div className="font-medium">You’re at your seat limit.</div>
-              <div className="mt-1 text-muted-foreground">
-                Revoke an invite, block a user, or upgrade your plan in Billing.
-              </div>
+              <div className="mt-1 text-muted-foreground">Revoke an invite, block a user, or upgrade your plan in Billing.</div>
             </div>
           ) : null}
 
@@ -405,7 +416,7 @@ export default function MembersPage() {
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Directory</CardTitle>
-          <CardDescription>Search and manage member access.</CardDescription>
+          <CardDescription>Search and manage member access + roles.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -428,12 +439,17 @@ export default function MembersPage() {
               <div className="text-sm text-muted-foreground">No members found.</div>
             ) : (
               filtered.map((m) => {
-                const status = (m.status || "pending") as any;
-                const role = (m.role || "member") as any;
+                const status = normStatus(m.status);
+                const role = normRole(m.role);
                 const busy = savingId === m.id;
 
-                // If you’re at cap, disable approving pending members (but allow blocking/revoking etc.)
+                const isMe = !!meUserId && m.id === meUserId;
+
+                // If you’re at cap, disable approving pending members (but allow blocking, role changes that reduce billable seats).
                 const disableApprove = seatsAtCap && status !== "active";
+
+                const isOwner = role === "owner";
+                const isAdmin = role === "admin";
 
                 return (
                   <div
@@ -449,6 +465,11 @@ export default function MembersPage() {
                         <Badge variant="outline" className="rounded-full">
                           {prettyRole(m.role)}
                         </Badge>
+                        {isMe ? (
+                          <Badge variant="secondary" className="rounded-full">
+                            You
+                          </Badge>
+                        ) : null}
                       </div>
                     </div>
 
@@ -456,7 +477,7 @@ export default function MembersPage() {
                       <Button
                         className="rounded-full"
                         disabled={busy || disableApprove}
-                        onClick={() => updateMember(m.id, "active", role === "owner" ? "owner" : role === "admin" ? "admin" : "member")}
+                        onClick={() => updateMember(m.id, "active", role)}
                       >
                         Approve
                       </Button>
@@ -465,7 +486,7 @@ export default function MembersPage() {
                         variant="outline"
                         className="rounded-full"
                         disabled={busy}
-                        onClick={() => updateMember(m.id, "pending", role === "owner" ? "owner" : role === "admin" ? "admin" : "member")}
+                        onClick={() => updateMember(m.id, "pending", role)}
                       >
                         Set pending
                       </Button>
@@ -473,16 +494,36 @@ export default function MembersPage() {
                       <Button
                         variant="destructive"
                         className="rounded-full"
-                        disabled={busy}
+                        disabled={busy || isMe}
                         onClick={() => updateMember(m.id, "blocked", "member")}
                       >
                         Block
                       </Button>
 
+                      {/* ✅ Admin controls */}
                       <Button
                         variant="outline"
                         className="rounded-full"
-                        disabled={busy || status !== "active"}
+                        disabled={busy || isOwner || isMe || status !== "active"}
+                        onClick={() => updateMember(m.id, "active", "admin")}
+                      >
+                        Make admin
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        className="rounded-full"
+                        disabled={busy || isOwner || isMe || !isAdmin}
+                        onClick={() => updateMember(m.id, status, "member")}
+                      >
+                        Remove admin
+                      </Button>
+
+                      {/* Keep owner controls, but don't let owner change themselves via UI */}
+                      <Button
+                        variant="outline"
+                        className="rounded-full"
+                        disabled={busy || status !== "active" || isMe}
                         onClick={() => updateMember(m.id, "active", "owner")}
                       >
                         Make owner
@@ -491,7 +532,7 @@ export default function MembersPage() {
                       <Button
                         variant="outline"
                         className="rounded-full"
-                        disabled={busy || String(m.role || "").toLowerCase() !== "owner"}
+                        disabled={busy || !isOwner || isMe}
                         onClick={() => updateMember(m.id, status === "blocked" ? "blocked" : status, "member")}
                       >
                         Make member
