@@ -10,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 type AcceptState =
   | { status: "idle" }
   | { status: "missing_token" }
-  | { status: "loading" }
+  | { status: "ready" }
+  | { status: "submitting" }
   | { status: "success"; agencyName?: string }
   | { status: "error"; message: string };
 
@@ -23,54 +24,71 @@ function AcceptInviteInner() {
 
   const [state, setState] = useState<AcceptState>({ status: "idle" });
 
-  useEffect(() => {
-    let cancelled = false;
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
 
-    async function run() {
-      if (!token) {
-        setState({ status: "missing_token" });
+  useEffect(() => {
+    if (!token) setState({ status: "missing_token" });
+    else setState({ status: "ready" });
+  }, [token]);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!token) {
+      setState({ status: "missing_token" });
+      return;
+    }
+
+    const p = password.trim();
+    const c = confirm.trim();
+
+    if (!p) {
+      setState({ status: "error", message: "Please enter a password." });
+      return;
+    }
+    if (p.length < 8) {
+      setState({ status: "error", message: "Password must be at least 8 characters." });
+      return;
+    }
+    if (p !== c) {
+      setState({ status: "error", message: "Passwords do not match." });
+      return;
+    }
+
+    setState({ status: "submitting" });
+
+    try {
+      const res = await fetch("/api/accept-invite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token, password: p }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const msg = (data && (data.error || data.message)) || `Invite failed (HTTP ${res.status})`;
+        setState({ status: "error", message: msg });
         return;
       }
 
-      setState({ status: "loading" });
+      const agencyName = (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
 
-      try {
-        const res = await fetch("/api/accept-invite", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ token }),
-        });
+      setState({ status: "success", agencyName });
+      setPassword("");
+      setConfirm("");
 
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok) {
-          const msg = (data && (data.error || data.message)) || `Invite failed (HTTP ${res.status})`;
-          if (!cancelled) setState({ status: "error", message: msg });
-          return;
-        }
-
-        const agencyName = (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
-
-        if (!cancelled) setState({ status: "success", agencyName });
-
-        setTimeout(() => {
-          window.location.href = "/app/chat";
-        }, 600);
-      } catch (e: any) {
-        if (!cancelled) {
-          setState({
-            status: "error",
-            message: e?.message || "Network error while accepting invite.",
-          });
-        }
-      }
+      setTimeout(() => {
+        window.location.href = "/app/chat";
+      }, 600);
+    } catch (e: any) {
+      setState({
+        status: "error",
+        message: e?.message || "Network error while accepting invite.",
+      });
     }
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
+  }
 
   return (
     <div className="mx-auto w-full max-w-xl px-4 py-10">
@@ -80,7 +98,7 @@ function AcceptInviteInner() {
             <div>
               <CardTitle>Accept invite</CardTitle>
               <CardDescription className="mt-1">
-                Joining an agency will give you access to its shared bot(s) and docs.
+                Set a password to finish joining the workspace.
               </CardDescription>
             </div>
             <Badge variant="secondary">Louis.Ai</Badge>
@@ -104,7 +122,56 @@ function AcceptInviteInner() {
             </>
           )}
 
-          {state.status === "loading" && <p className="text-sm text-muted-foreground">Accepting invite… hang tight.</p>}
+          {(state.status === "ready" ||
+            state.status === "submitting" ||
+            state.status === "error") && (
+            <form onSubmit={onSubmit} className="space-y-4">
+              <div>
+                <label className="text-sm font-medium">Password</label>
+                <input
+                  className="mt-1 w-full rounded-xl border px-3 py-2 bg-background"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="At least 8 characters"
+                  type="password"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">Confirm password</label>
+                <input
+                  className="mt-1 w-full rounded-xl border px-3 py-2 bg-background"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="Re-enter password"
+                  type="password"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              {state.status === "error" ? (
+                <p className="text-sm text-destructive">{state.message}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  By joining, your account will be pending until the owner approves you.
+                </p>
+              )}
+
+              <Button className="w-full" disabled={state.status === "submitting"}>
+                {state.status === "submitting" ? "Accepting…" : "Accept invite"}
+              </Button>
+
+              <div className="flex items-center justify-between text-sm">
+                <Link className="text-muted-foreground underline" href="/login">
+                  Already have an account?
+                </Link>
+                <Link className="text-muted-foreground underline" href="/support">
+                  Need help?
+                </Link>
+              </div>
+            </form>
+          )}
 
           {state.status === "success" && (
             <>
@@ -115,21 +182,6 @@ function AcceptInviteInner() {
               <div className="flex gap-2">
                 <Button asChild>
                   <Link href="/app/chat">Go to chat now</Link>
-                </Button>
-              </div>
-            </>
-          )}
-
-          {state.status === "error" && (
-            <>
-              <p className="text-sm">❌ Could not accept invite.</p>
-              <p className="text-sm text-muted-foreground">{state.message}</p>
-              <div className="flex gap-2">
-                <Button asChild variant="secondary">
-                  <Link href="/login">Try logging in</Link>
-                </Button>
-                <Button asChild variant="ghost">
-                  <Link href="/signup">Or create account</Link>
                 </Button>
               </div>
             </>
