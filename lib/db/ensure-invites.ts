@@ -1,8 +1,6 @@
 // lib/db/ensure-invites.ts
 import { getDb } from "@/lib/db";
 
-let didRun = false;
-
 function qIdent(name: string) {
   return `"${name.replace(/"/g, '""')}"`;
 }
@@ -25,7 +23,7 @@ function has(cols: string[], col: string) {
 }
 
 async function rebuildAgencyInvites(db: any) {
-  // Drop + recreate (invites are ephemeral; safest migration is rebuild)
+  // Invites are ephemeral -> safest migration is rebuild.
   await db.exec(`
     DROP TABLE IF EXISTS agency_invites;
 
@@ -47,25 +45,27 @@ async function rebuildAgencyInvites(db: any) {
 }
 
 export async function ensureInviteTables() {
-  if (didRun) return;
-
   const db = await getDb();
 
-  // Ensure the table exists (might be legacy shape from ensureSchema)
   const exists = await tableExists(db, "agency_invites");
 
   if (!exists) {
     await rebuildAgencyInvites(db);
   } else {
     const cols = await getTableColumns(db, "agency_invites");
-    const required = ["id", "agency_id", "email", "token_hash", "expires_at", "created_at", "accepted_at", "revoked_at"];
 
-    const ok = required.every((c) => has(cols, c));
-    if (!ok) {
-      // Legacy table shape detected -> rebuild
+    // Legacy table usually has `token` (NOT NULL) instead of `token_hash`/`expires_at`.
+    const isLegacy =
+      has(cols, "token") ||
+      !has(cols, "token_hash") ||
+      !has(cols, "expires_at") ||
+      !has(cols, "accepted_at") ||
+      !has(cols, "revoked_at");
+
+    if (isLegacy) {
       await rebuildAgencyInvites(db);
     } else {
-      // Still ensure indexes exist
+      // Ensure indexes exist
       await db.exec(`
         CREATE INDEX IF NOT EXISTS idx_agency_invites_agency ON agency_invites(agency_id);
         CREATE INDEX IF NOT EXISTS idx_agency_invites_email ON agency_invites(email);
@@ -81,6 +81,4 @@ export async function ensureInviteTables() {
   try { await db.run("ALTER TABLE users ADD COLUMN created_at TEXT"); } catch {}
   try { await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT"); } catch {}
   try { await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER"); } catch {}
-
-  didRun = true;
 }
