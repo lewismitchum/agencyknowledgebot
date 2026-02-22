@@ -2,9 +2,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { openai } from "@/lib/openai";
-import { getOrCreateUser } from "@/lib/users";
 import { requireActiveMember } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
@@ -43,13 +43,84 @@ function pickMaxPrivateBotsFromLimits(limits: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export async function POST(req: NextRequest) {
+async function ensureUserRow(db: Db, agencyId: string, userId: string, email: string) {
+  // best-effort drift patching for legacy columns
+  await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
+
+  // Create if missing (do NOT overwrite existing)
+  const existing = (await db.get(
+    `SELECT id FROM users WHERE id = ? AND agency_id = ? LIMIT 1`,
+    userId,
+    agencyId
+  )) as { id: string } | undefined;
+
+  if (existing?.id) return;
+
+  const ts = new Date().toISOString();
+  await db.run(
+    `INSERT INTO users (id, agency_id, email, role, status, created_at, updated_at, email_verified)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    userId,
+    agencyId,
+    email,
+    "member",
+    "active",
+    ts,
+    ts,
+    1
+  );
+}
+
+export async function GET(req: NextRequest) {
   try {
-    // ✅ canonical auth (enforces active member + gives agencyId/userId)
     const ctx = await requireActiveMember(req);
 
-    // Ensure user exists (private bots belong to a user row)
-    const user = await getOrCreateUser(ctx.agencyId, ctx.agencyEmail);
+    const userId = String((ctx as any)?.userId || "").trim();
+    if (!userId) {
+      return NextResponse.json({ error: "Server error", message: "Session missing userId" }, { status: 500 });
+    }
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
+    const bots = await db.all(
+      `SELECT id, name, description, owner_user_id, vector_store_id, created_at
+       FROM bots
+       WHERE agency_id = ? AND owner_user_id = ?
+       ORDER BY created_at DESC`,
+      ctx.agencyId,
+      userId
+    );
+
+    return NextResponse.json({ ok: true, bots: bots ?? [] });
+  } catch (err: any) {
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
+
+    console.error("BOTS_PRIVATE_GET_ERROR", err);
+    return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const ctx = await requireActiveMember(req);
+
+    const userId = String((ctx as any)?.userId || "").trim();
+    const userEmail = String((ctx as any)?.userEmail || (ctx as any)?.email || (ctx as any)?.agencyEmail || "").trim();
+
+    if (!userId) {
+      return NextResponse.json({ error: "Server error", message: "Session missing userId" }, { status: 500 });
+    }
+    if (!userEmail) {
+      return NextResponse.json({ error: "Server error", message: "Session missing user email" }, { status: 500 });
+    }
 
     const body = await req.json().catch(() => ({}));
     const name = typeof body?.name === "string" ? body.name.trim() : "";
@@ -58,9 +129,13 @@ export async function POST(req: NextRequest) {
     if (!name) return NextResponse.json({ error: "Missing name" }, { status: 400 });
 
     const db: Db = await getDb();
+    await ensureSchema(db);
 
-    // ✅ Enforce private bot count by plan (optional — only if you actually want private bots enabled)
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    // Make sure user row exists (private bots belong to a real user id)
+    await ensureUserRow(db, ctx.agencyId, userId, userEmail.toLowerCase());
+
+    // Optional: enforce private bot cap by plan
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
     const maxPrivateBots = pickMaxPrivateBotsFromLimits(limits);
 
@@ -70,11 +145,11 @@ export async function POST(req: NextRequest) {
          FROM bots
          WHERE agency_id = ? AND owner_user_id = ?`,
         ctx.agencyId,
-        user.id
+        userId
       )) as { c: number } | undefined;
 
       const current = Number(row?.c ?? 0);
-      if (current >= maxPrivateBots) {
+      if (current >= Number(maxPrivateBots)) {
         return NextResponse.json(
           {
             ok: false,
@@ -82,14 +157,14 @@ export async function POST(req: NextRequest) {
             plan,
             kind: "private_bot",
             used: current,
-            limit: maxPrivateBots,
+            limit: Number(maxPrivateBots),
           },
           { status: 403 }
         );
       }
     }
 
-    const vs = await tryCreateVectorStore(`Louis.Ai • Private Bot • ${name} • ${ctx.agencyId} • ${user.id}`);
+    const vs = await tryCreateVectorStore(`Louis.Ai • Private Bot • ${name} • ${ctx.agencyId} • ${userId}`);
     const botId = makeId("bot");
 
     await db.run(
@@ -97,7 +172,7 @@ export async function POST(req: NextRequest) {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       botId,
       ctx.agencyId,
-      user.id,
+      userId,
       name,
       description,
       vs.id,
@@ -133,7 +208,7 @@ export async function POST(req: NextRequest) {
     const code = String(err?.code ?? err?.message ?? err);
 
     if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
 
     console.error("BOTS_PRIVATE_POST_ERROR", err);
     return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
