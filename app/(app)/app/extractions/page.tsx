@@ -22,6 +22,7 @@ export default function ExtractionsPage() {
   const [runs, setRuns] = useState<ExtractionRunRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const count = useMemo(() => runs.length, [runs]);
 
@@ -62,6 +63,44 @@ export default function ExtractionsPage() {
     }
   }
 
+  async function onDeleteRun(id: string) {
+    const ok = window.confirm("Delete this extraction run?\n\nThis only removes the run history, not schedule items.");
+    if (!ok) return;
+
+    setDeletingId(id);
+    setError("");
+
+    // optimistic
+    const prev = runs;
+    setRuns((cur) => cur.filter((x) => x.id !== id));
+
+    try {
+      const r = await fetch("/api/extractions", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ id }),
+      });
+
+      const raw = await r.text();
+      let j: any = null;
+      try {
+        j = raw ? JSON.parse(raw) : null;
+      } catch {}
+
+      if (!r.ok || !j?.ok) {
+        setRuns(prev);
+        setError(j?.error || j?.message || raw || `Delete failed (${r.status})`);
+        return;
+      }
+    } catch (e: any) {
+      setRuns(prev);
+      setError(e?.message || "Delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   useEffect(() => {
     load();
   }, []);
@@ -71,12 +110,8 @@ export default function ExtractionsPage() {
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Extractions</h1>
-          <p className="text-sm text-muted-foreground">
-            Extraction runs (each time you clicked “Extract” on a document).
-          </p>
-          <div className="mt-2 text-sm text-muted-foreground">
-            {loading ? "Loading…" : `${count} run${count === 1 ? "" : "s"}`}
-          </div>
+          <p className="text-sm text-muted-foreground">Extraction runs (history). Extracted items appear in Schedule.</p>
+          <div className="mt-2 text-sm text-muted-foreground">{loading ? "Loading…" : `${count} run${count === 1 ? "" : "s"}`}</div>
         </div>
 
         <div className="flex gap-2">
@@ -94,9 +129,7 @@ export default function ExtractionsPage() {
       </div>
 
       {error ? (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-        </div>
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
       ) : null}
 
       <div className="rounded-lg border">
@@ -108,19 +141,20 @@ export default function ExtractionsPage() {
                 <th className="px-4 py-3 font-medium">Document</th>
                 <th className="px-4 py-3 font-medium">Bot</th>
                 <th className="px-4 py-3 font-medium">Created</th>
+                <th className="px-4 py-3 font-medium"></th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td className="px-4 py-4 text-muted-foreground" colSpan={4}>
+                  <td className="px-4 py-4 text-muted-foreground" colSpan={5}>
                     Loading…
                   </td>
                 </tr>
               ) : runs.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-muted-foreground" colSpan={4}>
-                    No extraction runs yet. Click “Extract” on a document from Docs.
+                  <td className="px-4 py-4 text-muted-foreground" colSpan={5}>
+                    No extraction runs yet.
                   </td>
                 </tr>
               ) : (
@@ -133,6 +167,16 @@ export default function ExtractionsPage() {
                     <td className="px-4 py-3 text-muted-foreground">{r.document_id}</td>
                     <td className="px-4 py-3 text-muted-foreground">{r.bot_id}</td>
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(r.created_at)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onDeleteRun(r.id)}
+                        disabled={deletingId === r.id}
+                        className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                      >
+                        {deletingId === r.id ? "Deleting…" : "Delete"}
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}
@@ -140,10 +184,6 @@ export default function ExtractionsPage() {
           </table>
         </div>
       </div>
-
-      <p className="mt-4 text-xs text-muted-foreground">
-        Note: This page lists extraction runs. Extracted events/tasks appear in Schedule.
-      </p>
     </div>
   );
 }
