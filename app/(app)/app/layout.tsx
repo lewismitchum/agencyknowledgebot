@@ -37,18 +37,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               Bots
             </NavItem>
 
-            {/* ✅ NEW: Schedule */}
-            <NavItem
-              href="/app/schedule"
-              active={pathname?.startsWith("/app/schedule")}
-            >
+            <NavItem href="/app/schedule" active={pathname?.startsWith("/app/schedule")}>
               Schedule
             </NavItem>
 
-            <NavItem
-              href="/app/extractions"
-              active={pathname?.startsWith("/app/extractions")}
-            >
+            <NavItem href="/app/extractions" active={pathname?.startsWith("/app/extractions")}>
               Extractions
             </NavItem>
             <NavItem href="/app/billing" active={pathname === "/app/billing"}>
@@ -56,6 +49,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </NavItem>
             <NavItem href="/app/settings" active={pathname === "/app/settings"}>
               Settings
+            </NavItem>
+
+            {/* ✅ NEW: Support */}
+            <NavItem href="/app/support" active={pathname?.startsWith("/app/support")}>
+              Support
             </NavItem>
           </nav>
 
@@ -77,6 +75,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <div className="text-sm text-muted-foreground">Private workspace</div>
 
               <div className="flex items-center gap-2">
+                <Link
+                  href="/app/support"
+                  className="rounded-full border border-white/10 bg-background/60 px-4 py-2 text-sm shadow-sm hover:bg-accent"
+                >
+                  Support
+                </Link>
                 <ModeToggle />
                 <Link
                   href="/app/billing"
@@ -97,30 +101,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="mx-auto flex max-w-7xl items-center justify-around px-3 py-3 text-sm">
           <MobileItem href="/app" label="Home" active={pathname === "/app"} />
           <MobileItem href="/app/chat" label="Chat" active={pathname === "/app/chat"} />
-          <MobileItem
-            href="/app/docs"
-            label="Docs"
-            active={pathname?.startsWith("/app/docs")}
-          />
+          <MobileItem href="/app/docs" label="Docs" active={pathname?.startsWith("/app/docs")} />
           <MobileItem href="/app/bots" label="Bots" active={pathname === "/app/bots"} />
+          <MobileItem href="/app/schedule" label="Schedule" active={pathname?.startsWith("/app/schedule")} />
+          <MobileItem href="/app/extractions" label="Extract" active={pathname?.startsWith("/app/extractions")} />
 
-          {/* ✅ NEW: Schedule */}
-          <MobileItem
-            href="/app/schedule"
-            label="Schedule"
-            active={pathname?.startsWith("/app/schedule")}
-          />
+          {/* ✅ NEW: Support */}
+          <MobileItem href="/app/support" label="Help" active={pathname?.startsWith("/app/support")} />
 
-          <MobileItem
-            href="/app/extractions"
-            label="Extract"
-            active={pathname?.startsWith("/app/extractions")}
-          />
-          <MobileItem
-            href="/app/settings"
-            label="Settings"
-            active={pathname === "/app/settings"}
-          />
+          <MobileItem href="/app/settings" label="Settings" active={pathname === "/app/settings"} />
         </div>
       </div>
     </div>
