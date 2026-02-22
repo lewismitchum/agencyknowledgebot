@@ -12,7 +12,6 @@ import { getPlanLimits, normalizePlan } from "@/lib/plans";
 export const runtime = "nodejs";
 
 async function ensureUserAuthColumns(db: Db) {
-  // Best-effort schema patching (legacy drift).
   await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
@@ -23,7 +22,7 @@ async function ensureUserAuthColumns(db: Db) {
 
 function pickMaxUsersFromLimits(limits: any): number | null {
   const raw = limits?.max_users ?? limits?.users ?? limits?.seats ?? null;
-  if (raw == null) return null; // unlimited or not configured
+  if (raw == null) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }
@@ -42,7 +41,7 @@ async function countBillableSeats(db: Db, agencyId: string): Promise<number> {
   return Number(row?.c ?? 0);
 }
 
-// Pending invites count toward seats too (same as /api/agency/invites)
+// Pending invites count toward seats too
 async function countActivePendingInvites(db: Db, agencyId: string): Promise<number> {
   const row = (await db.get(
     `SELECT COUNT(*) as c
@@ -104,8 +103,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid or expired invite" }, { status: 400 });
     }
 
-    const agency = (await db.get(`SELECT id, name, email, plan FROM agencies WHERE id = ? LIMIT 1`, invite.agency_id)) as
-      | { id: string; name: string | null; email: string; plan: string | null }
+    const agency = (await db.get(
+      `SELECT id, email, plan
+       FROM agencies
+       WHERE id = ?
+       LIMIT 1`,
+      invite.agency_id
+    )) as
+      | { id: string; email: string; plan: string | null }
       | undefined;
 
     if (!agency?.id) {
@@ -117,7 +122,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid invite (email missing)" }, { status: 400 });
     }
 
-    // Prevent duplicates
     const existing = (await db.get(
       "SELECT id FROM users WHERE agency_id = ? AND lower(email) = ? LIMIT 1",
       invite.agency_id,
@@ -128,7 +132,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User already exists" }, { status: 409 });
     }
 
-    // ✅ Enforce seat limits BEFORE inserting
+    // Enforce seat limits BEFORE inserting
     const plan = normalizePlan(agency.plan);
     const limits = getPlanLimits(plan);
     const maxUsers = pickMaxUsersFromLimits(limits);
@@ -157,7 +161,6 @@ export async function POST(req: NextRequest) {
     const password_hash = await bcrypt.hash(password, 10);
     const ts = nowIso();
 
-    // Invited users become PENDING by default (owner approves later).
     await db.run(
       `INSERT INTO users (id, agency_id, email, email_verified, role, status, password_hash, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -174,20 +177,21 @@ export async function POST(req: NextRequest) {
 
     await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
 
-    // Auto-login after accepting invite (they’ll be blocked until approved).
-    const res = NextResponse.json({
-      ok: true,
-      agencyName: agency.name ?? null,
-      redirectTo: "/app/chat",
-    });
+    // ✅ Auto-login after accepting invite — MUST be per-user
+    const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
 
     setSessionCookie(res, {
       agencyId: agency.id,
-      agencyEmail: agency.email,
-    });
+      agencyEmail: agency.email,     // agency contact
+      userId,                        // ✅ per-user identity
+      userEmail: emailLower,         // ✅ per-user identity
+    } as any);
 
     return res;
   } catch (err: any) {
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }
