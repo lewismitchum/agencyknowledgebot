@@ -75,48 +75,25 @@ function normStatus(s: string | null): "active" | "pending" | "blocked" {
   return "pending";
 }
 
-function TogglePill({
-  leftLabel,
-  rightLabel,
-  leftActive,
-  disabled,
-  onLeft,
-  onRight,
-}: {
-  leftLabel: string;
-  rightLabel: string;
-  leftActive: boolean;
+function SegButton(props: {
+  active: boolean;
   disabled?: boolean;
-  onLeft: () => void;
-  onRight: () => void;
+  onClick: () => void;
+  children: React.ReactNode;
 }) {
   return (
-    <div className="inline-flex items-center rounded-full border bg-background/50 p-1">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onLeft}
-        className={[
-          "h-8 rounded-full px-3 text-xs font-medium transition-colors",
-          leftActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          disabled ? "opacity-60 cursor-not-allowed" : "",
-        ].join(" ")}
-      >
-        {leftLabel}
-      </button>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onRight}
-        className={[
-          "h-8 rounded-full px-3 text-xs font-medium transition-colors",
-          !leftActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          disabled ? "opacity-60 cursor-not-allowed" : "",
-        ].join(" ")}
-      >
-        {rightLabel}
-      </button>
-    </div>
+    <button
+      disabled={props.disabled}
+      onClick={props.onClick}
+      className={[
+        "rounded-full border px-3 py-1.5 text-xs",
+        props.active ? "bg-accent text-foreground" : "bg-background text-muted-foreground hover:bg-accent",
+        props.disabled ? "opacity-50 cursor-not-allowed hover:bg-background" : "",
+      ].join(" ")}
+      type="button"
+    >
+      {props.children}
+    </button>
   );
 }
 
@@ -163,7 +140,6 @@ export default function MembersPage() {
     setBootError("");
     setLoading(true);
     try {
-      // 1) Who am I?
       const meRes = await fetch("/api/me", { credentials: "include" });
       if (meRes.status === 401) {
         window.location.href = "/login";
@@ -174,17 +150,18 @@ export default function MembersPage() {
         setBootError(raw || `Failed to load session (${meRes.status})`);
         return;
       }
+
       const meJson = await meRes.json().catch(() => null);
       setMeRole(meJson?.user?.role ?? null);
       setMeStatus(meJson?.user?.status ?? null);
       setMeUserId(meJson?.user?.id ?? null);
 
+      // Owner-only page (you also enforce this server-side in /api/agency/users)
       if ((meJson?.user?.role ?? "") !== "owner") {
         setBootError("Owner only. You don’t have permission to manage members.");
         return;
       }
 
-      // 2) Load users + invites + seats
       const r = await fetch("/api/agency/users", { credentials: "include" });
       if (r.status === 401) {
         window.location.href = "/login";
@@ -218,11 +195,7 @@ export default function MembersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function updateMember(
-    user_id: string,
-    status: "pending" | "active" | "blocked",
-    role: "owner" | "member" | "admin"
-  ) {
+  async function updateMember(user_id: string, status: "pending" | "active" | "blocked", role: "owner" | "member" | "admin") {
     setSavingId(user_id);
     try {
       const r = await fetch("/api/agency/users/update", {
@@ -408,11 +381,7 @@ export default function MembersPage() {
                 placeholder="Invite by email…"
                 className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
-              <Button
-                className="rounded-full"
-                disabled={inviteBusy || !inviteEmail.trim() || seatsAtCap}
-                onClick={sendInvite}
-              >
+              <Button className="rounded-full" disabled={inviteBusy || !inviteEmail.trim() || seatsAtCap} onClick={sendInvite}>
                 Send invite
               </Button>
             </div>
@@ -434,21 +403,13 @@ export default function MembersPage() {
                   {invites.map((inv) => {
                     const busy = savingId === inv.id;
                     return (
-                      <div
-                        key={inv.id}
-                        className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between"
-                      >
+                      <div key={inv.id} className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between">
                         <div className="space-y-1">
                           <div className="font-medium">{inv.email}</div>
                           <div className="text-xs text-muted-foreground">Expires: {formatWhen(inv.expires_at)}</div>
                         </div>
                         <div className="mt-3 flex gap-2 md:mt-0">
-                          <Button
-                            variant="destructive"
-                            className="rounded-full"
-                            disabled={busy}
-                            onClick={() => revokeInvite(inv.id)}
-                          >
+                          <Button variant="destructive" className="rounded-full" disabled={busy} onClick={() => revokeInvite(inv.id)}>
                             Revoke
                           </Button>
                         </div>
@@ -465,7 +426,7 @@ export default function MembersPage() {
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Directory</CardTitle>
-          <CardDescription>Search and manage member access + roles.</CardDescription>
+          <CardDescription>Toggle status + role. Ownership transfer is a separate action.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -493,20 +454,19 @@ export default function MembersPage() {
                 const busy = savingId === m.id;
 
                 const isMe = !!meUserId && m.id === meUserId;
+
+                // seat-cap: prevent switching someone into ACTIVE if they aren’t already active
+                const disableActivate = seatsAtCap && status !== "active";
+
                 const isOwner = role === "owner";
                 const isAdmin = role === "admin";
 
-                // if at cap: you can still downgrade/block, but can't create a new active billable member
-                const disableApprove = seatsAtCap && status !== "active";
-
-                const canToggleStatus = !busy && !isOwner && !isMe; // keep self/owner protected in UI
-                const canToggleRole = !busy && !isOwner && !isMe && status === "active"; // only allow admin toggle once active
+                const canEdit = !isMe; // owner can't change themselves in UI
+                const canRoleToggle = canEdit && !isOwner; // don't demote owner via toggle
+                const canStatusToggle = canEdit; // can block/pending/active others
 
                 return (
-                  <div
-                    key={m.id}
-                    className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between"
-                  >
+                  <div key={m.id} className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between">
                     <div className="space-y-1">
                       <div className="font-medium">{m.email}</div>
                       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -524,55 +484,60 @@ export default function MembersPage() {
                       </div>
                     </div>
 
-                    <div className="mt-3 flex flex-wrap items-center gap-2 md:mt-0">
-                      {/* ✅ STATUS TOGGLE: Pending ↔ Active */}
-                      <TogglePill
-                        leftLabel="Pending"
-                        rightLabel="Active"
-                        leftActive={status !== "active"}
-                        disabled={!canToggleStatus || (status !== "active" && disableApprove)}
-                        onLeft={() => updateMember(m.id, "pending", role)}
-                        onRight={() => updateMember(m.id, "active", role)}
-                      />
+                    <div className="mt-3 flex flex-col gap-2 md:mt-0 md:items-end">
+                      {/* Status toggle */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs text-muted-foreground">Status</span>
+                        <SegButton
+                          active={status === "pending"}
+                          disabled={busy || !canStatusToggle}
+                          onClick={() => updateMember(m.id, "pending", role)}
+                        >
+                          Pending
+                        </SegButton>
+                        <SegButton
+                          active={status === "active"}
+                          disabled={busy || !canStatusToggle || disableActivate}
+                          onClick={() => updateMember(m.id, "active", role)}
+                        >
+                          Active
+                        </SegButton>
+                        <SegButton
+                          active={status === "blocked"}
+                          disabled={busy || !canStatusToggle}
+                          onClick={() => updateMember(m.id, "blocked", "member")}
+                        >
+                          Blocked
+                        </SegButton>
+                      </div>
 
-                      {/* ✅ ROLE TOGGLE: Member ↔ Admin (only when active) */}
-                      <TogglePill
-                        leftLabel="Member"
-                        rightLabel="Admin"
-                        leftActive={!isAdmin}
-                        disabled={!canToggleRole}
-                        onLeft={() => updateMember(m.id, "active", "member")}
-                        onRight={() => updateMember(m.id, "active", "admin")}
-                      />
+                      {/* Role toggle (Member/Admin), Owner transfer button */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs text-muted-foreground">Role</span>
+                        <SegButton
+                          active={!isAdmin && !isOwner}
+                          disabled={busy || !canRoleToggle}
+                          onClick={() => updateMember(m.id, status, "member")}
+                        >
+                          Member
+                        </SegButton>
+                        <SegButton
+                          active={isAdmin}
+                          disabled={busy || !canRoleToggle || status !== "active"}
+                          onClick={() => updateMember(m.id, "active", "admin")}
+                        >
+                          Admin
+                        </SegButton>
 
-                      {/* ✅ BLOCK stays explicit/destructive */}
-                      <Button
-                        variant="destructive"
-                        className="rounded-full"
-                        disabled={busy || isMe || isOwner}
-                        onClick={() => updateMember(m.id, "blocked", "member")}
-                      >
-                        Block
-                      </Button>
-
-                      {/* Keep owner escalation separate + guarded */}
-                      <Button
-                        variant="outline"
-                        className="rounded-full"
-                        disabled={busy || isMe || status !== "active"}
-                        onClick={() => updateMember(m.id, "active", "owner")}
-                      >
-                        Make owner
-                      </Button>
-
-                      <Button
-                        variant="outline"
-                        className="rounded-full"
-                        disabled={busy || isMe || !isOwner}
-                        onClick={() => updateMember(m.id, status === "blocked" ? "blocked" : status, "member")}
-                      >
-                        Remove owner
-                      </Button>
+                        <Button
+                          variant="outline"
+                          className="rounded-full"
+                          disabled={busy || isMe || status !== "active"}
+                          onClick={() => updateMember(m.id, "active", "owner")}
+                        >
+                          Make owner
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 );

@@ -23,13 +23,14 @@ export async function DELETE(
   try {
     const session = await requireActiveMember(req);
 
-    const params = await context.params;
-    const botId = String(params?.botId || "").trim();
-    if (!botId) return NextResponse.json({ ok: false, error: "Missing botId" }, { status: 400 });
+    const { botId } = await context.params;
+    const id = String(botId || "").trim();
+    if (!id) return NextResponse.json({ ok: false, error: "Missing botId" }, { status: 400 });
 
     const db: Db = await getDb();
     await ensureSchema(db);
 
+    // Resolve the real user row id (NEVER trust email alone for ownership checks)
     const user = await getOrCreateUser(session.agencyId, session.agencyEmail);
 
     const bot = (await db.get(
@@ -37,7 +38,7 @@ export async function DELETE(
        FROM bots
        WHERE id = ? AND agency_id = ?
        LIMIT 1`,
-      botId,
+      id,
       session.agencyId
     )) as BotRow | undefined;
 
@@ -45,9 +46,9 @@ export async function DELETE(
       return NextResponse.json({ ok: false, error: "Bot not found" }, { status: 404 });
     }
 
-    // ✅ HARD RULES:
+    // HARD RULES:
     // - NEVER delete agency bots here
-    // - ONLY delete your own private bots
+    // - ONLY delete your own private user bots
     if (!bot.owner_user_id) {
       return NextResponse.json(
         { ok: false, error: "FORBIDDEN", message: "Agency bots cannot be deleted." },
@@ -62,7 +63,7 @@ export async function DELETE(
       );
     }
 
-    // Delete docs owned by this user for this bot (and derived schedule/extractions)
+    // Delete docs owned by this user for this bot (and any derived schedule/extractions)
     const docs = (await db.all(
       `SELECT id, openai_file_id
        FROM documents
@@ -70,7 +71,7 @@ export async function DELETE(
          AND bot_id = ?
          AND owner_user_id = ?`,
       session.agencyId,
-      botId,
+      id,
       user.id
     )) as Array<{ id: string; openai_file_id: string | null }>;
 
@@ -89,40 +90,40 @@ export async function DELETE(
       await db.run(
         `DELETE FROM schedule_events WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
         session.agencyId,
-        botId,
+        id,
         d.id
       );
       await db.run(
         `DELETE FROM schedule_tasks WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
         session.agencyId,
-        botId,
+        id,
         d.id
       );
       await db.run(
         `DELETE FROM extractions WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
         session.agencyId,
-        botId,
+        id,
         d.id
       );
     }
 
-    // Delete docs rows
+    // Delete documents rows
     await db.run(
       `DELETE FROM documents
        WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?`,
       session.agencyId,
-      botId,
+      id,
       user.id
     );
 
-    // Delete conversations for this bot owned by this user
+    // Delete conversations owned by this user for this bot (if you store owner_user_id on conversations)
     await db.run(
       `DELETE FROM conversation_messages
        WHERE conversation_id IN (
          SELECT id FROM conversations WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?
        )`,
       session.agencyId,
-      botId,
+      id,
       user.id
     );
 
@@ -130,15 +131,15 @@ export async function DELETE(
       `DELETE FROM conversations
        WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?`,
       session.agencyId,
-      botId,
+      id,
       user.id
     );
 
-    // Delete the bot row
+    // Delete bot row
     await db.run(
       `DELETE FROM bots
        WHERE id = ? AND agency_id = ? AND owner_user_id = ?`,
-      botId,
+      id,
       session.agencyId,
       user.id
     );
