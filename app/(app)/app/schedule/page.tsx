@@ -42,6 +42,8 @@ const DEFAULT_PREFS: Prefs = {
   show_done_tasks: false,
 };
 
+const ALL_BOTS_ID = "__all__";
+
 function isoDayKey(d: Date) {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
@@ -112,7 +114,7 @@ function formatReadableDate(d: Date) {
 
 export default function SchedulePage() {
   const [bots, setBots] = useState<BotLite[]>([]);
-  const [botId, setBotId] = useState<string>("");
+  const [botId, setBotId] = useState<string>(ALL_BOTS_ID);
 
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [view, setView] = useState<Prefs["default_view"]>(DEFAULT_PREFS.default_view);
@@ -133,13 +135,22 @@ export default function SchedulePage() {
     }
   }, [prefs.timezone]);
 
+  const botNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const b of bots) m.set(b.id, b.name);
+    return m;
+  }, [bots]);
+
   async function loadBots() {
     const r = await fetch("/api/bots", { cache: "no-store", credentials: "include" });
     const j = await r.json().catch(() => ({}));
     const list = Array.isArray(j?.bots) ? j.bots : [];
     const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
     setBots(lite);
-    if (!botId && lite.length) setBotId(lite[0].id);
+
+    // Make "All bots" the default on first load so it's visible immediately.
+    // If user already picked something (including ALL_BOTS_ID), keep it.
+    setBotId((prev) => (prev ? prev : ALL_BOTS_ID));
   }
 
   async function loadPrefs() {
@@ -162,28 +173,63 @@ export default function SchedulePage() {
     }).catch(() => {});
   }
 
+  async function loadDataForOne(activeBotId: string) {
+    const [re, rt] = await Promise.all([
+      fetch(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, {
+        cache: "no-store",
+        credentials: "include",
+      }),
+      fetch(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, {
+        cache: "no-store",
+        credentials: "include",
+      }),
+    ]);
+
+    const je = await re.json().catch(() => ({}));
+    const jt = await rt.json().catch(() => ({}));
+
+    if (!re.ok) throw new Error(je?.error || je?.message || `Failed to load events (${activeBotId})`);
+    if (!rt.ok) throw new Error(jt?.error || jt?.message || `Failed to load tasks (${activeBotId})`);
+
+    const ev = Array.isArray(je?.events) ? (je.events as EventRow[]) : [];
+    const tk = Array.isArray(jt?.tasks) ? (jt.tasks as TaskRow[]) : [];
+
+    return { ev, tk };
+  }
+
+  async function loadDataAllBots() {
+    if (!bots.length) return { ev: [] as any[], tk: [] as any[] };
+
+    const results = await Promise.all(
+      bots.map(async (b) => {
+        const { ev, tk } = await loadDataForOne(b.id);
+        return {
+          botId: b.id,
+          ev: ev.map((x: any) => ({ ...x, bot_id: b.id })),
+          tk: tk.map((x: any) => ({ ...x, bot_id: b.id })),
+        };
+      })
+    );
+
+    const allEv = results.flatMap((r) => r.ev);
+    const allTk = results.flatMap((r) => r.tk);
+
+    return { ev: allEv, tk: allTk };
+  }
+
   async function loadData(activeBotId: string) {
     setLoading(true);
     setErr("");
     try {
-      const [re, rt] = await Promise.all([
-        fetch(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, {
-          cache: "no-store",
-          credentials: "include",
-        }),
-        fetch(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, {
-          cache: "no-store",
-          credentials: "include",
-        }),
-      ]);
-      const je = await re.json().catch(() => ({}));
-      const jt = await rt.json().catch(() => ({}));
-
-      if (!re.ok) throw new Error(je?.error || je?.message || "Failed to load events");
-      if (!rt.ok) throw new Error(jt?.error || jt?.message || "Failed to load tasks");
-
-      setEvents(Array.isArray(je?.events) ? (je.events as EventRow[]) : []);
-      setTasks(Array.isArray(jt?.tasks) ? (jt.tasks as TaskRow[]) : []);
+      if (activeBotId === ALL_BOTS_ID) {
+        const { ev, tk } = await loadDataAllBots();
+        setEvents(ev as any);
+        setTasks(tk as any);
+      } else {
+        const { ev, tk } = await loadDataForOne(activeBotId);
+        setEvents(ev);
+        setTasks(tk);
+      }
     } catch (e: any) {
       setErr(e?.message || "Failed to load schedule");
     } finally {
@@ -197,13 +243,18 @@ export default function SchedulePage() {
   }, []);
 
   useEffect(() => {
-    if (botId) loadData(botId);
+    if (botId && botId !== ALL_BOTS_ID) loadData(botId);
   }, [botId]);
+
+  // If "All bots" is selected, wait until bots are loaded, then load across all bots.
+  useEffect(() => {
+    if (botId === ALL_BOTS_ID && bots.length) loadData(ALL_BOTS_ID);
+  }, [botId, bots.length]);
 
   const filteredEvents = useMemo(() => {
     if (!prefs.show_events) return [];
     const q = search.trim().toLowerCase();
-    return events.filter((e) => {
+    return (events as any[]).filter((e) => {
       if (!q) return true;
       return (
         String(e.title || "").toLowerCase().includes(q) ||
@@ -216,7 +267,7 @@ export default function SchedulePage() {
   const filteredTasks = useMemo(() => {
     if (!prefs.show_tasks) return [];
     const q = search.trim().toLowerCase();
-    return tasks
+    return (tasks as any[])
       .filter((t) => (prefs.show_done_tasks ? true : t.status !== "done"))
       .filter((t) => {
         if (!q) return true;
@@ -251,8 +302,8 @@ export default function SchedulePage() {
   }, [day, prefs.week_starts_on]);
 
   const eventsByDay = useMemo(() => {
-    const m = new Map<string, EventRow[]>();
-    for (const e of filteredEvents) {
+    const m = new Map<string, (EventRow & { bot_id?: string })[]>();
+    for (const e of filteredEvents as any[]) {
       const k = (e.start_at || "").slice(0, 10);
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(e);
@@ -265,8 +316,8 @@ export default function SchedulePage() {
   }, [filteredEvents]);
 
   const tasksByDay = useMemo(() => {
-    const m = new Map<string, TaskRow[]>();
-    for (const t of filteredTasks) {
+    const m = new Map<string, (TaskRow & { bot_id?: string })[]>();
+    for (const t of filteredTasks as any[]) {
       const k = t.due_at ? String(t.due_at).slice(0, 10) : "no_due";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(t);
@@ -280,7 +331,7 @@ export default function SchedulePage() {
   async function toggleTask(id: string, status: "open" | "done") {
     setErr("");
     const nextStatus = status === "open" ? "done" : "open";
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: nextStatus } : t)));
+    setTasks((prev: any[]) => prev.map((t) => (t.id === id ? { ...t, status: nextStatus } : t)));
     try {
       const r = await fetch("/api/schedule/tasks", {
         method: "PATCH",
@@ -291,7 +342,7 @@ export default function SchedulePage() {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to update");
     } catch (e: any) {
-      setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
+      setTasks((prev: any[]) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
       setErr(e?.message || "Failed to update task");
     }
   }
@@ -301,8 +352,8 @@ export default function SchedulePage() {
     if (!ok) return;
 
     setErr("");
-    const prev = tasks;
-    setTasks((cur) => cur.filter((t) => t.id !== id));
+    const prev = tasks as any[];
+    setTasks((cur: any[]) => cur.filter((t) => t.id !== id));
 
     try {
       const r = await fetch("/api/schedule/tasks", {
@@ -324,8 +375,8 @@ export default function SchedulePage() {
     if (!ok) return;
 
     setErr("");
-    const prev = events;
-    setEvents((cur) => cur.filter((e) => e.id !== id));
+    const prev = events as any[];
+    setEvents((cur: any[]) => cur.filter((e) => e.id !== id));
 
     try {
       const r = await fetch("/api/schedule/events", {
@@ -378,6 +429,7 @@ export default function SchedulePage() {
             onChange={(e) => setBotId(e.target.value)}
             className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-64"
           >
+            <option value={ALL_BOTS_ID}>All bots</option>
             {bots.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
@@ -406,9 +458,7 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {err ? (
-        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div>
-      ) : null}
+      {err ? <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div> : null}
 
       <div className="mt-6 grid gap-4 md:grid-cols-3">
         <div className="rounded-3xl border bg-card p-5 shadow-sm md:col-span-2">
@@ -421,11 +471,7 @@ export default function SchedulePage() {
               >
                 ←
               </button>
-              <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-                onClick={() => setDay(new Date())}
-                type="button"
-              >
+              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => setDay(new Date())} type="button">
                 Today
               </button>
               <button
@@ -450,11 +496,7 @@ export default function SchedulePage() {
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
               <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
-              <Toggle
-                label="Show done"
-                checked={prefs.show_done_tasks}
-                onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })}
-              />
+              <Toggle label="Show done" checked={prefs.show_done_tasks} onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })} />
 
               <div className="ml-auto flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Week starts</span>
@@ -485,6 +527,7 @@ export default function SchedulePage() {
                 onToggleTask={toggleTask}
                 onDeleteTask={deleteTask}
                 onDeleteEvent={deleteEvent}
+                botNameById={botNameById}
               />
             ) : view === "week" ? (
               <WeekView
@@ -494,6 +537,7 @@ export default function SchedulePage() {
                 onToggleTask={toggleTask}
                 onDeleteTask={deleteTask}
                 onDeleteEvent={deleteEvent}
+                botNameById={botNameById}
               />
             ) : (
               <MonthView
@@ -539,7 +583,7 @@ export default function SchedulePage() {
                 <div className="mt-4 text-xs font-medium text-muted-foreground">Due this day</div>
                 {selectedDayTasks.length ? (
                   <div className="mt-2 space-y-2">
-                    {selectedDayTasks.map((t) => (
+                    {selectedDayTasks.map((t: any) => (
                       <div key={t.id} className="rounded-2xl border p-3">
                         <div className="flex items-start justify-between gap-3">
                           <button
@@ -549,7 +593,14 @@ export default function SchedulePage() {
                             type="button"
                           >
                             <div className="min-w-0">
-                              <div className="font-medium">{t.title}</div>
+                              <div className="flex items-center gap-2">
+                                <div className="font-medium">{t.title}</div>
+                                {t.bot_id ? (
+                                  <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    {botNameById.get(String(t.bot_id)) || "Bot"}
+                                  </span>
+                                ) : null}
+                              </div>
                               <div className="mt-1 text-xs text-muted-foreground">{t.due_at ? `due ${t.due_at}` : "no due date"}</div>
                             </div>
                             <span className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
@@ -578,7 +629,7 @@ export default function SchedulePage() {
 
                 {noDueTasks.length ? (
                   <div className="mt-2 space-y-2">
-                    {noDueTasks.slice(0, 6).map((t) => (
+                    {noDueTasks.slice(0, 6).map((t: any) => (
                       <div key={t.id} className="rounded-2xl border p-3">
                         <div className="flex items-start justify-between gap-3">
                           <button
@@ -588,7 +639,14 @@ export default function SchedulePage() {
                             type="button"
                           >
                             <div className="min-w-0">
-                              <div className="font-medium">{t.title}</div>
+                              <div className="flex items-center gap-2">
+                                <div className="font-medium">{t.title}</div>
+                                {t.bot_id ? (
+                                  <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    {botNameById.get(String(t.bot_id)) || "Bot"}
+                                  </span>
+                                ) : null}
+                              </div>
                               <div className="mt-1 text-xs text-muted-foreground">no due date</div>
                             </div>
                             <span className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
@@ -605,9 +663,7 @@ export default function SchedulePage() {
                         </div>
                       </div>
                     ))}
-                    {noDueTasks.length > 6 ? (
-                      <div className="text-xs text-muted-foreground">+{noDueTasks.length - 6} more</div>
-                    ) : null}
+                    {noDueTasks.length > 6 ? <div className="text-xs text-muted-foreground">+{noDueTasks.length - 6} more</div> : null}
                   </div>
                 ) : (
                   <div className="mt-2 text-sm text-muted-foreground">No “no due date” tasks.</div>
@@ -643,6 +699,15 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   );
 }
 
+function BotBadge({ botId, botNameById }: { botId?: string; botNameById: Map<string, string> }) {
+  if (!botId) return null;
+  return (
+    <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+      {botNameById.get(String(botId)) || "Bot"}
+    </span>
+  );
+}
+
 function DayView({
   dayKey,
   events,
@@ -650,13 +715,15 @@ function DayView({
   onToggleTask,
   onDeleteTask,
   onDeleteEvent,
+  botNameById,
 }: {
   dayKey: string;
-  events: EventRow[];
-  tasks: TaskRow[];
+  events: (EventRow & { bot_id?: string })[];
+  tasks: (TaskRow & { bot_id?: string })[];
   onToggleTask: (id: string, status: "open" | "done") => void;
   onDeleteTask: (id: string) => void;
   onDeleteEvent: (id: string) => void;
+  botNameById: Map<string, string>;
 }) {
   return (
     <div className="space-y-4">
@@ -667,11 +734,14 @@ function DayView({
       <Section title="Events">
         {events.length ? (
           <div className="space-y-2">
-            {events.map((e) => (
+            {events.map((e: any) => (
               <div key={e.id} className="rounded-2xl border p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-medium">{e.title}</div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="font-medium">{e.title}</div>
+                      <BotBadge botId={e.bot_id} botNameById={botNameById} />
+                    </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {e.start_at}
                       {e.end_at ? ` → ${e.end_at}` : ""}
@@ -699,7 +769,7 @@ function DayView({
       <Section title="Tasks">
         {tasks.length ? (
           <div className="space-y-2">
-            {tasks.map((t) => (
+            {tasks.map((t: any) => (
               <div key={t.id} className="rounded-2xl border p-3">
                 <div className="flex items-start justify-between gap-3">
                   <button
@@ -709,7 +779,10 @@ function DayView({
                     type="button"
                   >
                     <div className="min-w-0">
-                      <div className="font-medium">{t.title}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="font-medium">{t.title}</div>
+                        <BotBadge botId={t.bot_id} botNameById={botNameById} />
+                      </div>
                       <div className="mt-1 text-xs text-muted-foreground">{t.due_at ? `due ${t.due_at}` : "no due date"}</div>
                     </div>
                     <span className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
@@ -742,13 +815,15 @@ function WeekView({
   onToggleTask,
   onDeleteTask,
   onDeleteEvent,
+  botNameById,
 }: {
   weekDays: Date[];
-  eventsByDay: Map<string, EventRow[]>;
-  tasksByDay: Map<string, TaskRow[]>;
+  eventsByDay: Map<string, (EventRow & { bot_id?: string })[]>;
+  tasksByDay: Map<string, (TaskRow & { bot_id?: string })[]>;
   onToggleTask: (id: string, status: "open" | "done") => void;
   onDeleteTask: (id: string) => void;
   onDeleteEvent: (id: string) => void;
+  botNameById: Map<string, string>;
 }) {
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -763,11 +838,14 @@ function WeekView({
             <div className="mt-3 text-xs font-medium text-muted-foreground">Events</div>
             {ev.length ? (
               <div className="mt-2 space-y-2">
-                {ev.slice(0, 4).map((e) => (
+                {ev.slice(0, 4).map((e: any) => (
                   <div key={e.id} className="rounded-xl border p-2">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{e.title}</div>
+                        <div className="flex items-center gap-2">
+                          <div className="truncate text-sm font-medium">{e.title}</div>
+                          <BotBadge botId={e.bot_id} botNameById={botNameById} />
+                        </div>
                         <div className="mt-1 text-[11px] text-muted-foreground">{e.start_at}</div>
                       </div>
                       <button
@@ -790,7 +868,7 @@ function WeekView({
             <div className="mt-4 text-xs font-medium text-muted-foreground">Tasks</div>
             {tk.length ? (
               <div className="mt-2 space-y-2">
-                {tk.slice(0, 4).map((t) => (
+                {tk.slice(0, 4).map((t: any) => (
                   <div key={t.id} className="rounded-xl border p-2">
                     <div className="flex items-center justify-between gap-2">
                       <button
@@ -799,7 +877,10 @@ function WeekView({
                         title="Toggle task"
                         type="button"
                       >
-                        {t.title}
+                        <span className="inline-flex items-center gap-2">
+                          {t.title}
+                          <BotBadge botId={t.bot_id} botNameById={botNameById} />
+                        </span>
                       </button>
                       <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">{t.status}</span>
                       <button
@@ -840,8 +921,8 @@ function MonthView({
   anchorDay: Date;
   selectedDayKey: string;
   weekStartsOn: "sun" | "mon";
-  eventsByDay: Map<string, EventRow[]>;
-  tasksByDay: Map<string, TaskRow[]>;
+  eventsByDay: Map<string, (EventRow & { bot_id?: string })[]>;
+  tasksByDay: Map<string, (TaskRow & { bot_id?: string })[]>;
   onToggleTask: (id: string, status: "open" | "done") => void;
   onDeleteTask: (id: string) => void;
   onSelectDay: (d: Date) => void;
@@ -883,12 +964,7 @@ function MonthView({
               type="button"
             >
               <div className="flex items-center justify-between">
-                <div
-                  className={[
-                    "text-xs font-medium",
-                    isToday ? "rounded-md border bg-background px-2 py-0.5" : "",
-                  ].join(" ")}
-                >
+                <div className={["text-xs font-medium", isToday ? "rounded-md border bg-background px-2 py-0.5" : ""].join(" ")}>
                   {d.getDate()}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
@@ -899,12 +975,12 @@ function MonthView({
               </div>
 
               <div className="mt-2 space-y-1">
-                {ev.slice(0, 2).map((e) => (
+                {ev.slice(0, 2).map((e: any) => (
                   <div key={e.id} className="truncate rounded-lg border px-2 py-1 text-xs" title={e.title}>
                     {e.title}
                   </div>
                 ))}
-                {tk.slice(0, 2).map((t) => (
+                {tk.slice(0, 2).map((t: any) => (
                   <div key={t.id} className="flex items-center gap-2 rounded-lg border px-2 py-1 text-xs">
                     <button
                       onClick={(ev) => {
@@ -932,9 +1008,7 @@ function MonthView({
                     </button>
                   </div>
                 ))}
-                {ev.length + tk.length > 4 ? (
-                  <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div>
-                ) : null}
+                {ev.length + tk.length > 4 ? <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div> : null}
               </div>
             </button>
           );
@@ -964,7 +1038,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
   const [loading, setLoading] = useState(false);
 
   async function submit() {
-    if (!botId) return;
+    if (!botId || botId === ALL_BOTS_ID) return;
     if (!title.trim()) return;
     if (mode === "event" && !when.trim()) return;
 
@@ -1028,11 +1102,11 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
 
       <button
         onClick={submit}
-        disabled={loading}
+        disabled={loading || !botId || botId === ALL_BOTS_ID}
         className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
         type="button"
       >
-        {loading ? "Adding…" : "Add"}
+        {botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}
       </button>
 
       <div className="rounded-2xl border bg-muted p-3 text-xs text-muted-foreground">
