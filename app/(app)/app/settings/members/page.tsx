@@ -110,6 +110,7 @@ export default function MembersPage() {
   const [meUserId, setMeUserId] = useState<string | null>(null);
 
   const [plan, setPlan] = useState<string | null>(null);
+
   const [seats, setSeats] = useState<SeatsInfo | null>(null);
   const [enforcement, setEnforcement] = useState<EnforcementInfo | null>(null);
 
@@ -168,13 +169,16 @@ export default function MembersPage() {
       }
 
       const meJson = await meRes.json().catch(() => null);
+
       const role = String(meJson?.user?.role ?? "");
       const status = String(meJson?.user?.status ?? "");
       const id = String(meJson?.user?.id ?? "");
+      const p = String(meJson?.plan ?? meJson?.agency?.plan ?? "");
 
       setMeRole(role || null);
       setMeStatus(status || null);
       setMeUserId(id || null);
+      setPlan(p || null);
 
       const nRole = normRole(role || null);
       const nStatus = normStatus(status || null);
@@ -220,7 +224,8 @@ export default function MembersPage() {
       }
 
       const j = await r.json().catch(() => null);
-      setPlan(j?.plan ?? null);
+
+      // IMPORTANT: plan is authoritative from /api/me now.
       setSeats(j?.seats ?? null);
       setEnforcement(j?.enforcement ?? null);
       setMembers(Array.isArray(j?.users) ? j.users : []);
@@ -325,9 +330,7 @@ export default function MembersPage() {
           const reserved = Number(j?.seats?.reserved ?? seats?.reserved ?? 0);
           const limit = j?.seats?.limit ?? seats?.limit ?? null;
 
-          showToast(
-            limit == null ? "Seat limit reached." : `Seat limit reached (${used} used, ${reserved} reserved, limit ${limit}).`
-          );
+          showToast(limit == null ? "Seat limit reached." : `Seat limit reached (${used} used, ${reserved} reserved, limit ${limit}).`);
           await loadAll();
           return;
         }
@@ -337,7 +340,6 @@ export default function MembersPage() {
 
       setInviteEmail("");
 
-      // If server returns a link, show it (copyable)
       const link = String(j?.link ?? "");
       if (link) {
         try {
@@ -474,11 +476,7 @@ export default function MembersPage() {
                 placeholder="Invite by email…"
                 className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
-              <Button
-                className="rounded-full"
-                disabled={!canCreateInvite || inviteBusy || !inviteEmail.trim()}
-                onClick={sendInvite}
-              >
+              <Button className="rounded-full" disabled={!canCreateInvite || inviteBusy || !inviteEmail.trim()} onClick={sendInvite}>
                 Send invite
               </Button>
             </div>
@@ -501,10 +499,7 @@ export default function MembersPage() {
                     const link = inv.token ? `${window.location.origin}/join?token=${encodeURIComponent(inv.token)}` : "";
 
                     return (
-                      <div
-                        key={inv.id}
-                        className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between"
-                      >
+                      <div key={inv.id} className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between">
                         <div className="space-y-1">
                           <div className="font-medium">{inv.email}</div>
                           <div className="text-xs text-muted-foreground">Expires: {formatWhen(inv.expires_at)}</div>
@@ -583,24 +578,15 @@ export default function MembersPage() {
                 const isOwner = role === "owner";
                 const isAdmin = role === "admin";
 
-                // activation guard comes from server enforcement,
-                // but we also disable activate when cap is hit to reduce churn.
                 const disableActivate = !canActivateAnotherMember && status !== "active";
 
-                // edit rules:
-                // - must be owner/admin
-                // - cannot edit yourself (avoid lockout)
-                // - admins cannot edit owner
                 const canEditTarget = canManageMembers && !isMe && !(myRole === "admin" && isOwner);
 
-                const canRoleToggle = canEditTarget && !isOwner; // never demote owner in UI
-                const canStatusToggle = canEditTarget; // admins can block members/admins, but not owner (handled above)
+                const canRoleToggle = canEditTarget && !isOwner;
+                const canStatusToggle = canEditTarget;
 
                 return (
-                  <div
-                    key={m.id}
-                    className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between"
-                  >
+                  <div key={m.id} className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between">
                     <div className="space-y-1">
                       <div className="font-medium">{m.email}</div>
                       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -672,9 +658,7 @@ export default function MembersPage() {
                       </div>
 
                       {!canActivateAnotherMember && status !== "active" ? (
-                        <div className="text-xs text-muted-foreground">
-                          Activation disabled: seat limit reached. Revoke invites or upgrade.
-                        </div>
+                        <div className="text-xs text-muted-foreground">Activation disabled: seat limit reached. Revoke invites or upgrade.</div>
                       ) : null}
                     </div>
                   </div>
