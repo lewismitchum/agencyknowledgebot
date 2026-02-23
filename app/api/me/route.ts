@@ -97,11 +97,12 @@ export async function GET(req: NextRequest) {
         }
       | undefined;
 
-    // Usage (messages)
-    const rawPlan = agency?.plan ?? ctx.plan ?? "free";
+    // Authoritative plan is agencies.plan (webhook writes it). Fall back to ctx.plan.
+    const rawPlan = agency?.plan ?? (ctx as any)?.plan ?? "free";
     const plan = normalizePlan(rawPlan);
     const limits = getPlanLimits(plan);
 
+    // Usage (messages)
     let dailyLimit: number | null = (limits as any)?.daily_messages ?? null;
     if (dailyLimit != null && Number(dailyLimit) <= 0) dailyLimit = null;
 
@@ -124,33 +125,50 @@ export async function GET(req: NextRequest) {
       ctx.agencyId
     )) as { c?: number } | undefined;
 
-    const role = normalizeUserRole(user?.role ?? ctx.role);
-    const status = normalizeUserStatus(user?.status ?? ctx.status);
+    const role = normalizeUserRole(user?.role ?? (ctx as any)?.role);
+    const status = normalizeUserStatus(user?.status ?? (ctx as any)?.status);
 
     return NextResponse.json({
       ok: true,
+
+      // ✅ Standardized plan payload for all UI
+      plan,
+      limits,
+
       agency: {
         id: agency?.id ?? ctx.agencyId,
         name: agency?.name ?? null,
-        email: agency?.email ?? ctx.agencyEmail,
-        plan: agency?.plan ?? (ctx.plan ?? "free"),
+        email: agency?.email ?? (ctx as any)?.agencyEmail ?? null,
+        plan: plan,
         stripe_customer_id: agency?.stripe_customer_id ?? null,
         stripe_subscription_id: agency?.stripe_subscription_id ?? null,
         stripe_price_id: agency?.stripe_price_id ?? null,
         stripe_current_period_end: agency?.stripe_current_period_end ?? null,
       },
+
       user: {
         id: user?.id ?? ctx.userId,
-        email: user?.email ?? ctx.userEmail ?? ctx.agencyEmail,
+        email: user?.email ?? (ctx as any)?.userEmail ?? (ctx as any)?.agencyEmail ?? "",
         email_verified: Number(user?.email_verified ?? 0),
         role,
         status,
+        is_owner_admin: status === "active" && (role === "owner" || role === "admin"),
       },
+
       documents_count: Number(docsRow?.c ?? 0),
 
       // Chat page expects these
       daily_remaining, // null => unlimited
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
+
+      // Helpful to clients doing seat/bot UI math
+      usage: {
+        date,
+        messages_count: Number(usage.messages_count),
+        uploads_count: Number(usage.uploads_count),
+        daily_limit: dailyLimit,
+        daily_remaining,
+      },
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
