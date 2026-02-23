@@ -21,14 +21,22 @@ type MemberRow = {
 type InviteRow = {
   id: string;
   email: string;
+  token?: string | null;
   created_at: string | null;
   expires_at: string | null;
 };
 
 type SeatsInfo = {
   used: number;
+  pending_members?: number;
   pending_invites: number;
+  reserved?: number;
   limit: number | null;
+};
+
+type EnforcementInfo = {
+  can_create_invite?: boolean;
+  can_activate_member?: boolean;
 };
 
 function prettyStatus(s: string | null) {
@@ -103,6 +111,7 @@ export default function MembersPage() {
 
   const [plan, setPlan] = useState<string | null>(null);
   const [seats, setSeats] = useState<SeatsInfo | null>(null);
+  const [enforcement, setEnforcement] = useState<EnforcementInfo | null>(null);
 
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [invites, setInvites] = useState<InviteRow[]>([]);
@@ -126,11 +135,16 @@ export default function MembersPage() {
     return members.filter((m) => (m.email || "").toLowerCase().includes(needle));
   }, [members, q]);
 
-  const seatsAtCap = useMemo(() => {
-    if (!seats) return false;
-    if (seats.limit == null) return false;
-    return seats.used + seats.pending_invites >= seats.limit;
-  }, [seats]);
+  const canCreateInvite = useMemo(() => {
+    if (!canManageMembers) return false;
+    if (enforcement?.can_create_invite === false) return false;
+    return true;
+  }, [canManageMembers, enforcement]);
+
+  const canActivateAnotherMember = useMemo(() => {
+    if (enforcement?.can_activate_member === false) return false;
+    return true;
+  }, [enforcement]);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -208,6 +222,7 @@ export default function MembersPage() {
       const j = await r.json().catch(() => null);
       setPlan(j?.plan ?? null);
       setSeats(j?.seats ?? null);
+      setEnforcement(j?.enforcement ?? null);
       setMembers(Array.isArray(j?.users) ? j.users : []);
       setInvites(Array.isArray(j?.invites) ? j.invites : []);
     } catch (e: any) {
@@ -222,18 +237,14 @@ export default function MembersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function updateMember(
-    user_id: string,
-    status: "pending" | "active" | "blocked",
-    role: "owner" | "member" | "admin"
-  ) {
-    setSavingId(user_id);
+  async function updateMember(userId: string, status: "pending" | "active" | "blocked", role: "owner" | "member" | "admin") {
+    setSavingId(userId);
     try {
-      const r = await fetch("/api/agency/users/update", {
-        method: "POST",
+      const r = await fetch("/api/agency/users", {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ user_id, status, role }),
+        body: JSON.stringify({ userId, status, role }),
       });
 
       if (r.status === 401) {
@@ -244,8 +255,11 @@ export default function MembersPage() {
       const j = await r.json().catch(() => null);
 
       if (!r.ok) {
-        if (j?.error === "SEAT_LIMIT_EXCEEDED") {
-          showToast("Seat limit reached for your plan. Upgrade in Billing to add more users.");
+        if (j?.error === "SEAT_LIMIT_REACHED") {
+          const used = Number(j?.seats?.used ?? seats?.used ?? 0);
+          const limit = j?.seats?.limit ?? seats?.limit ?? null;
+          showToast(limit == null ? "Seat limit reached." : `Seat limit reached (${used} / ${limit}). Upgrade in Billing.`);
+          await loadAll();
           return;
         }
         alert(j?.error || `Update failed (${r.status})`);
@@ -258,14 +272,14 @@ export default function MembersPage() {
     }
   }
 
-  async function revokeInvite(invite_id: string) {
-    setSavingId(invite_id);
+  async function revokeInvite(inviteId: string) {
+    setSavingId(inviteId);
     try {
-      const r = await fetch("/api/agency/invites", {
+      const r = await fetch("/api/agency/users", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ invite_id }),
+        body: JSON.stringify({ inviteId }),
       });
 
       if (r.status === 401) {
@@ -291,7 +305,7 @@ export default function MembersPage() {
 
     setInviteBusy(true);
     try {
-      const r = await fetch("/api/agency/invites", {
+      const r = await fetch("/api/agency/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -306,8 +320,15 @@ export default function MembersPage() {
       const j = await r.json().catch(() => null);
 
       if (!r.ok) {
-        if (j?.error === "SEAT_LIMIT_EXCEEDED") {
-          showToast("Seat limit reached for your plan. Upgrade in Billing to invite more users.");
+        if (j?.error === "SEAT_LIMIT_REACHED") {
+          const used = Number(j?.seats?.used ?? seats?.used ?? 0);
+          const reserved = Number(j?.seats?.reserved ?? seats?.reserved ?? 0);
+          const limit = j?.seats?.limit ?? seats?.limit ?? null;
+
+          showToast(
+            limit == null ? "Seat limit reached." : `Seat limit reached (${used} used, ${reserved} reserved, limit ${limit}).`
+          );
+          await loadAll();
           return;
         }
         alert(j?.error || `Invite failed (${r.status})`);
@@ -315,17 +336,50 @@ export default function MembersPage() {
       }
 
       setInviteEmail("");
+
+      // If server returns a link, show it (copyable)
+      const link = String(j?.link ?? "");
+      if (link) {
+        try {
+          await navigator.clipboard.writeText(link);
+          showToast("Invite created. Link copied to clipboard.");
+        } catch {
+          showToast("Invite created.");
+        }
+      } else {
+        showToast("Invite created.");
+      }
+
       await loadAll();
     } finally {
       setInviteBusy(false);
     }
   }
 
-  const seatText = seats
-    ? seats.limit == null
-      ? `${seats.used} seats used (unlimited plan)`
-      : `${seats.used} / ${seats.limit} seats used (+${seats.pending_invites} pending invites)`
-    : null;
+  const seatText = useMemo(() => {
+    if (!seats) return null;
+
+    if (seats.limit == null) {
+      return `${seats.used} seats used (unlimited plan)`;
+    }
+
+    const pendingMembers = Number(seats.pending_members ?? 0);
+    const pendingInvites = Number(seats.pending_invites ?? 0);
+    const reserved = Number(seats.reserved ?? pendingMembers + pendingInvites);
+
+    return `${seats.used} / ${seats.limit} seats used (+${reserved} reserved)`;
+  }, [seats]);
+
+  const atCap = useMemo(() => {
+    if (!seats) return false;
+    if (seats.limit == null) return false;
+
+    const pendingMembers = Number(seats.pending_members ?? 0);
+    const pendingInvites = Number(seats.pending_invites ?? 0);
+    const reserved = Number(seats.reserved ?? pendingMembers + pendingInvites);
+
+    return seats.used + reserved >= seats.limit;
+  }, [seats]);
 
   if (bootError) {
     return (
@@ -388,7 +442,7 @@ export default function MembersPage() {
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Seats & Invites</CardTitle>
-          <CardDescription>Plan enforcement is server-side. Pending invites count toward seats.</CardDescription>
+          <CardDescription>Plan enforcement is server-side. Reserved = pending members + pending invites.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -406,7 +460,7 @@ export default function MembersPage() {
                   {seatText}
                 </Badge>
               ) : null}
-              {seatsAtCap ? (
+              {atCap ? (
                 <Badge variant="destructive" className="rounded-full">
                   Seat cap reached
                 </Badge>
@@ -422,13 +476,19 @@ export default function MembersPage() {
               />
               <Button
                 className="rounded-full"
-                disabled={!canManageMembers || inviteBusy || !inviteEmail.trim() || seatsAtCap}
+                disabled={!canCreateInvite || inviteBusy || !inviteEmail.trim()}
                 onClick={sendInvite}
               >
                 Send invite
               </Button>
             </div>
           </div>
+
+          {!canCreateInvite ? (
+            <div className="rounded-2xl border bg-background/40 p-3 text-xs text-muted-foreground">
+              Invites disabled: seat limit reached. Revoke pending invites or upgrade in Billing.
+            </div>
+          ) : null}
 
           {invites.length ? (
             <>
@@ -438,6 +498,8 @@ export default function MembersPage() {
                 <div className="space-y-2">
                   {invites.map((inv) => {
                     const busy = savingId === inv.id;
+                    const link = inv.token ? `${window.location.origin}/join?token=${encodeURIComponent(inv.token)}` : "";
+
                     return (
                       <div
                         key={inv.id}
@@ -446,6 +508,26 @@ export default function MembersPage() {
                         <div className="space-y-1">
                           <div className="font-medium">{inv.email}</div>
                           <div className="text-xs text-muted-foreground">Expires: {formatWhen(inv.expires_at)}</div>
+                          {inv.token ? (
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <code className="rounded-lg border bg-background px-2 py-1 text-[11px]">{link}</code>
+                              <Button
+                                variant="outline"
+                                className="rounded-full"
+                                disabled={busy}
+                                onClick={async () => {
+                                  try {
+                                    await navigator.clipboard.writeText(link);
+                                    showToast("Invite link copied.");
+                                  } catch {
+                                    showToast("Could not copy invite link.");
+                                  }
+                                }}
+                              >
+                                Copy link
+                              </Button>
+                            </div>
+                          ) : null}
                         </div>
                         <div className="mt-3 flex gap-2 md:mt-0">
                           <Button
@@ -501,16 +583,15 @@ export default function MembersPage() {
                 const isOwner = role === "owner";
                 const isAdmin = role === "admin";
 
-                const disableActivate = seatsAtCap && status !== "active";
+                // activation guard comes from server enforcement,
+                // but we also disable activate when cap is hit to reduce churn.
+                const disableActivate = !canActivateAnotherMember && status !== "active";
 
                 // edit rules:
                 // - must be owner/admin
                 // - cannot edit yourself (avoid lockout)
                 // - admins cannot edit owner
-                const canEditTarget =
-                  canManageMembers &&
-                  !isMe &&
-                  !(myRole === "admin" && isOwner);
+                const canEditTarget = canManageMembers && !isMe && !(myRole === "admin" && isOwner);
 
                 const canRoleToggle = canEditTarget && !isOwner; // never demote owner in UI
                 const canStatusToggle = canEditTarget; // admins can block members/admins, but not owner (handled above)
@@ -584,11 +665,17 @@ export default function MembersPage() {
                           variant="outline"
                           className="rounded-full"
                           disabled={busy || !canTransferOwnership || isMe || status !== "active" || isOwner}
-                          onClick={() => updateMember(m.id, "active", "owner")}
+                          onClick={() => showToast("Ownership transfer is not supported in this UI yet.")}
                         >
                           Make owner
                         </Button>
                       </div>
+
+                      {!canActivateAnotherMember && status !== "active" ? (
+                        <div className="text-xs text-muted-foreground">
+                          Activation disabled: seat limit reached. Revoke invites or upgrade.
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 );
