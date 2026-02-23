@@ -47,6 +47,13 @@ async function countActivePendingInvites(db: Db, agencyId: string): Promise<numb
   return Number(row?.c ?? 0);
 }
 
+function pickMaxUsersFromLimits(limits: any): number | null {
+  const raw = limits?.max_users ?? limits?.users ?? limits?.seats ?? null;
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const db: Db = await getDb();
@@ -71,13 +78,13 @@ export async function POST(req: NextRequest) {
 
     const plan = await getAgencyPlan(db, session.agencyId, (session as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
-    const maxUsers = (limits as any).max_users ?? null; // null => unlimited
+    const maxUsers = pickMaxUsersFromLimits(limits);
 
     if (maxUsers != null) {
       const used = await countBillableSeats(db, session.agencyId);
       const pendingInvites = await countActivePendingInvites(db, session.agencyId);
 
-      if (used + pendingInvites >= maxUsers) {
+      if (used + pendingInvites >= Number(maxUsers)) {
         return NextResponse.json(
           {
             ok: false,
@@ -85,7 +92,7 @@ export async function POST(req: NextRequest) {
             plan,
             used,
             pending_invites: pendingInvites,
-            limit: maxUsers,
+            limit: Number(maxUsers),
           },
           { status: 403 }
         );
@@ -126,8 +133,9 @@ export async function POST(req: NextRequest) {
       nowIso()
     );
 
-    // ✅ safest: encode token (email clients can mangle raw tokens)
-    const acceptUrl = `${getAppUrl()}/accept-invite?token=${encodeURIComponent(token)}`;
+    // ✅ IMPORTANT: url-encode the token so email clients don’t destroy it
+    const tokenParam = encodeURIComponent(token);
+    const acceptUrl = `${getAppUrl()}/accept-invite?token=${tokenParam}`;
 
     await sendEmail({
       to: email,
@@ -149,11 +157,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
-
     if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
     if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
+    console.error("AGENCY_INVITES_POST_ERROR", err);
     return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }
@@ -198,11 +205,10 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
-
     if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
     if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
+    console.error("AGENCY_INVITES_DELETE_ERROR", err);
     return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }
