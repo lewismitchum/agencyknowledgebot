@@ -9,6 +9,28 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+async function getAgencyPlan(db: Db, agencyId: string) {
+  const row = (await db.get(
+    `SELECT plan
+     FROM agencies
+     WHERE id = ?
+     LIMIT 1`,
+    agencyId
+  )) as { plan?: string } | undefined;
+
+  const plan = String(row?.plan || "free").toLowerCase().trim();
+  return plan || "free";
+}
+
+function assertScheduleEnabled(plan: string) {
+  // Paid-only: anything except "free"
+  if (plan === "free") {
+    const err: any = new Error("SCHEDULE_NOT_ENABLED");
+    err.code = "SCHEDULE_NOT_ENABLED";
+    throw err;
+  }
+}
+
 async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
   const agencyBot = (await db.get(
     `SELECT id
@@ -48,13 +70,6 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
 }
 
-function normNullish(v: any) {
-  if (v === undefined) return undefined;
-  if (v === null) return null;
-  const s = String(v).trim();
-  return s ? s : null;
-}
-
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -64,6 +79,9 @@ export async function GET(req: NextRequest) {
     const ctx = await requireActiveMember(req);
     const db = await getDb();
     await ensureSchema(db);
+
+    const plan = await getAgencyPlan(db, ctx.agencyId);
+    assertScheduleEnabled(plan);
 
     const url = new URL(req.url);
     let bot_id = String(url.searchParams.get("bot_id") || "").trim();
@@ -90,8 +108,15 @@ export async function GET(req: NextRequest) {
 
     return Response.json({ ok: true, bot_id, tasks: tasks ?? [] });
   } catch (err: any) {
+    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
+      return Response.json(
+        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
+        { status: 403 }
+      );
+    }
+
     console.error("SCHEDULE_TASKS_GET_ERROR", err);
-    return Response.json({ error: "Server error" }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
   }
 }
 
@@ -100,6 +125,9 @@ export async function POST(req: NextRequest) {
     const ctx = await requireActiveMember(req);
     const db = await getDb();
     await ensureSchema(db);
+
+    const plan = await getAgencyPlan(db, ctx.agencyId);
+    assertScheduleEnabled(plan);
 
     const body = (await req.json().catch(() => null)) as any;
     const title = String(body?.title ?? "").trim();
@@ -130,8 +158,15 @@ export async function POST(req: NextRequest) {
 
     return Response.json({ ok: true });
   } catch (err: any) {
+    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
+      return Response.json(
+        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
+        { status: 403 }
+      );
+    }
+
     console.error("SCHEDULE_TASKS_POST_ERROR", err);
-    return Response.json({ error: "Server error" }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
   }
 }
 
@@ -141,9 +176,15 @@ export async function PATCH(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
+    const plan = await getAgencyPlan(db, ctx.agencyId);
+    assertScheduleEnabled(plan);
+
     const body = (await req.json().catch(() => null)) as any;
     const id = String(body?.id ?? "").trim();
+    const status = String(body?.status ?? "").trim();
+
     if (!id) return Response.json({ ok: false, error: "ID_REQUIRED" }, { status: 400 });
+    if (status !== "open" && status !== "done") return Response.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
 
     const row = (await db.get(
       `SELECT id, bot_id
@@ -158,52 +199,26 @@ export async function PATCH(req: NextRequest) {
 
     await assertBotAccess(db, { bot_id: row.bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
-    // Only update fields that are present in the request body.
-    const title = body?.title !== undefined ? String(body.title ?? "").trim() : undefined;
-    const due_at = body?.due_at !== undefined ? normNullish(body.due_at) : undefined;
-    const notes = body?.notes !== undefined ? normNullish(body.notes) : undefined;
-    const status = body?.status !== undefined ? String(body.status ?? "").trim() : undefined;
-
-    const sets: string[] = [];
-    const vals: any[] = [];
-
-    if (title !== undefined) {
-      if (!title) return Response.json({ ok: false, error: "TITLE_REQUIRED" }, { status: 400 });
-      sets.push("title = ?");
-      vals.push(title);
-    }
-
-    if (due_at !== undefined) {
-      sets.push("due_at = ?");
-      vals.push(due_at);
-    }
-
-    if (notes !== undefined) {
-      sets.push("notes = ?");
-      vals.push(notes);
-    }
-
-    if (status !== undefined) {
-      if (status !== "open" && status !== "done") return Response.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
-      sets.push("status = ?");
-      vals.push(status);
-    }
-
-    if (!sets.length) return Response.json({ ok: false, error: "NO_FIELDS" }, { status: 400 });
-
-    vals.push(id, ctx.agencyId);
-
     await db.run(
       `UPDATE schedule_tasks
-       SET ${sets.join(", ")}
+       SET status = ?
        WHERE id = ? AND agency_id = ?`,
-      ...vals
+      status,
+      id,
+      ctx.agencyId
     );
 
     return Response.json({ ok: true });
   } catch (err: any) {
+    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
+      return Response.json(
+        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
+        { status: 403 }
+      );
+    }
+
     console.error("SCHEDULE_TASKS_PATCH_ERROR", err);
-    return Response.json({ error: "Server error" }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
   }
 }
 
@@ -212,6 +227,9 @@ export async function DELETE(req: NextRequest) {
     const ctx = await requireActiveMember(req);
     const db = await getDb();
     await ensureSchema(db);
+
+    const plan = await getAgencyPlan(db, ctx.agencyId);
+    assertScheduleEnabled(plan);
 
     const url = new URL(req.url);
     let id = String(url.searchParams.get("id") || "").trim();
@@ -245,7 +263,14 @@ export async function DELETE(req: NextRequest) {
 
     return Response.json({ ok: true });
   } catch (err: any) {
+    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
+      return Response.json(
+        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
+        { status: 403 }
+      );
+    }
+
     console.error("SCHEDULE_TASKS_DELETE_ERROR", err);
-    return Response.json({ error: "Server error" }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
   }
 }

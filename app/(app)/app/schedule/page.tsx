@@ -112,9 +112,15 @@ function formatReadableDate(d: Date) {
   }
 }
 
+function isScheduleGatedResponse(r: Response, j: any) {
+  if (r.status === 403) return true;
+  const code = String(j?.error || j?.code || "").toUpperCase();
+  return code === "SCHEDULE_NOT_ENABLED";
+}
+
 export default function SchedulePage() {
   const [bots, setBots] = useState<BotLite[]>([]);
-  const [botId, setBotId] = useState<string>(ALL_BOTS_ID);
+  const [botId, setBotId] = useState<string>("");
 
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [view, setView] = useState<Prefs["default_view"]>(DEFAULT_PREFS.default_view);
@@ -126,6 +132,7 @@ export default function SchedulePage() {
   const [day, setDay] = useState<Date>(() => new Date());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [gated, setGated] = useState(false);
 
   const tzLabel = useMemo(() => {
     try {
@@ -147,15 +154,18 @@ export default function SchedulePage() {
     const list = Array.isArray(j?.bots) ? j.bots : [];
     const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
     setBots(lite);
-
-    // Make "All bots" the default on first load so it's visible immediately.
-    // If user already picked something (including ALL_BOTS_ID), keep it.
-    setBotId((prev) => (prev ? prev : ALL_BOTS_ID));
+    if (!botId && lite.length) setBotId(lite[0].id);
   }
 
   async function loadPrefs() {
     const r = await fetch("/api/schedule/prefs", { cache: "no-store", credentials: "include" });
     const j = await r.json().catch(() => ({}));
+
+    if (isScheduleGatedResponse(r, j)) {
+      setGated(true);
+      return;
+    }
+
     if (r.ok && j?.ok) {
       const p = j.prefs ? { ...DEFAULT_PREFS, ...j.prefs } : DEFAULT_PREFS;
       setPrefs(p);
@@ -165,12 +175,14 @@ export default function SchedulePage() {
 
   async function savePrefs(next: Prefs) {
     setPrefs(next);
-    await fetch("/api/schedule/prefs", {
+    const r = await fetch("/api/schedule/prefs", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(next),
       credentials: "include",
-    }).catch(() => {});
+    }).catch(() => null);
+
+    if (r && r.status === 403) setGated(true);
   }
 
   async function loadDataForOne(activeBotId: string) {
@@ -187,6 +199,11 @@ export default function SchedulePage() {
 
     const je = await re.json().catch(() => ({}));
     const jt = await rt.json().catch(() => ({}));
+
+    if (isScheduleGatedResponse(re, je) || isScheduleGatedResponse(rt, jt)) {
+      setGated(true);
+      throw new Error("Schedule is a paid feature. Upgrade to enable it.");
+    }
 
     if (!re.ok) throw new Error(je?.error || je?.message || `Failed to load events (${activeBotId})`);
     if (!rt.ok) throw new Error(jt?.error || jt?.message || `Failed to load tasks (${activeBotId})`);
@@ -220,6 +237,7 @@ export default function SchedulePage() {
   async function loadData(activeBotId: string) {
     setLoading(true);
     setErr("");
+    setGated(false);
     try {
       if (activeBotId === ALL_BOTS_ID) {
         const { ev, tk } = await loadDataAllBots();
@@ -243,13 +261,8 @@ export default function SchedulePage() {
   }, []);
 
   useEffect(() => {
-    if (botId && botId !== ALL_BOTS_ID) loadData(botId);
+    if (botId) loadData(botId);
   }, [botId]);
-
-  // If "All bots" is selected, wait until bots are loaded, then load across all bots.
-  useEffect(() => {
-    if (botId === ALL_BOTS_ID && bots.length) loadData(ALL_BOTS_ID);
-  }, [botId, bots.length]);
 
   const filteredEvents = useMemo(() => {
     if (!prefs.show_events) return [];
@@ -340,6 +353,10 @@ export default function SchedulePage() {
         credentials: "include",
       });
       const j = await r.json().catch(() => ({}));
+      if (isScheduleGatedResponse(r, j)) {
+        setGated(true);
+        throw new Error("Schedule is a paid feature. Upgrade to enable it.");
+      }
       if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to update");
     } catch (e: any) {
       setTasks((prev: any[]) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
@@ -363,6 +380,10 @@ export default function SchedulePage() {
         credentials: "include",
       });
       const j = await r.json().catch(() => ({}));
+      if (isScheduleGatedResponse(r, j)) {
+        setGated(true);
+        throw new Error("Schedule is a paid feature. Upgrade to enable it.");
+      }
       if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to delete task");
     } catch (e: any) {
       setTasks(prev);
@@ -386,6 +407,10 @@ export default function SchedulePage() {
         credentials: "include",
       });
       const j = await r.json().catch(() => ({}));
+      if (isScheduleGatedResponse(r, j)) {
+        setGated(true);
+        throw new Error("Schedule is a paid feature. Upgrade to enable it.");
+      }
       if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to delete event");
     } catch (e: any) {
       setEvents(prev);
@@ -428,6 +453,7 @@ export default function SchedulePage() {
             value={botId}
             onChange={(e) => setBotId(e.target.value)}
             className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-64"
+            disabled={gated}
           >
             <option value={ALL_BOTS_ID}>All bots</option>
             {bots.map((b) => (
@@ -450,6 +476,7 @@ export default function SchedulePage() {
                   view === v ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 ].join(" ")}
                 type="button"
+                disabled={gated}
               >
                 {v.toUpperCase()}
               </button>
@@ -458,26 +485,42 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {err ? <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div> : null}
+      {gated ? (
+        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <div className="font-medium">Schedule is a paid feature.</div>
+          <div className="mt-1 text-xs text-amber-700">Upgrade your plan to enable tasks + events.</div>
+        </div>
+      ) : null}
+
+      {err && !gated ? (
+        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div>
+      ) : null}
 
       <div className="mt-6 grid gap-4 md:grid-cols-3">
         <div className="rounded-3xl border bg-card p-5 shadow-sm md:col-span-2">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-2">
               <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
                 onClick={() => (view === "month" ? moveAnchorMonth(-1) : moveAnchor(prevDelta))}
                 type="button"
+                disabled={gated}
               >
                 ←
               </button>
-              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => setDay(new Date())} type="button">
+              <button
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
+                onClick={() => setDay(new Date())}
+                type="button"
+                disabled={gated}
+              >
                 Today
               </button>
               <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
                 onClick={() => (view === "month" ? moveAnchorMonth(1) : moveAnchor(nextDelta))}
                 type="button"
+                disabled={gated}
               >
                 →
               </button>
@@ -489,27 +532,49 @@ export default function SchedulePage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search events and tasks…"
               className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-72"
+              disabled={gated}
             />
           </div>
 
           <div className="mt-4 rounded-2xl border bg-background/40 p-3">
             <div className="flex flex-wrap items-center gap-3 text-sm">
-              <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
-              <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
-              <Toggle label="Show done" checked={prefs.show_done_tasks} onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })} />
+              <Toggle
+                label="Events"
+                checked={prefs.show_events}
+                onChange={(v) => savePrefs({ ...prefs, show_events: v })}
+                disabled={gated}
+              />
+              <Toggle
+                label="Tasks"
+                checked={prefs.show_tasks}
+                onChange={(v) => savePrefs({ ...prefs, show_tasks: v })}
+                disabled={gated}
+              />
+              <Toggle
+                label="Show done"
+                checked={prefs.show_done_tasks}
+                onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })}
+                disabled={gated}
+              />
 
               <div className="ml-auto flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Week starts</span>
                 <select
                   value={prefs.week_starts_on}
                   onChange={(e) => savePrefs({ ...prefs, week_starts_on: e.target.value as any })}
-                  className="rounded-xl border bg-background px-2 py-1.5 text-xs outline-none"
+                  className="rounded-xl border bg-background px-2 py-1.5 text-xs outline-none disabled:opacity-60"
+                  disabled={gated}
                 >
                   <option value="mon">Mon</option>
                   <option value="sun">Sun</option>
                 </select>
 
-                <button onClick={() => botId && loadData(botId)} className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" type="button">
+                <button
+                  onClick={() => botId && loadData(botId)}
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
+                  type="button"
+                  disabled={gated}
+                >
                   Refresh
                 </button>
               </div>
@@ -519,6 +584,10 @@ export default function SchedulePage() {
           <div className="mt-6">
             {loading ? (
               <div className="text-sm text-muted-foreground">Loading…</div>
+            ) : gated ? (
+              <div className="rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">
+                Upgrade to unlock Schedule.
+              </div>
             ) : view === "day" ? (
               <DayView
                 dayKey={dayKey}
@@ -568,15 +637,20 @@ export default function SchedulePage() {
 
               <button
                 onClick={() => setView("day")}
-                className="shrink-0 rounded-xl border px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="shrink-0 rounded-xl border px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60"
                 type="button"
                 title="Open day view"
+                disabled={gated}
               >
                 Open day
               </button>
             </div>
 
-            {!prefs.show_tasks ? (
+            {gated ? (
+              <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">
+                Upgrade to unlock tasks.
+              </div>
+            ) : !prefs.show_tasks ? (
               <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">Tasks are hidden.</div>
             ) : (
               <>
@@ -676,7 +750,7 @@ export default function SchedulePage() {
             <div className="text-sm font-medium">Quick add</div>
             <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
 
-            <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
+            <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} gated={gated} />
           </div>
         </div>
       </div>
@@ -684,15 +758,26 @@ export default function SchedulePage() {
   );
 }
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  label,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
   return (
     <button
       onClick={() => onChange(!checked)}
       className={[
-        "rounded-xl border px-3 py-2 text-sm transition-colors",
+        "rounded-xl border px-3 py-2 text-sm transition-colors disabled:opacity-60",
         checked ? "bg-accent text-foreground" : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
       ].join(" ")}
       type="button"
+      disabled={disabled}
     >
       {label}
     </button>
@@ -1008,7 +1093,9 @@ function MonthView({
                     </button>
                   </div>
                 ))}
-                {ev.length + tk.length > 4 ? <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div> : null}
+                {ev.length + tk.length > 4 ? (
+                  <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div>
+                ) : null}
               </div>
             </button>
           );
@@ -1031,13 +1118,14 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
+function QuickAdd({ botId, onAdded, gated }: { botId: string; onAdded: () => void; gated: boolean }) {
   const [title, setTitle] = useState("");
   const [when, setWhen] = useState("");
   const [mode, setMode] = useState<"event" | "task">("event");
   const [loading, setLoading] = useState(false);
 
   async function submit() {
+    if (gated) return;
     if (!botId || botId === ALL_BOTS_ID) return;
     if (!title.trim()) return;
     if (mode === "event" && !when.trim()) return;
@@ -1076,10 +1164,11 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
             key={m}
             onClick={() => setMode(m)}
             className={[
-              "flex-1 rounded-lg px-3 py-2 text-sm transition-colors",
+              "flex-1 rounded-lg px-3 py-2 text-sm transition-colors disabled:opacity-60",
               mode === m ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
             type="button"
+            disabled={gated}
           >
             {m === "event" ? "Event" : "Task"}
           </button>
@@ -1090,23 +1179,25 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder={mode === "event" ? "Event title" : "Task title"}
-        className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+        className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+        disabled={gated}
       />
 
       <input
         value={when}
         onChange={(e) => setWhen(e.target.value)}
         placeholder={mode === "event" ? "Start at (ISO string)" : "Due at (ISO or blank)"}
-        className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+        className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+        disabled={gated}
       />
 
       <button
         onClick={submit}
-        disabled={loading || !botId || botId === ALL_BOTS_ID}
+        disabled={gated || loading || !botId || botId === ALL_BOTS_ID}
         className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
         type="button"
       >
-        {botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}
+        {gated ? "Upgrade to add" : botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}
       </button>
 
       <div className="rounded-2xl border bg-muted p-3 text-xs text-muted-foreground">
