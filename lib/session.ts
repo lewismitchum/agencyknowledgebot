@@ -5,16 +5,19 @@ import { signSession } from "@/lib/auth";
 export const SESSION_COOKIE = "louis_session";
 
 /**
- * Session cookie.
- * Must include per-user identity (userId/userEmail) so private bots/docs are isolated.
+ * Session should carry BOTH:
+ * - agency identity (agencyId/agencyEmail)
+ * - per-user identity (userId/userEmail)
+ *
+ * Role/status are always loaded from DB in requireActiveMember/requireOwner.
  */
 export function setSessionCookie(
   res: NextResponse,
   opts: {
     agencyId: string;
-    agencyEmail: string; // agency contact email
-    userId?: string;     // per-user id (users.id)
-    userEmail?: string;  // per-user email
+    agencyEmail: string;
+    userId?: string;
+    userEmail?: string;
   }
 ) {
   const token = signSession({
