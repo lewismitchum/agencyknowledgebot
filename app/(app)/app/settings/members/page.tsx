@@ -117,8 +117,8 @@ export default function MembersPage() {
   const myRole = useMemo(() => normRole(meRole), [meRole]);
   const myStatus = useMemo(() => normStatus(meStatus), [meStatus]);
 
-  const isOwner = myRole === "owner";
-  const isOwnerOrAdmin = myRole === "owner" || myRole === "admin";
+  const canManageMembers = myStatus === "active" && (myRole === "owner" || myRole === "admin");
+  const canTransferOwnership = myStatus === "active" && myRole === "owner";
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -140,6 +140,7 @@ export default function MembersPage() {
   async function loadAll() {
     setBootError("");
     setLoading(true);
+
     try {
       const meRes = await fetch("/api/me", { credentials: "include" });
       if (meRes.status === 401) {
@@ -173,22 +174,31 @@ export default function MembersPage() {
         return;
       }
 
-      // Owner/admin only
       if (!(nRole === "owner" || nRole === "admin")) {
         setBootError("Owner/Admin only. You don’t have permission to manage members.");
         return;
       }
 
       const r = await fetch("/api/agency/users", { credentials: "include" });
+
       if (r.status === 401) {
         window.location.href = "/login";
         return;
       }
+
       if (r.status === 403) {
         const j = await r.json().catch(() => null);
-        setBootError(j?.error || "Forbidden");
+        const code = String(j?.error || "");
+        if (code === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+          setBootError("Owner/Admin only. You don’t have permission to manage members.");
+        } else if (code === "FORBIDDEN_NOT_ACTIVE") {
+          setBootError("Your account is pending approval. You can’t manage members yet.");
+        } else {
+          setBootError(code || "Forbidden");
+        }
         return;
       }
+
       if (!r.ok) {
         const raw = await r.text().catch(() => "");
         setBootError(raw || `Failed to load members (${r.status})`);
@@ -236,10 +246,6 @@ export default function MembersPage() {
       if (!r.ok) {
         if (j?.error === "SEAT_LIMIT_EXCEEDED") {
           showToast("Seat limit reached for your plan. Upgrade in Billing to add more users.");
-          return;
-        }
-        if (j?.error === "Owner only" || j?.error === "OWNER_ONLY") {
-          showToast("Only the owner can transfer ownership or modify the owner.");
           return;
         }
         alert(j?.error || `Update failed (${r.status})`);
@@ -315,13 +321,6 @@ export default function MembersPage() {
     }
   }
 
-  const pendingBlockedMessage =
-    myStatus === "pending"
-      ? "Your account is pending approval. You can’t manage members yet."
-      : myStatus === "blocked"
-        ? "Your account is blocked. You can’t manage members."
-        : null;
-
   const seatText = seats
     ? seats.limit == null
       ? `${seats.used} seats used (unlimited plan)`
@@ -345,13 +344,6 @@ export default function MembersPage() {
             </Button>
           </div>
         </div>
-
-        {pendingBlockedMessage ? (
-          <div className="rounded-2xl border bg-muted p-4 text-sm">
-            <div className="font-medium">Access restricted</div>
-            <div className="mt-1 text-muted-foreground">{pendingBlockedMessage}</div>
-          </div>
-        ) : null}
 
         <div className="rounded-2xl border bg-muted p-4 text-sm">
           <div className="font-medium">Not allowed</div>
@@ -430,22 +422,13 @@ export default function MembersPage() {
               />
               <Button
                 className="rounded-full"
-                disabled={!isOwnerOrAdmin || inviteBusy || !inviteEmail.trim() || seatsAtCap}
+                disabled={!canManageMembers || inviteBusy || !inviteEmail.trim() || seatsAtCap}
                 onClick={sendInvite}
               >
                 Send invite
               </Button>
             </div>
           </div>
-
-          {seatsAtCap ? (
-            <div className="rounded-2xl border bg-muted p-3 text-sm">
-              <div className="font-medium">You’re at your seat limit.</div>
-              <div className="mt-1 text-muted-foreground">
-                Revoke an invite, block a user, or upgrade your plan in Billing.
-              </div>
-            </div>
-          ) : null}
 
           {invites.length ? (
             <>
@@ -468,7 +451,7 @@ export default function MembersPage() {
                           <Button
                             variant="destructive"
                             className="rounded-full"
-                            disabled={!isOwnerOrAdmin || busy}
+                            disabled={!canManageMembers || busy}
                             onClick={() => revokeInvite(inv.id)}
                           >
                             Revoke
@@ -487,9 +470,7 @@ export default function MembersPage() {
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Directory</CardTitle>
-          <CardDescription>
-            Toggle status + role. Ownership transfer is owner-only.
-          </CardDescription>
+          <CardDescription>Admins can manage members. Only owner can transfer ownership.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -517,18 +498,22 @@ export default function MembersPage() {
                 const busy = savingId === m.id;
 
                 const isMe = !!meUserId && m.id === meUserId;
+                const isOwner = role === "owner";
+                const isAdmin = role === "admin";
 
                 const disableActivate = seatsAtCap && status !== "active";
 
-                const isOwnerRow = role === "owner";
-                const isAdminRow = role === "admin";
+                // edit rules:
+                // - must be owner/admin
+                // - cannot edit yourself (avoid lockout)
+                // - admins cannot edit owner
+                const canEditTarget =
+                  canManageMembers &&
+                  !isMe &&
+                  !(myRole === "admin" && isOwner);
 
-                const canEdit = !isMe && isOwnerOrAdmin;
-                const canRoleToggle = canEdit && !isOwnerRow; // don't demote owner via toggle
-                const canStatusToggle = canEdit;
-
-                // Owner transfer is owner-only (admins can’t)
-                const canMakeOwner = isOwner && canEdit && status === "active" && !isMe;
+                const canRoleToggle = canEditTarget && !isOwner; // never demote owner in UI
+                const canStatusToggle = canEditTarget; // admins can block members/admins, but not owner (handled above)
 
                 return (
                   <div
@@ -581,14 +566,14 @@ export default function MembersPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-xs text-muted-foreground">Role</span>
                         <SegButton
-                          active={!isAdminRow && !isOwnerRow}
+                          active={!isAdmin && !isOwner}
                           disabled={busy || !canRoleToggle}
                           onClick={() => updateMember(m.id, status, "member")}
                         >
                           Member
                         </SegButton>
                         <SegButton
-                          active={isAdminRow}
+                          active={isAdmin}
                           disabled={busy || !canRoleToggle || status !== "active"}
                           onClick={() => updateMember(m.id, "active", "admin")}
                         >
@@ -598,7 +583,7 @@ export default function MembersPage() {
                         <Button
                           variant="outline"
                           className="rounded-full"
-                          disabled={!canMakeOwner || busy}
+                          disabled={busy || !canTransferOwnership || isMe || status !== "active" || isOwner}
                           onClick={() => updateMember(m.id, "active", "owner")}
                         >
                           Make owner
@@ -612,8 +597,7 @@ export default function MembersPage() {
           </div>
 
           <div className="pt-2 text-xs text-muted-foreground">
-            Notes: Blocking forces the user out of app routes once you guard everything via{" "}
-            <span className="font-medium">requireActiveMember</span>.
+            Notes: Members can’t access app routes unless they pass <span className="font-medium">requireActiveMember</span>.
           </div>
         </CardContent>
       </Card>
