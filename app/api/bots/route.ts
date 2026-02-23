@@ -1,213 +1,180 @@
 // app/api/bots/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
-import { openai } from "@/lib/openai";
-import { requireActiveMember, requireOwner } from "@/lib/authz";
-import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
+import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { requireActiveMember, requireOwnerOrAdmin } from "@/lib/authz";
+import { openai } from "@/lib/openai";
 
 export const runtime = "nodejs";
 
-function makeId(prefix: string) {
-  const c: any = (globalThis as any).crypto;
-  const uuid =
-    c && typeof c.randomUUID === "function"
-      ? c.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `${prefix}_${uuid}`;
-}
+type Ctx = {
+  agencyId: string;
+  userId: string;
+  role: "owner" | "admin" | "member";
+  plan?: string | null;
+};
 
-async function tryCreateVectorStore(name: string) {
-  try {
-    const vs = await openai.vectorStores.create({ name });
-    return { ok: true as const, id: vs.id, error: null as string | null };
-  } catch (e: any) {
-    const msg = String(e?.message ?? e);
-    console.error("VECTOR_STORE_CREATE_FAILED", msg);
-    return { ok: false as const, id: null as string | null, error: msg };
-  }
+type BotRow = {
+  id: string;
+  agency_id: string;
+  name: string | null;
+  owner_user_id: string | null;
+  vector_store_id: string | null;
+  created_at: string | null;
+};
+
+function pickMaxAgencyBotsFromLimits(limits: any): number | null {
+  const raw =
+    limits?.max_agency_bots ??
+    limits?.agency_bots ??
+    limits?.max_bots ??
+    limits?.bots ??
+    null;
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
 async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | null) {
-  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+  const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
     | { plan: string | null }
     | undefined;
-
-  return normalizePlan(planRow?.plan ?? fallbackPlan ?? null);
+  return normalizePlan(row?.plan ?? fallbackPlan ?? null);
 }
 
-async function getAgencyBotCount(db: Db, agencyId: string) {
-  const row = (await db.get(
-    `SELECT COUNT(*) as c
-     FROM bots
-     WHERE agency_id = ? AND owner_user_id IS NULL`,
-    agencyId
-  )) as { c: number } | undefined;
-
-  return Number(row?.c ?? 0);
-}
-
-/**
- * Ensures there is at least 1 agency bot.
- * Does NOT silently repair vector stores.
- */
-async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
-  const existing = (await db.get(
-    `SELECT id
-     FROM bots
-     WHERE agency_id = ? AND owner_user_id IS NULL
-     ORDER BY created_at ASC
-     LIMIT 1`,
-    agencyId
-  )) as { id: string } | undefined;
-
-  if (existing?.id) return;
-
-  const botId = makeId("bot");
-  const defaultName = "Agency Bot";
-  const vs = await tryCreateVectorStore(`Louis.Ai • Agency Bot • ${defaultName} • ${agencyId}`);
-
-  await db.run(
-    `INSERT INTO bots
-     (id, agency_id, owner_user_id, name, description, vector_store_id, created_at)
-     VALUES (?, ?, NULL, ?, ?, ?, ?)`,
-    botId,
-    agencyId,
-    defaultName,
-    "Shared agency bot",
-    vs.id,
-    new Date().toISOString()
-  );
+function bad(msg: string) {
+  return NextResponse.json({ ok: false, error: msg }, { status: 400 });
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const ctx = await requireActiveMember(req);
+    const ctx = (await requireActiveMember(req)) as Ctx;
 
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    await ensureDefaultAgencyBot(db, ctx.agencyId);
-
-    // ✅ CRITICAL: private bots are owned by ctx.userId (NOT agencyEmail)
     const bots = (await db.all(
-      `SELECT id, agency_id, owner_user_id, name, description, vector_store_id, created_at
+      `SELECT id, agency_id, name, owner_user_id, vector_store_id, created_at
        FROM bots
        WHERE agency_id = ?
          AND (owner_user_id IS NULL OR owner_user_id = ?)
-       ORDER BY
-         CASE WHEN owner_user_id IS NULL THEN 0 ELSE 1 END,
-         created_at DESC`,
+       ORDER BY created_at DESC`,
       ctx.agencyId,
       ctx.userId
-    )) as Array<{
-      id: string;
-      agency_id: string;
-      owner_user_id: string | null;
-      name: string;
-      description: string | null;
-      vector_store_id: string | null;
-      created_at: string;
-    }>;
+    )) as BotRow[];
 
-    return NextResponse.json({ ok: true, bots: bots ?? [] });
+    const normalized = (bots ?? []).map((b) => ({
+      id: b.id,
+      name: b.name ?? "Untitled Bot",
+      scope: b.owner_user_id ? "private" : "agency",
+      owner_user_id: b.owner_user_id,
+      vector_store_id: b.vector_store_id,
+      created_at: b.created_at,
+    }));
+
+    return NextResponse.json({ ok: true, bots: normalized });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
+    const msg = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
 
     console.error("BOTS_GET_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
+  // Create bot (agency: owner/admin only + plan limit; private: any active member; private does NOT count).
   try {
-    const ctx = await requireOwner(req);
+    // We accept either owner/admin context (for agency bot) or active member (for private bot).
+    const body = (await req.json().catch(() => ({}))) as any;
+    const scopeRaw = String(body?.scope ?? body?.type ?? "agency").toLowerCase();
+    const scope = scopeRaw === "private" ? "private" : "agency";
+    const name = String(body?.name ?? "").trim();
+
+    if (!name) return bad("MISSING_NAME");
+
+    const ctx = (scope === "agency"
+      ? ((await requireOwnerOrAdmin(req)) as Ctx)
+      : ((await requireActiveMember(req)) as Ctx)) as Ctx;
 
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const body = await req.json().catch(() => ({}));
-    const name = typeof body?.name === "string" ? body.name.trim() : "";
-    const description = typeof body?.description === "string" ? body.description.trim() : null;
-
-    if (!name) {
-      return NextResponse.json({ error: "Missing name" }, { status: 400 });
-    }
-
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
+    const maxAgencyBots = pickMaxAgencyBotsFromLimits(limits);
 
-    const maxAgencyBots = (limits as any)?.max_agency_bots ?? null;
+    if (scope === "agency") {
+      if (maxAgencyBots != null) {
+        const row = (await db.get(
+          `SELECT COUNT(1) as n
+           FROM bots
+           WHERE agency_id = ? AND owner_user_id IS NULL`,
+          ctx.agencyId
+        )) as { n: number } | undefined;
 
-    if (maxAgencyBots != null) {
-      const current = await getAgencyBotCount(db, ctx.agencyId);
-      if (current >= Number(maxAgencyBots)) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "BOT_LIMIT_EXCEEDED",
-            code: "BOT_LIMIT_EXCEEDED",
-            plan,
-            kind: "agency_bot",
-            used: current,
-            limit: Number(maxAgencyBots),
-          },
-          { status: 403 }
-        );
+        const used = Number(row?.n ?? 0);
+        if (used >= maxAgencyBots) {
+          return NextResponse.json(
+            { ok: false, error: "BOT_LIMIT_REACHED", bots: { used, limit: maxAgencyBots } },
+            { status: 403 }
+          );
+        }
       }
     }
 
-    const vs = await tryCreateVectorStore(`Louis.Ai • Agency Bot • ${name} • ${ctx.agencyId}`);
-    const botId = makeId("bot");
+    // Create vector store now (so bots never ship without it)
+    const vs = await openai.vectorStores.create({ name });
+
+    const id = crypto.randomUUID();
+    const ownerUserId = scope === "private" ? ctx.userId : null;
 
     await db.run(
-      `INSERT INTO bots
-       (id, agency_id, owner_user_id, name, description, vector_store_id, created_at)
-       VALUES (?, ?, NULL, ?, ?, ?, ?)`,
-      botId,
+      `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      id,
       ctx.agencyId,
       name,
-      description,
+      ownerUserId,
       vs.id,
       new Date().toISOString()
     );
 
-    const created = (await db.get(
-      `SELECT id, name, description, owner_user_id, vector_store_id, created_at
-       FROM bots
-       WHERE id = ?
-       LIMIT 1`,
-      botId
-    )) as
-      | {
-          id: string;
-          name: string;
-          description: string | null;
-          owner_user_id: string | null;
-          vector_store_id: string | null;
-          created_at: string;
-        }
-      | undefined;
-
     return NextResponse.json({
       ok: true,
-      bot: created ?? null,
-      warning: vs.ok
-        ? null
-        : "Vector store creation failed (bot created, but uploads/chat won’t work until billing/quota is fixed).",
-      openai_error: vs.ok ? null : vs.error,
+      bot: {
+        id,
+        name,
+        scope,
+        owner_user_id: ownerUserId,
+        vector_store_id: vs.id,
+      },
     });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
+    const msg = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
 
     console.error("BOTS_POST_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
   }
 }

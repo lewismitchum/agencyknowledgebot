@@ -10,6 +10,13 @@ import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
+type Ctx = {
+  agencyId: string;
+  userId: string;
+  role: "owner" | "admin" | "member";
+  plan?: string | null;
+};
+
 type UserRow = {
   id: string;
   email: string;
@@ -21,6 +28,7 @@ type UserRow = {
 type InviteRow = {
   id: string;
   email: string;
+  token?: string | null;
   created_at: string | null;
   expires_at: string | null;
 };
@@ -58,16 +66,93 @@ async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | nu
   return normalizePlan(row?.plan ?? fallbackPlan ?? null);
 }
 
+function isEmail(s: string) {
+  const v = String(s ?? "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+function addDaysIso(days: number) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString();
+}
+
+function randomToken() {
+  // URL-safe token without padding
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+}
+
+async function getSeatState(db: Db, agencyId: string, maxUsers: number | null) {
+  const users = (await db.all(
+    `SELECT id, email, role, status, created_at
+     FROM users
+     WHERE agency_id = ?`,
+    agencyId
+  )) as UserRow[];
+
+  const normalizedUsers = users.map((u) => ({
+    id: u.id,
+    email: u.email,
+    role: normalizeRole(u.role),
+    status: normalizeStatus(u.status),
+    created_at: u.created_at,
+  }));
+
+  const activeBillableMembers = normalizedUsers.filter(
+    (u) => u.status === "active" && u.role !== "owner" && u.role !== "admin"
+  ).length;
+
+  const pendingBillableMembers = normalizedUsers.filter(
+    (u) => u.status === "pending" && u.role !== "owner" && u.role !== "admin"
+  ).length;
+
+  const invites = (await db.all(
+    `SELECT id, email, token, created_at, expires_at
+     FROM agency_invites
+     WHERE agency_id = ?
+       AND accepted_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > ?`,
+    agencyId,
+    nowIso()
+  )) as InviteRow[];
+
+  const pendingInvites = (invites ?? []).length;
+
+  // For “don’t create more seats than exist”, reserve seats for pending + invites.
+  const reserved = pendingBillableMembers + pendingInvites;
+
+  return {
+    normalizedUsers,
+    activeBillableMembers,
+    pendingBillableMembers,
+    pendingInvites,
+    reserved,
+    maxUsers,
+    // hard gate for creating more people in the pipeline
+    canCreateAnotherPipelineSeat: maxUsers == null ? true : activeBillableMembers + reserved < maxUsers,
+    // hard gate for activating a *member* right now
+    canActivateAnotherMember: maxUsers == null ? true : activeBillableMembers < maxUsers,
+  };
+}
+
+function forbidden(msg: string) {
+  return NextResponse.json({ ok: false, error: msg }, { status: 403 });
+}
+
+function bad(msg: string) {
+  return NextResponse.json({ ok: false, error: msg }, { status: 400 });
+}
+
 export async function GET(req: NextRequest) {
   try {
-    const ctx = await requireOwnerOrAdmin(req);
+    const ctx = (await requireOwnerOrAdmin(req)) as Ctx;
 
     const db: Db = await getDb();
     await ensureSchema(db);
     await ensureRoleStatusColumns(db);
     await ensureInviteTables();
 
-    // Plan + seat limits
     const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
     const maxUsers = pickMaxUsersFromLimits(limits);
@@ -105,22 +190,11 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const normalizedUsers = users.map((u) => ({
-      id: u.id,
-      email: u.email,
-      role: normalizeRole(u.role),
-      status: normalizeStatus(u.status),
-      created_at: u.created_at,
-    }));
-
-    // Billable seats used (exclude owner/admin, ignore blocked)
-    const billableUsed = normalizedUsers.filter(
-      (u) => u.status !== "blocked" && u.role !== "owner" && u.role !== "admin"
-    ).length;
+    const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
 
     // Pending invites (unaccepted, unrevoked, unexpired)
     const invites = (await db.all(
-      `SELECT id, email, created_at, expires_at
+      `SELECT id, email, token, created_at, expires_at
        FROM agency_invites
        WHERE agency_id = ?
          AND accepted_at IS NULL
@@ -134,6 +208,7 @@ export async function GET(req: NextRequest) {
     const pendingInvites = (invites ?? []).map((i) => ({
       id: i.id,
       email: String(i.email ?? ""),
+      token: (i as any)?.token ?? null,
       created_at: i.created_at,
       expires_at: i.expires_at,
     }));
@@ -142,12 +217,18 @@ export async function GET(req: NextRequest) {
       ok: true,
       plan,
       seats: {
-        used: billableUsed,
-        pending_invites: pendingInvites.length,
+        used: seatState.activeBillableMembers,
+        pending_members: seatState.pendingBillableMembers,
+        pending_invites: seatState.pendingInvites,
+        reserved: seatState.reserved,
         limit: maxUsers,
       },
-      users: normalizedUsers,
+      users: seatState.normalizedUsers,
       invites: pendingInvites,
+      enforcement: {
+        can_create_invite: seatState.canCreateAnotherPipelineSeat,
+        can_activate_member: seatState.canActivateAnotherMember,
+      },
       can_manage: {
         view: true,
         edit_members: ctx.role === "owner" || ctx.role === "admin",
@@ -171,6 +252,309 @@ export async function GET(req: NextRequest) {
     }
 
     console.error("AGENCY_USERS_GET_ERROR", err);
+    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  // Create invite (owner/admin only). Enforce seat pipeline.
+  try {
+    const ctx = (await requireOwnerOrAdmin(req)) as Ctx;
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
+    await ensureRoleStatusColumns(db);
+    await ensureInviteTables();
+
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
+    const limits = getPlanLimits(plan);
+    const maxUsers = pickMaxUsersFromLimits(limits);
+
+    const body = (await req.json().catch(() => ({}))) as any;
+    const email = String(body?.email ?? "").trim().toLowerCase();
+
+    if (!isEmail(email)) return bad("INVALID_EMAIL");
+
+    // Don’t invite existing users (any status)
+    const existing = (await db.get(
+      `SELECT id FROM users WHERE agency_id = ? AND lower(email) = lower(?) LIMIT 1`,
+      ctx.agencyId,
+      email
+    )) as { id: string } | undefined;
+
+    if (existing?.id) return bad("USER_ALREADY_EXISTS");
+
+    const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
+    if (!seatState.canCreateAnotherPipelineSeat) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "SEAT_LIMIT_REACHED",
+          seats: {
+            used: seatState.activeBillableMembers,
+            reserved: seatState.reserved,
+            limit: maxUsers,
+          },
+        },
+        { status: 403 }
+      );
+    }
+
+    // Reuse existing active invite if present
+    const existingInvite = (await db.get(
+      `SELECT id, token, email, created_at, expires_at
+       FROM agency_invites
+       WHERE agency_id = ?
+         AND lower(email) = lower(?)
+         AND accepted_at IS NULL
+         AND revoked_at IS NULL
+         AND expires_at > ?
+       LIMIT 1`,
+      ctx.agencyId,
+      email,
+      nowIso()
+    )) as InviteRow | undefined;
+
+    const origin = req.nextUrl.origin;
+    const joinPath = "/join"; // keep consistent with your UI route
+    const expiresAt = addDaysIso(7);
+
+    if (existingInvite?.id) {
+      const token = (existingInvite as any)?.token ?? null;
+      return NextResponse.json({
+        ok: true,
+        invite: {
+          id: existingInvite.id,
+          email,
+          created_at: existingInvite.created_at,
+          expires_at: existingInvite.expires_at,
+        },
+        link: token ? `${origin}${joinPath}?token=${encodeURIComponent(String(token))}` : null,
+      });
+    }
+
+    const id = crypto.randomUUID();
+    const token = randomToken();
+
+    await db.run(
+      `INSERT INTO agency_invites (id, agency_id, email, token, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      id,
+      ctx.agencyId,
+      email,
+      token,
+      nowIso(),
+      expiresAt
+    );
+
+    return NextResponse.json({
+      ok: true,
+      invite: { id, email, created_at: nowIso(), expires_at: expiresAt },
+      link: `${origin}${joinPath}?token=${encodeURIComponent(token)}`,
+    });
+  } catch (err: any) {
+    const msg = String(err?.code ?? err?.message ?? err);
+
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
+
+    console.error("AGENCY_USERS_POST_ERROR", err);
+    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  // Update member (status/role). Enforce seats on activation.
+  try {
+    const ctx = (await requireOwnerOrAdmin(req)) as Ctx;
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
+    await ensureRoleStatusColumns(db);
+
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
+    const limits = getPlanLimits(plan);
+    const maxUsers = pickMaxUsersFromLimits(limits);
+
+    const body = (await req.json().catch(() => ({}))) as any;
+    const userId = String(body?.userId ?? "").trim();
+    if (!userId) return bad("MISSING_USER_ID");
+
+    const row = (await db.get(
+      `SELECT id, email, role, status
+       FROM users
+       WHERE agency_id = ? AND id = ?
+       LIMIT 1`,
+      ctx.agencyId,
+      userId
+    )) as UserRow | undefined;
+
+    if (!row?.id) return bad("USER_NOT_FOUND");
+
+    const currentRole = normalizeRole(row.role);
+    const currentStatus = normalizeStatus(row.status);
+
+    // Permission guards
+    if (row.id === ctx.userId) return forbidden("CANNOT_EDIT_SELF");
+    if (currentRole === "owner") return forbidden("CANNOT_EDIT_OWNER");
+
+    const nextRole = body?.role != null ? normalizeRole(body.role) : currentRole;
+    const nextStatus = body?.status != null ? normalizeStatus(body.status) : currentStatus;
+
+    // Only owner can edit admins
+    if (currentRole === "admin" && ctx.role !== "owner") return forbidden("ONLY_OWNER_CAN_EDIT_ADMINS");
+
+    // No ownership transfer here (separate flow)
+    if (body?.role != null && String(body.role ?? "").toLowerCase() === "owner") {
+      return forbidden("OWNERSHIP_TRANSFER_NOT_SUPPORTED_HERE");
+    }
+
+    // Enforce seats only when activating a *billable* member.
+    const becomingActive = currentStatus !== "active" && nextStatus === "active";
+    const billableMember = nextRole !== "owner" && nextRole !== "admin";
+
+    if (becomingActive && billableMember) {
+      const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
+      if (!seatState.canActivateAnotherMember) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "SEAT_LIMIT_REACHED",
+            seats: {
+              used: seatState.activeBillableMembers,
+              limit: maxUsers,
+            },
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    await db.run(
+      `UPDATE users
+       SET role = ?, status = ?
+       WHERE agency_id = ? AND id = ?`,
+      nextRole,
+      nextStatus,
+      ctx.agencyId,
+      row.id
+    );
+
+    return NextResponse.json({
+      ok: true,
+      user: {
+        id: row.id,
+        email: row.email,
+        role: nextRole,
+        status: nextStatus,
+      },
+    });
+  } catch (err: any) {
+    const msg = String(err?.code ?? err?.message ?? err);
+
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
+
+    console.error("AGENCY_USERS_PATCH_ERROR", err);
+    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  // Remove user OR revoke invite. Owner/admin only.
+  try {
+    const ctx = (await requireOwnerOrAdmin(req)) as Ctx;
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
+    await ensureRoleStatusColumns(db);
+    await ensureInviteTables();
+
+    const url = new URL(req.url);
+    const userId = String(url.searchParams.get("userId") ?? "").trim();
+    const inviteId = String(url.searchParams.get("inviteId") ?? "").trim();
+
+    const body = (await req.json().catch(() => ({}))) as any;
+    const bodyUserId = String(body?.userId ?? "").trim();
+    const bodyInviteId = String(body?.inviteId ?? "").trim();
+
+    const targetUserId = userId || bodyUserId;
+    const targetInviteId = inviteId || bodyInviteId;
+
+    if (!targetUserId && !targetInviteId) return bad("MISSING_TARGET");
+
+    if (targetInviteId) {
+      // revoke invite
+      await db.run(
+        `UPDATE agency_invites
+         SET revoked_at = ?
+         WHERE agency_id = ? AND id = ? AND accepted_at IS NULL`,
+        nowIso(),
+        ctx.agencyId,
+        targetInviteId
+      );
+
+      return NextResponse.json({ ok: true });
+    }
+
+    // delete user
+    if (targetUserId === ctx.userId) return forbidden("CANNOT_DELETE_SELF");
+
+    const row = (await db.get(
+      `SELECT id, role
+       FROM users
+       WHERE agency_id = ? AND id = ?
+       LIMIT 1`,
+      ctx.agencyId,
+      targetUserId
+    )) as { id: string; role: string | null } | undefined;
+
+    if (!row?.id) return bad("USER_NOT_FOUND");
+
+    const targetRole = normalizeRole(row.role);
+    if (targetRole === "owner") return forbidden("CANNOT_DELETE_OWNER");
+    if (targetRole === "admin" && ctx.role !== "owner") return forbidden("ONLY_OWNER_CAN_DELETE_ADMINS");
+
+    await db.run(`DELETE FROM users WHERE agency_id = ? AND id = ?`, ctx.agencyId, row.id);
+
+    return NextResponse.json({ ok: true });
+  } catch (err: any) {
+    const msg = String(err?.code ?? err?.message ?? err);
+
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
+
+    console.error("AGENCY_USERS_DELETE_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
   }
 }
