@@ -48,6 +48,13 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
 }
 
+function normNullish(v: any) {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -136,11 +143,7 @@ export async function PATCH(req: NextRequest) {
 
     const body = (await req.json().catch(() => null)) as any;
     const id = String(body?.id ?? "").trim();
-    const status = String(body?.status ?? "").trim();
-
     if (!id) return Response.json({ ok: false, error: "ID_REQUIRED" }, { status: 400 });
-    if (status !== "open" && status !== "done")
-      return Response.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
 
     const row = (await db.get(
       `SELECT id, bot_id
@@ -155,13 +158,46 @@ export async function PATCH(req: NextRequest) {
 
     await assertBotAccess(db, { bot_id: row.bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
+    // Only update fields that are present in the request body.
+    const title = body?.title !== undefined ? String(body.title ?? "").trim() : undefined;
+    const due_at = body?.due_at !== undefined ? normNullish(body.due_at) : undefined;
+    const notes = body?.notes !== undefined ? normNullish(body.notes) : undefined;
+    const status = body?.status !== undefined ? String(body.status ?? "").trim() : undefined;
+
+    const sets: string[] = [];
+    const vals: any[] = [];
+
+    if (title !== undefined) {
+      if (!title) return Response.json({ ok: false, error: "TITLE_REQUIRED" }, { status: 400 });
+      sets.push("title = ?");
+      vals.push(title);
+    }
+
+    if (due_at !== undefined) {
+      sets.push("due_at = ?");
+      vals.push(due_at);
+    }
+
+    if (notes !== undefined) {
+      sets.push("notes = ?");
+      vals.push(notes);
+    }
+
+    if (status !== undefined) {
+      if (status !== "open" && status !== "done") return Response.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
+      sets.push("status = ?");
+      vals.push(status);
+    }
+
+    if (!sets.length) return Response.json({ ok: false, error: "NO_FIELDS" }, { status: 400 });
+
+    vals.push(id, ctx.agencyId);
+
     await db.run(
       `UPDATE schedule_tasks
-       SET status = ?
+       SET ${sets.join(", ")}
        WHERE id = ? AND agency_id = ?`,
-      status,
-      id,
-      ctx.agencyId
+      ...vals
     );
 
     return Response.json({ ok: true });
