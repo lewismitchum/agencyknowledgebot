@@ -97,6 +97,19 @@ function weekdayLabels(weekStartsOn: "sun" | "mon") {
     : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 }
 
+function formatReadableDate(d: Date) {
+  try {
+    return d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  } catch {
+    return isoDayKey(d);
+  }
+}
+
 export default function SchedulePage() {
   const [bots, setBots] = useState<BotLite[]>([]);
   const [botId, setBotId] = useState<string>("");
@@ -261,6 +274,9 @@ export default function SchedulePage() {
     return m;
   }, [filteredTasks]);
 
+  const selectedDayTasks = useMemo(() => tasksByDay.get(dayKey) || [], [tasksByDay, dayKey]);
+  const noDueTasks = useMemo(() => tasksByDay.get("no_due") || [], [tasksByDay]);
+
   async function toggleTask(id: string, status: "open" | "done") {
     setErr("");
     const nextStatus = status === "open" ? "done" : "open";
@@ -381,6 +397,7 @@ export default function SchedulePage() {
                   "rounded-lg px-3 py-1.5 text-sm transition-colors",
                   view === v ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 ].join(" ")}
+                type="button"
               >
                 {v.toUpperCase()}
               </button>
@@ -400,15 +417,21 @@ export default function SchedulePage() {
               <button
                 className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
                 onClick={() => (view === "month" ? moveAnchorMonth(-1) : moveAnchor(prevDelta))}
+                type="button"
               >
                 ←
               </button>
-              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => setDay(new Date())}>
+              <button
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
+                onClick={() => setDay(new Date())}
+                type="button"
+              >
                 Today
               </button>
               <button
                 className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
                 onClick={() => (view === "month" ? moveAnchorMonth(1) : moveAnchor(nextDelta))}
+                type="button"
               >
                 →
               </button>
@@ -444,7 +467,7 @@ export default function SchedulePage() {
                   <option value="sun">Sun</option>
                 </select>
 
-                <button onClick={() => botId && loadData(botId)} className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">
+                <button onClick={() => botId && loadData(botId)} className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" type="button">
                   Refresh
                 </button>
               </div>
@@ -491,11 +514,114 @@ export default function SchedulePage() {
           </div>
         </div>
 
-        <div className="rounded-3xl border bg-card p-5 shadow-sm">
-          <div className="text-sm font-medium">Quick add</div>
-          <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
+        <div className="space-y-4">
+          <div className="rounded-3xl border bg-card p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Daily to-do</div>
+                <div className="mt-1 text-xs text-muted-foreground">{formatReadableDate(day)}</div>
+              </div>
 
-          <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
+              <button
+                onClick={() => setView("day")}
+                className="shrink-0 rounded-xl border px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                type="button"
+                title="Open day view"
+              >
+                Open day
+              </button>
+            </div>
+
+            {!prefs.show_tasks ? (
+              <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">Tasks are hidden.</div>
+            ) : (
+              <>
+                <div className="mt-4 text-xs font-medium text-muted-foreground">Due this day</div>
+                {selectedDayTasks.length ? (
+                  <div className="mt-2 space-y-2">
+                    {selectedDayTasks.map((t) => (
+                      <div key={t.id} className="rounded-2xl border p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <button
+                            onClick={() => toggleTask(t.id, t.status)}
+                            className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left hover:opacity-90"
+                            title="Toggle task"
+                            type="button"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-medium">{t.title}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">{t.due_at ? `due ${t.due_at}` : "no due date"}</div>
+                            </div>
+                            <span className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
+                          </button>
+
+                          <button
+                            onClick={() => deleteTask(t.id)}
+                            className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                            title="Delete task"
+                            type="button"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-muted-foreground">No tasks due this day.</div>
+                )}
+
+                <div className="mt-5 flex items-center justify-between gap-3">
+                  <div className="text-xs font-medium text-muted-foreground">No due date</div>
+                  <div className="text-[11px] text-muted-foreground">{noDueTasks.length ? `${noDueTasks.length} total` : ""}</div>
+                </div>
+
+                {noDueTasks.length ? (
+                  <div className="mt-2 space-y-2">
+                    {noDueTasks.slice(0, 6).map((t) => (
+                      <div key={t.id} className="rounded-2xl border p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <button
+                            onClick={() => toggleTask(t.id, t.status)}
+                            className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left hover:opacity-90"
+                            title="Toggle task"
+                            type="button"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-medium">{t.title}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">no due date</div>
+                            </div>
+                            <span className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
+                          </button>
+
+                          <button
+                            onClick={() => deleteTask(t.id)}
+                            className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                            title="Delete task"
+                            type="button"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {noDueTasks.length > 6 ? (
+                      <div className="text-xs text-muted-foreground">+{noDueTasks.length - 6} more</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-muted-foreground">No “no due date” tasks.</div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="rounded-3xl border bg-card p-5 shadow-sm">
+            <div className="text-sm font-medium">Quick add</div>
+            <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
+
+            <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
+          </div>
         </div>
       </div>
     </div>
@@ -510,6 +636,7 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
         "rounded-xl border px-3 py-2 text-sm transition-colors",
         checked ? "bg-accent text-foreground" : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
       ].join(" ")}
+      type="button"
     >
       {label}
     </button>
@@ -556,6 +683,7 @@ function DayView({
                     onClick={() => onDeleteEvent(e.id)}
                     className="rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
                     title="Delete event"
+                    type="button"
                   >
                     Delete
                   </button>
@@ -578,6 +706,7 @@ function DayView({
                     onClick={() => onToggleTask(t.id, t.status)}
                     className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left hover:opacity-90"
                     title="Toggle task"
+                    type="button"
                   >
                     <div className="min-w-0">
                       <div className="font-medium">{t.title}</div>
@@ -590,6 +719,7 @@ function DayView({
                     onClick={() => onDeleteTask(t.id)}
                     className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
                     title="Delete task"
+                    type="button"
                   >
                     Delete
                   </button>
@@ -644,6 +774,7 @@ function WeekView({
                         onClick={() => onDeleteEvent(e.id)}
                         className="shrink-0 rounded-lg border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
                         title="Delete event"
+                        type="button"
                       >
                         Del
                       </button>
@@ -666,6 +797,7 @@ function WeekView({
                         onClick={() => onToggleTask(t.id, t.status)}
                         className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:opacity-90"
                         title="Toggle task"
+                        type="button"
                       >
                         {t.title}
                       </button>
@@ -674,6 +806,7 @@ function WeekView({
                         onClick={() => onDeleteTask(t.id)}
                         className="shrink-0 rounded-lg border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
                         title="Delete task"
+                        type="button"
                       >
                         Del
                       </button>
