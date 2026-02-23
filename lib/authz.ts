@@ -2,7 +2,13 @@
 import type { NextRequest } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { getDb, type Db } from "@/lib/db";
-import { getOrCreateUser, getUserByEmail, getUserById, normalizeUserRole, normalizeUserStatus } from "@/lib/users";
+import {
+  getOrCreateUser,
+  getUserByEmail,
+  getUserById,
+  normalizeUserRole,
+  normalizeUserStatus,
+} from "@/lib/users";
 import { normalizePlan } from "@/lib/plans";
 
 export type AuthedContext = {
@@ -18,7 +24,8 @@ export type AuthedContext = {
 export type AuthzErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN_NOT_ACTIVE"
-  | "FORBIDDEN_NOT_OWNER";
+  | "FORBIDDEN_NOT_OWNER"
+  | "FORBIDDEN_NOT_ADMIN_OR_OWNER";
 
 export class AuthzError extends Error {
   code: AuthzErrorCode;
@@ -51,16 +58,17 @@ export async function requireActiveMember(req: NextRequest): Promise<AuthedConte
 
   // ✅ prefer per-user identity
   const sessionUserId = (session as any).userId ? String((session as any).userId) : "";
-  const sessionUserEmail = (session as any).userEmail ? String((session as any).userEmail).trim().toLowerCase() : "";
+  const sessionUserEmail = (session as any).userEmail
+    ? String((session as any).userEmail).trim().toLowerCase()
+    : "";
 
-  let user =
-    sessionUserId ? await getUserById(agencyId, sessionUserId) : null;
+  let user = sessionUserId ? await getUserById(agencyId, sessionUserId) : null;
 
   if (!user && sessionUserEmail) {
     user = await getUserByEmail(agencyId, sessionUserEmail);
   }
 
-  // Back-compat fallback (older cookies) — but this is NOT ideal for members
+  // Back-compat fallback (older cookies) — not ideal for members, but keeps old sessions alive.
   if (!user) {
     user = await getUserByEmail(agencyId, agencyEmail);
   }
@@ -82,7 +90,7 @@ export async function requireActiveMember(req: NextRequest): Promise<AuthedConte
     agencyId,
     agencyEmail,
     userId: user.id,
-    userEmail: String(user.email || "").toLowerCase(),
+    userEmail: String((user as any).email || "").toLowerCase(),
     role,
     status,
     plan: normalizePlan(agency?.plan ?? null),
@@ -92,5 +100,13 @@ export async function requireActiveMember(req: NextRequest): Promise<AuthedConte
 export async function requireOwner(req: NextRequest): Promise<AuthedContext> {
   const ctx = await requireActiveMember(req);
   if (ctx.role !== "owner") throw new AuthzError("FORBIDDEN_NOT_OWNER");
+  return ctx;
+}
+
+export async function requireOwnerOrAdmin(req: NextRequest): Promise<AuthedContext> {
+  const ctx = await requireActiveMember(req);
+  if (ctx.role !== "owner" && ctx.role !== "admin") {
+    throw new AuthzError("FORBIDDEN_NOT_ADMIN_OR_OWNER");
+  }
   return ctx;
 }

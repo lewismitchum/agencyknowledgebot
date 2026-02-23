@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
-import { requireOwner } from "@/lib/authz";
+import { requireOwnerOrAdmin } from "@/lib/authz";
 import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { makeToken, hashToken, isoFromNowMinutes, nowIso } from "@/lib/tokens";
 import { getAppUrl, sendEmail } from "@/lib/email";
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureInviteTables();
 
-    const session = await requireOwner(req);
+    const session = await requireOwnerOrAdmin(req);
 
     const body = await req.json().catch(() => ({}));
     const email = String(body?.email || "").trim().toLowerCase();
@@ -126,7 +126,8 @@ export async function POST(req: NextRequest) {
       nowIso()
     );
 
-    const acceptUrl = `${getAppUrl()}/accept-invite?token=${token}`;
+    // ✅ safest: encode token (email clients can mangle raw tokens)
+    const acceptUrl = `${getAppUrl()}/accept-invite?token=${encodeURIComponent(token)}`;
 
     await sendEmail({
       to: email,
@@ -147,10 +148,12 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true });
   } catch (err: any) {
-    const msg = String(err?.message ?? err);
+    const msg = String(err?.code ?? err?.message ?? err);
+
     if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
     return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }
@@ -161,13 +164,12 @@ export async function DELETE(req: NextRequest) {
     await ensureSchema(db);
     await ensureInviteTables();
 
-    const session = await requireOwner(req);
+    const session = await requireOwnerOrAdmin(req);
 
     const body = await req.json().catch(() => ({}));
     const invite_id = String(body?.invite_id || "").trim();
     if (!invite_id) return NextResponse.json({ error: "Missing invite_id" }, { status: 400 });
 
-    // Only revoke invites for this agency, and only if not already accepted.
     const existing = (await db.get(
       `SELECT id, accepted_at
        FROM agency_invites
@@ -195,10 +197,12 @@ export async function DELETE(req: NextRequest) {
 
     return NextResponse.json({ ok: true });
   } catch (err: any) {
-    const msg = String(err?.message ?? err);
+    const msg = String(err?.code ?? err?.message ?? err);
+
     if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
     return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }
