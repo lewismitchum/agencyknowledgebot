@@ -1,12 +1,11 @@
-// app/api/agency/users/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
+import { ensureSchema } from "@/lib/schema";
 import { requireOwnerOrAdmin } from "@/lib/authz";
 import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { nowIso } from "@/lib/tokens";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
-import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,6 +60,7 @@ async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | nu
 
 export async function GET(req: NextRequest) {
   try {
+    // ✅ owner OR admin can view members (UI requires it)
     const ctx = await requireOwnerOrAdmin(req);
 
     const db: Db = await getDb();
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
       ctx.agencyId
     )) as UserRow[];
 
-    // Self-heal: backfill missing role/status
+    // self-heal legacy rows
     for (const u of users) {
       const role = normalizeRole(u.role);
       const status = normalizeStatus(u.status);
@@ -154,9 +154,6 @@ export async function GET(req: NextRequest) {
     }
     if (code === "FORBIDDEN_NOT_ACTIVE") {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
-    }
-    if (code === "FORBIDDEN_NOT_OWNER") {
-      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
     }
     if (code === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });

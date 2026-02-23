@@ -1,13 +1,13 @@
-// app/api/agency/users/update/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
+import { ensureSchema } from "@/lib/schema";
 import { requireOwnerOrAdmin } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { nowIso } from "@/lib/tokens";
-import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type Body = {
   user_id?: string;
@@ -62,13 +62,6 @@ async function countActivePendingInvites(db: Db, agencyId: string): Promise<numb
   return Number(row?.c ?? 0);
 }
 
-function isBillable(role: string, status: string) {
-  const r = String(role || "member").toLowerCase();
-  const s = String(status || "pending").toLowerCase();
-  if (s === "blocked") return false;
-  return r === "member"; // only members count toward seats
-}
-
 function normalizeRole(raw: any): "owner" | "admin" | "member" {
   const v = String(raw ?? "").toLowerCase();
   if (v === "owner") return "owner";
@@ -81,6 +74,13 @@ function normalizeStatus(raw: any): "active" | "pending" | "blocked" {
   if (v === "active") return "active";
   if (v === "blocked") return "blocked";
   return "pending";
+}
+
+function isBillable(role: string, status: string) {
+  const r = String(role || "member").toLowerCase();
+  const s = String(status || "pending").toLowerCase();
+  if (s === "blocked") return false;
+  return r === "member";
 }
 
 export async function POST(req: NextRequest) {
@@ -105,16 +105,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid role" }, { status: 400 });
     }
 
-    // Prevent changing your own access
+    // Only OWNER can transfer ownership
+    if (role === "owner" && ctx.role !== "owner") {
+      return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    }
+
+    // Prevent changing yourself
     if (user_id === ctx.userId) {
-      // owners/admins shouldn't be able to lock themselves out
-      if (status !== "active") {
-        return NextResponse.json({ error: "You cannot change your own access." }, { status: 400 });
-      }
-      // and don't allow self-role changes here (separate flow)
-      if (role !== ctx.role) {
-        return NextResponse.json({ error: "You cannot change your own role here." }, { status: 400 });
-      }
+      return NextResponse.json({ error: "You cannot change your own access." }, { status: 400 });
     }
 
     const target = (await db.get(
@@ -134,17 +132,6 @@ export async function POST(req: NextRequest) {
     const afterRole = normalizeRole(role);
     const afterStatus = normalizeStatus(status);
 
-    // ✅ Only OWNER can transfer ownership
-    if (afterRole === "owner" && ctx.role !== "owner") {
-      return NextResponse.json({ error: "Owner only" }, { status: 403 });
-    }
-
-    // ✅ Nobody can change the current owner's role away from owner (except owner, via separate transfer flow)
-    if (beforeRole === "owner" && afterRole !== "owner") {
-      return NextResponse.json({ error: "Cannot demote owner" }, { status: 400 });
-    }
-
-    // Seat safety: if this update would increase billable seats, enforce max_users
     const beforeBillable = isBillable(beforeRole, beforeStatus);
     const afterBillable = isBillable(afterRole, afterStatus);
 
@@ -156,7 +143,6 @@ export async function POST(req: NextRequest) {
       if (maxUsers != null) {
         const used = await countBillableSeats(db, ctx.agencyId);
         const pendingInvites = await countActivePendingInvites(db, ctx.agencyId);
-
         if (used + pendingInvites >= Number(maxUsers)) {
           return NextResponse.json(
             {
@@ -186,13 +172,13 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true });
   } catch (err: any) {
-    const msg = String(err?.code ?? err?.message ?? err);
+    const code = String(err?.code ?? err?.message ?? err);
 
-    if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
+    if (code === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     console.error("AGENCY_USERS_UPDATE_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });
+    return NextResponse.json({ error: "Server error", message: code }, { status: 500 });
   }
 }
