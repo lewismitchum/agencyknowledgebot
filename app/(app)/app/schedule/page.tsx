@@ -332,6 +332,13 @@ export default function SchedulePage() {
     setDay(d);
   }
 
+  function moveAnchorMonth(deltaMonths: number) {
+    const d = new Date(day);
+    d.setDate(1);
+    d.setMonth(d.getMonth() + deltaMonths);
+    setDay(d);
+  }
+
   const headerLabel = useMemo(() => {
     if (view === "day") return dayKey;
     if (view === "week") return `${isoDayKey(weekDays[0])} → ${isoDayKey(weekDays[6])}`;
@@ -383,22 +390,26 @@ export default function SchedulePage() {
       </div>
 
       {err ? (
-        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {err}
-        </div>
+        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div>
       ) : null}
 
       <div className="mt-6 grid gap-4 md:grid-cols-3">
         <div className="rounded-3xl border bg-card p-5 shadow-sm md:col-span-2">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-2">
-              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => moveAnchor(prevDelta)}>
+              <button
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
+                onClick={() => (view === "month" ? moveAnchorMonth(-1) : moveAnchor(prevDelta))}
+              >
                 ←
               </button>
               <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => setDay(new Date())}>
                 Today
               </button>
-              <button className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" onClick={() => moveAnchor(nextDelta)}>
+              <button
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
+                onClick={() => (view === "month" ? moveAnchorMonth(1) : moveAnchor(nextDelta))}
+              >
                 →
               </button>
               <span className="ml-2 text-sm font-medium">{headerLabel}</span>
@@ -465,11 +476,16 @@ export default function SchedulePage() {
               <MonthView
                 monthDays={monthDays}
                 anchorDay={day}
+                selectedDayKey={dayKey}
                 weekStartsOn={prefs.week_starts_on}
                 eventsByDay={eventsByDay}
                 tasksByDay={tasksByDay}
                 onToggleTask={toggleTask}
                 onDeleteTask={deleteTask}
+                onSelectDay={(d) => {
+                  setDay(d);
+                  setView("day");
+                }}
               />
             )}
           </div>
@@ -679,22 +695,28 @@ function WeekView({
 function MonthView({
   monthDays,
   anchorDay,
+  selectedDayKey,
   weekStartsOn,
   eventsByDay,
   tasksByDay,
   onToggleTask,
   onDeleteTask,
+  onSelectDay,
 }: {
   monthDays: Date[];
   anchorDay: Date;
+  selectedDayKey: string;
   weekStartsOn: "sun" | "mon";
   eventsByDay: Map<string, EventRow[]>;
   tasksByDay: Map<string, TaskRow[]>;
   onToggleTask: (id: string, status: "open" | "done") => void;
   onDeleteTask: (id: string) => void;
+  onSelectDay: (d: Date) => void;
 }) {
   const labels = weekdayLabels(weekStartsOn);
   const weeks = Math.ceil(monthDays.length / 7);
+
+  const todayKey = useMemo(() => isoDayKey(new Date()), []);
 
   return (
     <div className="space-y-3">
@@ -712,17 +734,30 @@ function MonthView({
           const ev = eventsByDay.get(k) || [];
           const tk = tasksByDay.get(k) || [];
           const inMonth = sameMonth(d, anchorDay);
+          const isToday = k === todayKey;
+          const isSelected = k === selectedDayKey;
 
           return (
-            <div
+            <button
               key={k}
+              onClick={() => onSelectDay(new Date(d))}
               className={[
-                "min-h-[110px] rounded-2xl border p-2",
+                "min-h-[110px] rounded-2xl border p-2 text-left transition-colors hover:bg-accent/40",
                 inMonth ? "bg-background/40" : "bg-muted/30 opacity-70",
+                isSelected ? "ring-2 ring-ring" : "",
               ].join(" ")}
+              title="Open day"
+              type="button"
             >
               <div className="flex items-center justify-between">
-                <div className="text-xs font-medium">{d.getDate()}</div>
+                <div
+                  className={[
+                    "text-xs font-medium",
+                    isToday ? "rounded-md border bg-background px-2 py-0.5" : "",
+                  ].join(" ")}
+                >
+                  {d.getDate()}
+                </div>
                 <div className="text-[11px] text-muted-foreground">
                   {ev.length ? `${ev.length}e` : ""}
                   {ev.length && tk.length ? " · " : ""}
@@ -739,16 +774,26 @@ function MonthView({
                 {tk.slice(0, 2).map((t) => (
                   <div key={t.id} className="flex items-center gap-2 rounded-lg border px-2 py-1 text-xs">
                     <button
-                      onClick={() => onToggleTask(t.id, t.status)}
+                      onClick={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        onToggleTask(t.id, t.status);
+                      }}
                       className="min-w-0 flex-1 truncate text-left hover:opacity-90"
                       title="Toggle task"
+                      type="button"
                     >
                       {t.title}
                     </button>
                     <button
-                      onClick={() => onDeleteTask(t.id)}
+                      onClick={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        onDeleteTask(t.id);
+                      }}
                       className="shrink-0 rounded-md border px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
                       title="Delete task"
+                      type="button"
                     >
                       Del
                     </button>
@@ -758,7 +803,7 @@ function MonthView({
                   <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div>
                 ) : null}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
@@ -827,6 +872,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
               "flex-1 rounded-lg px-3 py-2 text-sm transition-colors",
               mode === m ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
+            type="button"
           >
             {m === "event" ? "Event" : "Task"}
           </button>
@@ -851,6 +897,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
         onClick={submit}
         disabled={loading}
         className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+        type="button"
       >
         {loading ? "Adding…" : "Add"}
       </button>
