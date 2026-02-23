@@ -43,8 +43,8 @@ export async function DELETE(
     }
 
     // ✅ HARD RULES:
-    // - NEVER delete agency bots here
-    // - ONLY delete your own private user bots
+    // - Never delete agency bots here
+    // - Only delete your own private bots
     if (!bot.owner_user_id) {
       return NextResponse.json(
         { ok: false, error: "FORBIDDEN", message: "Agency bots cannot be deleted." },
@@ -59,7 +59,7 @@ export async function DELETE(
       );
     }
 
-    // Load docs owned by this user for this bot
+    // Delete docs owned by this user for this bot (and any derived schedule/extractions)
     const docs = (await db.all(
       `SELECT id, openai_file_id
        FROM documents
@@ -71,7 +71,7 @@ export async function DELETE(
       session.userId
     )) as Array<{ id: string; openai_file_id: string | null }>;
 
-    // Best-effort: remove files from vector store first
+    // Best-effort: remove files from the bot's vector store first
     if (bot.vector_store_id) {
       for (const d of docs) {
         if (!d.openai_file_id) continue;
@@ -83,12 +83,27 @@ export async function DELETE(
 
     // Remove derived data
     for (const d of docs) {
-      await db.run(`DELETE FROM schedule_events WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
-      await db.run(`DELETE FROM schedule_tasks  WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
-      await db.run(`DELETE FROM extractions     WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
+      await db.run(
+        `DELETE FROM schedule_events WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
+        session.agencyId,
+        id,
+        d.id
+      );
+      await db.run(
+        `DELETE FROM schedule_tasks WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
+        session.agencyId,
+        id,
+        d.id
+      );
+      await db.run(
+        `DELETE FROM extractions WHERE agency_id = ? AND bot_id = ? AND document_id = ?`,
+        session.agencyId,
+        id,
+        d.id
+      );
     }
 
-    // Delete docs
+    // Delete docs rows
     await db.run(
       `DELETE FROM documents
        WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?`,
@@ -97,7 +112,7 @@ export async function DELETE(
       session.userId
     );
 
-    // Delete conversations for this bot owned by this user
+    // Delete conversations for this bot owned by this user (if stored as owner_user_id=userId)
     await db.run(
       `DELETE FROM conversation_messages
        WHERE conversation_id IN (
@@ -125,7 +140,7 @@ export async function DELETE(
       session.userId
     );
 
-    // Best-effort: delete vector store
+    // Best-effort: delete vector store (safe because user bots are per-user)
     if (bot.vector_store_id) {
       try {
         await (openai as any).vectorStores.del(bot.vector_store_id);
@@ -136,8 +151,12 @@ export async function DELETE(
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED") return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    if (code === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (code === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
 
     console.error("BOT_DELETE_ERROR", err);
     return NextResponse.json(
