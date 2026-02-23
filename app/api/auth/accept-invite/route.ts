@@ -27,8 +27,7 @@ function pickMaxUsersFromLimits(limits: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// Billable seats = members only (exclude owner/admin), ignore blocked
-async function countBillableSeats(db: Db, agencyId: string): Promise<number> {
+async function countBillableSeatsTx(db: Db, agencyId: string): Promise<number> {
   const row = (await db.get(
     `SELECT COUNT(*) as c
      FROM users
@@ -41,8 +40,7 @@ async function countBillableSeats(db: Db, agencyId: string): Promise<number> {
   return Number(row?.c ?? 0);
 }
 
-// Pending invites count toward seats too
-async function countActivePendingInvites(db: Db, agencyId: string): Promise<number> {
+async function countActivePendingInvitesTx(db: Db, agencyId: string): Promise<number> {
   const row = (await db.get(
     `SELECT COUNT(*) as c
      FROM agency_invites
@@ -77,117 +75,129 @@ export async function POST(req: NextRequest) {
 
     const token_hash = hashToken(token);
 
-    const invite = (await db.get(
-      `SELECT id, agency_id, email, expires_at, accepted_at, revoked_at
-       FROM agency_invites
-       WHERE token_hash = ?
-       LIMIT 1`,
-      token_hash
-    )) as
-      | {
-          id: string;
-          agency_id: string;
-          email: string;
-          expires_at: string;
-          accepted_at: string | null;
-          revoked_at: string | null;
-        }
-      | undefined;
+    // BEGIN TRANSACTION (critical)
+    await db.run("BEGIN IMMEDIATE TRANSACTION");
 
-    if (!invite?.id || invite.revoked_at || invite.accepted_at) {
-      return NextResponse.json({ error: "Invalid or expired invite" }, { status: 400 });
-    }
+    try {
+      const invite = (await db.get(
+        `SELECT id, agency_id, email, expires_at, accepted_at, revoked_at
+         FROM agency_invites
+         WHERE token_hash = ?
+         LIMIT 1`,
+        token_hash
+      )) as
+        | {
+            id: string;
+            agency_id: string;
+            email: string;
+            expires_at: string;
+            accepted_at: string | null;
+            revoked_at: string | null;
+          }
+        | undefined;
 
-    const exp = invite.expires_at ? new Date(invite.expires_at).getTime() : 0;
-    if (!exp || Date.now() > exp) {
-      return NextResponse.json({ error: "Invalid or expired invite" }, { status: 400 });
-    }
-
-    const agency = (await db.get(
-      `SELECT id, email, plan
-       FROM agencies
-       WHERE id = ?
-       LIMIT 1`,
-      invite.agency_id
-    )) as
-      | { id: string; email: string; plan: string | null }
-      | undefined;
-
-    if (!agency?.id) {
-      return NextResponse.json({ error: "Invalid invite (agency missing)" }, { status: 400 });
-    }
-
-    const emailLower = String(invite.email || "").trim().toLowerCase();
-    if (!emailLower) {
-      return NextResponse.json({ error: "Invalid invite (email missing)" }, { status: 400 });
-    }
-
-    const existing = (await db.get(
-      "SELECT id FROM users WHERE agency_id = ? AND lower(email) = ? LIMIT 1",
-      invite.agency_id,
-      emailLower
-    )) as { id: string } | undefined;
-
-    if (existing?.id) {
-      return NextResponse.json({ error: "User already exists" }, { status: 409 });
-    }
-
-    // Enforce seat limits BEFORE inserting
-    const plan = normalizePlan(agency.plan);
-    const limits = getPlanLimits(plan);
-    const maxUsers = pickMaxUsersFromLimits(limits);
-
-    if (maxUsers != null) {
-      const used = await countBillableSeats(db, invite.agency_id);
-      const pendingInvites = await countActivePendingInvites(db, invite.agency_id);
-
-      if (used + pendingInvites >= Number(maxUsers)) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "SEAT_LIMIT_EXCEEDED",
-            code: "SEAT_LIMIT_EXCEEDED",
-            plan,
-            used,
-            pending_invites: pendingInvites,
-            limit: Number(maxUsers),
-          },
-          { status: 403 }
-        );
+      if (!invite?.id || invite.revoked_at || invite.accepted_at) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid or expired invite" }, { status: 400 });
       }
+
+      const exp = invite.expires_at ? new Date(invite.expires_at).getTime() : 0;
+      if (!exp || Date.now() > exp) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid or expired invite" }, { status: 400 });
+      }
+
+      const agency = (await db.get(
+        `SELECT id, email, plan
+         FROM agencies
+         WHERE id = ?
+         LIMIT 1`,
+        invite.agency_id
+      )) as { id: string; email: string; plan: string | null } | undefined;
+
+      if (!agency?.id) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid invite (agency missing)" }, { status: 400 });
+      }
+
+      const emailLower = String(invite.email || "").trim().toLowerCase();
+      if (!emailLower) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid invite (email missing)" }, { status: 400 });
+      }
+
+      const existing = (await db.get(
+        "SELECT id FROM users WHERE agency_id = ? AND lower(email) = ? LIMIT 1",
+        invite.agency_id,
+        emailLower
+      )) as { id: string } | undefined;
+
+      if (existing?.id) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "User already exists" }, { status: 409 });
+      }
+
+      // Re-check seats INSIDE transaction
+      const plan = normalizePlan(agency.plan);
+      const limits = getPlanLimits(plan);
+      const maxUsers = pickMaxUsersFromLimits(limits);
+
+      if (maxUsers != null) {
+        const used = await countBillableSeatsTx(db, invite.agency_id);
+        const pendingInvites = await countActivePendingInvitesTx(db, invite.agency_id);
+
+        if (used + pendingInvites >= Number(maxUsers)) {
+          await db.run("ROLLBACK");
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "SEAT_LIMIT_EXCEEDED",
+              plan,
+              used,
+              pending_invites: pendingInvites,
+              limit: Number(maxUsers),
+            },
+            { status: 403 }
+          );
+        }
+      }
+
+      const userId = randomUUID();
+      const password_hash = await bcrypt.hash(password, 10);
+      const ts = nowIso();
+
+      await db.run(
+        `INSERT INTO users (id, agency_id, email, email_verified, role, status, password_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        userId,
+        invite.agency_id,
+        emailLower,
+        1,
+        "member",
+        "pending",
+        password_hash,
+        ts,
+        ts
+      );
+
+      await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
+
+      await db.run("COMMIT");
+
+      const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
+
+      setSessionCookie(res, {
+        agencyId: agency.id,
+        agencyEmail: agency.email,
+        userId,
+        userEmail: emailLower,
+      });
+
+      return res;
+    } catch (inner) {
+      await db.run("ROLLBACK");
+      throw inner;
     }
-
-    const userId = randomUUID();
-    const password_hash = await bcrypt.hash(password, 10);
-    const ts = nowIso();
-
-    await db.run(
-      `INSERT INTO users (id, agency_id, email, email_verified, role, status, password_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      userId,
-      invite.agency_id,
-      emailLower,
-      1,
-      "member",
-      "pending",
-      password_hash,
-      ts,
-      ts
-    );
-
-    await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
-
-    const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
-
-    // ✅ MUST be per-user
-    setSessionCookie(res, {
-      agencyId: agency.id,
-      agencyEmail: agency.email,
-      userId,
-      userEmail: emailLower,
-    });
-
-    return res;
   } catch (err: any) {
     return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
