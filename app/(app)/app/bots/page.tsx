@@ -32,16 +32,6 @@ type BotsResponse = {
   }>;
 };
 
-type PlanInfo = {
-  plan: string | null;
-  limits?: {
-    max_agency_bots?: number | null;
-    agency_bots?: number | null;
-    max_bots?: number | null;
-    bots?: number | null;
-  };
-};
-
 function formatDate(iso: string | null) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -49,12 +39,7 @@ function formatDate(iso: string | null) {
 }
 
 function pickMaxAgencyBotsFromAny(limits: any): number | null {
-  const raw =
-    limits?.max_agency_bots ??
-    limits?.agency_bots ??
-    limits?.max_bots ??
-    limits?.bots ??
-    null;
+  const raw = limits?.max_agency_bots ?? limits?.agency_bots ?? limits?.max_bots ?? limits?.bots ?? null;
   if (raw == null) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
@@ -109,27 +94,21 @@ export default function BotsPage() {
     }
   }
 
-  async function loadPlanAndLimits() {
+  async function loadMe() {
     try {
-      // We don’t require a specific endpoint contract beyond { plan, limits }.
-      // If /api/me already returns plan/limits, we use it.
       const r = await fetch("/api/me", { credentials: "include" });
       const j = (await r.json().catch(() => null)) as any;
-
       if (!r.ok) return;
 
-      const p = (j?.plan ?? j?.user?.plan ?? j?.agency?.plan ?? null) as string | null;
-      const l = (j?.limits ?? j?.agency?.limits ?? j?.plan_limits ?? null) as any;
-
-      setPlan(p ?? null);
-      setLimits(l ?? null);
+      setPlan(String(j?.plan ?? j?.agency?.plan ?? "") || null);
+      setLimits(j?.limits ?? null);
     } catch {
       // non-fatal
     }
   }
 
   useEffect(() => {
-    loadPlanAndLimits();
+    loadMe();
     loadBots();
   }, []);
 
@@ -186,7 +165,7 @@ export default function BotsPage() {
           const used = Number(j?.bots?.used ?? botLimitUsed);
           const limit = j?.bots?.limit ?? botLimitMax ?? null;
           setMsg(limit == null ? "Agency bot limit reached." : `Agency bot limit reached (${used} / ${limit}). Upgrade in Billing.`);
-          await loadPlanAndLimits();
+          await loadMe();
           await loadBots();
           return;
         }
@@ -203,7 +182,7 @@ export default function BotsPage() {
       setMsg("Bot created.");
       setName("");
       setDescription("");
-      await loadPlanAndLimits();
+      await loadMe();
       await loadBots();
     } catch (e: any) {
       setMsg(e?.message || "Create failed");
@@ -216,7 +195,6 @@ export default function BotsPage() {
     setMsg("");
     setRepairingId(botId);
     try {
-      // IMPORTANT: explicit repair path (admin) — no silent auto-fix
       const r = await fetch("/api/admin/fix-vector-store", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -247,7 +225,6 @@ export default function BotsPage() {
   async function deleteBot(bot: BotRow) {
     setMsg("");
 
-    // Safe default: only allow deleting private user bots from UI.
     const isPrivate = bot.scope ? bot.scope === "private" : !!bot.owner_user_id;
     if (!isPrivate) {
       setMsg("Agency bots cannot be deleted (yet).");
@@ -271,7 +248,7 @@ export default function BotsPage() {
       }
 
       setMsg("Bot deleted.");
-      await loadPlanAndLimits();
+      await loadMe();
       await loadBots();
     } catch (e: any) {
       setMsg(e?.message || "Delete failed");
@@ -293,7 +270,6 @@ export default function BotsPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-        {/* Bots table */}
         <Card className="card-premium rounded-3xl">
           <CardHeader className="space-y-2">
             <div className="flex items-center justify-between">
@@ -339,11 +315,7 @@ export default function BotsPage() {
 
           <CardContent className="space-y-3">
             {msg && (
-              <div
-                className={`rounded-2xl border p-3 text-sm ${
-                  isError ? "border-red-200 bg-red-50 text-red-700" : "bg-background/60"
-                }`}
-              >
+              <div className={`rounded-2xl border p-3 text-sm ${isError ? "border-red-200 bg-red-50 text-red-700" : "bg-background/60"}`}>
                 {msg}
               </div>
             )}
@@ -391,10 +363,7 @@ export default function BotsPage() {
                           <td className="px-4 py-3">
                             {missing ? (
                               <div className="flex flex-wrap items-center gap-2">
-                                <Badge
-                                  variant="outline"
-                                  className="rounded-full border-amber-200 bg-amber-50 text-amber-800"
-                                >
+                                <Badge variant="outline" className="rounded-full border-amber-200 bg-amber-50 text-amber-800">
                                   Missing vector store
                                 </Badge>
                                 <Button
@@ -440,7 +409,6 @@ export default function BotsPage() {
           </CardContent>
         </Card>
 
-        {/* Create bot */}
         <Card className="card-premium rounded-3xl">
           <CardHeader>
             <CardTitle>Create a bot</CardTitle>
@@ -469,9 +437,7 @@ export default function BotsPage() {
 
             {scope === "agency" ? (
               <div className="rounded-2xl border bg-background/60 p-3 text-xs text-muted-foreground">
-                {botLimitMax == null
-                  ? `Agency bot limit: unlimited (used ${botLimitUsed}).`
-                  : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
+                {botLimitMax == null ? `Agency bot limit: unlimited (used ${botLimitUsed}).` : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
                 {agencyBotAtCap ? " Upgrade in Billing to add more." : ""}
               </div>
             ) : null}
@@ -491,11 +457,7 @@ export default function BotsPage() {
               />
             </div>
 
-            <Button
-              onClick={createBot}
-              disabled={creating || !name.trim() || (scope === "agency" && agencyBotAtCap)}
-              className="rounded-full"
-            >
+            <Button onClick={createBot} disabled={creating || !name.trim() || (scope === "agency" && agencyBotAtCap)} className="rounded-full">
               {creating ? "Creating..." : "Create bot"}
             </Button>
 
