@@ -82,6 +82,60 @@ function randomToken() {
   return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
 }
 
+async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
+  await db.run("BEGIN");
+  try {
+    const out = await fn();
+    await db.run("COMMIT");
+    return out;
+  } catch (e) {
+    await db.run("ROLLBACK").catch(() => {});
+    throw e;
+  }
+}
+
+async function getSeatCounts(db: Db, agencyId: string) {
+  const active = (await db.get(
+    `SELECT COUNT(1) as n
+     FROM users
+     WHERE agency_id = ?
+       AND status = 'active'
+       AND role NOT IN ('owner','admin')`,
+    agencyId
+  )) as { n: number } | undefined;
+
+  const pending = (await db.get(
+    `SELECT COUNT(1) as n
+     FROM users
+     WHERE agency_id = ?
+       AND status = 'pending'
+       AND role NOT IN ('owner','admin')`,
+    agencyId
+  )) as { n: number } | undefined;
+
+  const invites = (await db.get(
+    `SELECT COUNT(1) as n
+     FROM agency_invites
+     WHERE agency_id = ?
+       AND accepted_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > ?`,
+    agencyId,
+    nowIso()
+  )) as { n: number } | undefined;
+
+  const activeN = Number(active?.n ?? 0);
+  const pendingN = Number(pending?.n ?? 0);
+  const invitesN = Number(invites?.n ?? 0);
+
+  return {
+    activeBillableMembers: activeN,
+    pendingBillableMembers: pendingN,
+    pendingInvites: invitesN,
+    reserved: pendingN + invitesN,
+  };
+}
+
 async function getSeatState(db: Db, agencyId: string, maxUsers: number | null) {
   const users = (await db.all(
     `SELECT id, email, role, status, created_at
@@ -118,8 +172,6 @@ async function getSeatState(db: Db, agencyId: string, maxUsers: number | null) {
   )) as InviteRow[];
 
   const pendingInvites = (invites ?? []).length;
-
-  // For “don’t create more seats than exist”, reserve seats for pending + invites.
   const reserved = pendingBillableMembers + pendingInvites;
 
   return {
@@ -129,9 +181,7 @@ async function getSeatState(db: Db, agencyId: string, maxUsers: number | null) {
     pendingInvites,
     reserved,
     maxUsers,
-    // hard gate for creating more people in the pipeline
     canCreateAnotherPipelineSeat: maxUsers == null ? true : activeBillableMembers + reserved < maxUsers,
-    // hard gate for activating a *member* right now
     canActivateAnotherMember: maxUsers == null ? true : activeBillableMembers < maxUsers,
   };
 }
@@ -257,7 +307,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  // Create invite (owner/admin only). Enforce seat pipeline.
+  // Create invite (owner/admin only). TX-safe seat pipeline enforcement.
   try {
     const ctx = (await requireOwnerOrAdmin(req)) as Ctx;
 
@@ -275,82 +325,81 @@ export async function POST(req: NextRequest) {
 
     if (!isEmail(email)) return bad("INVALID_EMAIL");
 
-    // Don’t invite existing users (any status)
-    const existing = (await db.get(
-      `SELECT id FROM users WHERE agency_id = ? AND lower(email) = lower(?) LIMIT 1`,
-      ctx.agencyId,
-      email
-    )) as { id: string } | undefined;
+    return await withTx(db, async () => {
+      // Don’t invite existing users (any status) — checked inside TX
+      const existing = (await db.get(
+        `SELECT id FROM users WHERE agency_id = ? AND lower(email) = lower(?) LIMIT 1`,
+        ctx.agencyId,
+        email
+      )) as { id: string } | undefined;
 
-    if (existing?.id) return bad("USER_ALREADY_EXISTS");
+      if (existing?.id) return bad("USER_ALREADY_EXISTS");
 
-    const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
-    if (!seatState.canCreateAnotherPipelineSeat) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "SEAT_LIMIT_REACHED",
-          seats: {
-            used: seatState.activeBillableMembers,
-            reserved: seatState.reserved,
-            limit: maxUsers,
+      // Reuse existing active invite if present — checked inside TX
+      const existingInvite = (await db.get(
+        `SELECT id, token, email, created_at, expires_at
+         FROM agency_invites
+         WHERE agency_id = ?
+           AND lower(email) = lower(?)
+           AND accepted_at IS NULL
+           AND revoked_at IS NULL
+           AND expires_at > ?
+         LIMIT 1`,
+        ctx.agencyId,
+        email,
+        nowIso()
+      )) as InviteRow | undefined;
+
+      const origin = req.nextUrl.origin;
+      const joinPath = "/join";
+
+      if (existingInvite?.id) {
+        const token = (existingInvite as any)?.token ?? null;
+        return NextResponse.json({
+          ok: true,
+          invite: {
+            id: existingInvite.id,
+            email,
+            created_at: existingInvite.created_at,
+            expires_at: existingInvite.expires_at,
           },
-        },
-        { status: 403 }
+          link: token ? `${origin}${joinPath}?token=${encodeURIComponent(String(token))}` : null,
+        });
+      }
+
+      // Enforce seats inside TX (race-safe)
+      const counts = await getSeatCounts(db, ctx.agencyId);
+      if (maxUsers != null && counts.activeBillableMembers + counts.reserved >= maxUsers) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "SEAT_LIMIT_REACHED",
+            seats: { used: counts.activeBillableMembers, reserved: counts.reserved, limit: maxUsers },
+          },
+          { status: 403 }
+        );
+      }
+
+      const id = crypto.randomUUID();
+      const token = randomToken();
+      const expiresAt = addDaysIso(7);
+
+      await db.run(
+        `INSERT INTO agency_invites (id, agency_id, email, token, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        id,
+        ctx.agencyId,
+        email,
+        token,
+        nowIso(),
+        expiresAt
       );
-    }
 
-    // Reuse existing active invite if present
-    const existingInvite = (await db.get(
-      `SELECT id, token, email, created_at, expires_at
-       FROM agency_invites
-       WHERE agency_id = ?
-         AND lower(email) = lower(?)
-         AND accepted_at IS NULL
-         AND revoked_at IS NULL
-         AND expires_at > ?
-       LIMIT 1`,
-      ctx.agencyId,
-      email,
-      nowIso()
-    )) as InviteRow | undefined;
-
-    const origin = req.nextUrl.origin;
-    const joinPath = "/join"; // keep consistent with your UI route
-    const expiresAt = addDaysIso(7);
-
-    if (existingInvite?.id) {
-      const token = (existingInvite as any)?.token ?? null;
       return NextResponse.json({
         ok: true,
-        invite: {
-          id: existingInvite.id,
-          email,
-          created_at: existingInvite.created_at,
-          expires_at: existingInvite.expires_at,
-        },
-        link: token ? `${origin}${joinPath}?token=${encodeURIComponent(String(token))}` : null,
+        invite: { id, email, created_at: nowIso(), expires_at: expiresAt },
+        link: `${origin}${joinPath}?token=${encodeURIComponent(token)}`,
       });
-    }
-
-    const id = crypto.randomUUID();
-    const token = randomToken();
-
-    await db.run(
-      `INSERT INTO agency_invites (id, agency_id, email, token, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      id,
-      ctx.agencyId,
-      email,
-      token,
-      nowIso(),
-      expiresAt
-    );
-
-    return NextResponse.json({
-      ok: true,
-      invite: { id, email, created_at: nowIso(), expires_at: expiresAt },
-      link: `${origin}${joinPath}?token=${encodeURIComponent(token)}`,
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
@@ -374,7 +423,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  // Update member (status/role). Enforce seats on activation.
+  // Update member (status/role). TX-safe seat enforcement on activation.
   try {
     const ctx = (await requireOwnerOrAdmin(req)) as Ctx;
 
@@ -390,74 +439,64 @@ export async function PATCH(req: NextRequest) {
     const userId = String(body?.userId ?? "").trim();
     if (!userId) return bad("MISSING_USER_ID");
 
-    const row = (await db.get(
-      `SELECT id, email, role, status
-       FROM users
-       WHERE agency_id = ? AND id = ?
-       LIMIT 1`,
-      ctx.agencyId,
-      userId
-    )) as UserRow | undefined;
+    return await withTx(db, async () => {
+      const row = (await db.get(
+        `SELECT id, email, role, status
+         FROM users
+         WHERE agency_id = ? AND id = ?
+         LIMIT 1`,
+        ctx.agencyId,
+        userId
+      )) as UserRow | undefined;
 
-    if (!row?.id) return bad("USER_NOT_FOUND");
+      if (!row?.id) return bad("USER_NOT_FOUND");
 
-    const currentRole = normalizeRole(row.role);
-    const currentStatus = normalizeStatus(row.status);
+      const currentRole = normalizeRole(row.role);
+      const currentStatus = normalizeStatus(row.status);
 
-    // Permission guards
-    if (row.id === ctx.userId) return forbidden("CANNOT_EDIT_SELF");
-    if (currentRole === "owner") return forbidden("CANNOT_EDIT_OWNER");
+      // Permission guards
+      if (row.id === ctx.userId) return forbidden("CANNOT_EDIT_SELF");
+      if (currentRole === "owner") return forbidden("CANNOT_EDIT_OWNER");
 
-    const nextRole = body?.role != null ? normalizeRole(body.role) : currentRole;
-    const nextStatus = body?.status != null ? normalizeStatus(body.status) : currentStatus;
+      const nextRole = body?.role != null ? normalizeRole(body.role) : currentRole;
+      const nextStatus = body?.status != null ? normalizeStatus(body.status) : currentStatus;
 
-    // Only owner can edit admins
-    if (currentRole === "admin" && ctx.role !== "owner") return forbidden("ONLY_OWNER_CAN_EDIT_ADMINS");
+      // Only owner can edit admins
+      if (currentRole === "admin" && ctx.role !== "owner") return forbidden("ONLY_OWNER_CAN_EDIT_ADMINS");
 
-    // No ownership transfer here (separate flow)
-    if (body?.role != null && String(body.role ?? "").toLowerCase() === "owner") {
-      return forbidden("OWNERSHIP_TRANSFER_NOT_SUPPORTED_HERE");
-    }
-
-    // Enforce seats only when activating a *billable* member.
-    const becomingActive = currentStatus !== "active" && nextStatus === "active";
-    const billableMember = nextRole !== "owner" && nextRole !== "admin";
-
-    if (becomingActive && billableMember) {
-      const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
-      if (!seatState.canActivateAnotherMember) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "SEAT_LIMIT_REACHED",
-            seats: {
-              used: seatState.activeBillableMembers,
-              limit: maxUsers,
-            },
-          },
-          { status: 403 }
-        );
+      // No ownership transfer here (separate flow)
+      if (body?.role != null && String(body.role ?? "").toLowerCase() === "owner") {
+        return forbidden("OWNERSHIP_TRANSFER_NOT_SUPPORTED_HERE");
       }
-    }
 
-    await db.run(
-      `UPDATE users
-       SET role = ?, status = ?
-       WHERE agency_id = ? AND id = ?`,
-      nextRole,
-      nextStatus,
-      ctx.agencyId,
-      row.id
-    );
+      // Enforce seats only when activating a billable member, inside TX (race-safe)
+      const becomingActive = currentStatus !== "active" && nextStatus === "active";
+      const billableMember = nextRole !== "owner" && nextRole !== "admin";
 
-    return NextResponse.json({
-      ok: true,
-      user: {
-        id: row.id,
-        email: row.email,
-        role: nextRole,
-        status: nextStatus,
-      },
+      if (becomingActive && billableMember) {
+        const counts = await getSeatCounts(db, ctx.agencyId);
+        if (maxUsers != null && counts.activeBillableMembers >= maxUsers) {
+          return NextResponse.json(
+            { ok: false, error: "SEAT_LIMIT_REACHED", seats: { used: counts.activeBillableMembers, limit: maxUsers } },
+            { status: 403 }
+          );
+        }
+      }
+
+      await db.run(
+        `UPDATE users
+         SET role = ?, status = ?
+         WHERE agency_id = ? AND id = ?`,
+        nextRole,
+        nextStatus,
+        ctx.agencyId,
+        row.id
+      );
+
+      return NextResponse.json({
+        ok: true,
+        user: { id: row.id, email: row.email, role: nextRole, status: nextStatus },
+      });
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
@@ -504,7 +543,6 @@ export async function DELETE(req: NextRequest) {
     if (!targetUserId && !targetInviteId) return bad("MISSING_TARGET");
 
     if (targetInviteId) {
-      // revoke invite
       await db.run(
         `UPDATE agency_invites
          SET revoked_at = ?
@@ -513,11 +551,9 @@ export async function DELETE(req: NextRequest) {
         ctx.agencyId,
         targetInviteId
       );
-
       return NextResponse.json({ ok: true });
     }
 
-    // delete user
     if (targetUserId === ctx.userId) return forbidden("CANNOT_DELETE_SELF");
 
     const row = (await db.get(

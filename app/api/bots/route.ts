@@ -48,6 +48,18 @@ function bad(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 400 });
 }
 
+async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
+  await db.run("BEGIN");
+  try {
+    const out = await fn();
+    await db.run("COMMIT");
+    return out;
+  } catch (e) {
+    await db.run("ROLLBACK").catch(() => {});
+    throw e;
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = (await requireActiveMember(req)) as Ctx;
@@ -91,9 +103,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  // Create bot (agency: owner/admin only + plan limit; private: any active member; private does NOT count).
+  // TX-safe:
+  // - agency bots: owner/admin only + plan limit enforced inside TX
+  // - private bots: any active member, no plan limit, no seat count
   try {
-    // We accept either owner/admin context (for agency bot) or active member (for private bot).
     const body = (await req.json().catch(() => ({}))) as any;
     const scopeRaw = String(body?.scope ?? body?.type ?? "agency").toLowerCase();
     const scope = scopeRaw === "private" ? "private" : "agency";
@@ -112,8 +125,8 @@ export async function POST(req: NextRequest) {
     const limits = getPlanLimits(plan);
     const maxAgencyBots = pickMaxAgencyBotsFromLimits(limits);
 
-    if (scope === "agency") {
-      if (maxAgencyBots != null) {
+    return await withTx(db, async () => {
+      if (scope === "agency" && maxAgencyBots != null) {
         const row = (await db.get(
           `SELECT COUNT(1) as n
            FROM bots
@@ -129,34 +142,43 @@ export async function POST(req: NextRequest) {
           );
         }
       }
-    }
 
-    // Create vector store now (so bots never ship without it)
-    const vs = await openai.vectorStores.create({ name });
+      // Create vector store inside TX so count+insert is atomic under concurrency.
+      // This holds the DB transaction during the OpenAI call (intentional for correctness).
+      const vs = await openai.vectorStores.create({ name });
 
-    const id = crypto.randomUUID();
-    const ownerUserId = scope === "private" ? ctx.userId : null;
+      const id = crypto.randomUUID();
+      const ownerUserId = scope === "private" ? ctx.userId : null;
 
-    await db.run(
-      `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      id,
-      ctx.agencyId,
-      name,
-      ownerUserId,
-      vs.id,
-      new Date().toISOString()
-    );
+      try {
+        await db.run(
+          `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          id,
+          ctx.agencyId,
+          name,
+          ownerUserId,
+          vs.id,
+          new Date().toISOString()
+        );
+      } catch (e) {
+        // Best-effort cleanup if DB insert fails after VS created
+        try {
+          await openai.vectorStores.delete(vs.id);
+        } catch {}
+        throw e;
+      }
 
-    return NextResponse.json({
-      ok: true,
-      bot: {
-        id,
-        name,
-        scope,
-        owner_user_id: ownerUserId,
-        vector_store_id: vs.id,
-      },
+      return NextResponse.json({
+        ok: true,
+        bot: {
+          id,
+          name,
+          scope,
+          owner_user_id: ownerUserId,
+          vector_store_id: vs.id,
+        },
+      });
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
