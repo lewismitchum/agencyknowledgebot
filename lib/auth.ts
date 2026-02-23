@@ -9,13 +9,14 @@ export type Session = {
   agencyId: string;
   agencyEmail: string;
 
-  // optional (but should be present after login/accept-invite)
+  // Optional (backward compatible)
   userId?: string;
   userEmail?: string;
   role?: "owner" | "admin" | "member";
   status?: "active" | "pending" | "blocked";
 };
 
+// Minimal cookie header parser (no deps)
 function readCookieFromHeader(cookieHeader: string | null, name: string) {
   if (!cookieHeader) return null;
   const parts = cookieHeader.split(";").map((p) => p.trim());
@@ -42,10 +43,10 @@ export function verifySession(token: string): Session | null {
     };
 
     if (decoded.userId) s.userId = String(decoded.userId);
-    if (decoded.userEmail) s.userEmail = String(decoded.userEmail);
+    if (decoded.userEmail) s.userEmail = String(decoded.userEmail).trim().toLowerCase();
 
-    if (decoded.role) s.role = String(decoded.role).toLowerCase() as any;
-    if (decoded.status) s.status = String(decoded.status).toLowerCase() as any;
+    if (decoded.role) s.role = String(decoded.role).toLowerCase() as Session["role"];
+    if (decoded.status) s.status = String(decoded.status).toLowerCase() as Session["status"];
 
     if (s.role !== undefined) {
       const r = String(s.role).toLowerCase();
@@ -55,8 +56,6 @@ export function verifySession(token: string): Session | null {
       const st = String(s.status).toLowerCase();
       s.status = st === "active" ? "active" : st === "blocked" ? "blocked" : "pending";
     }
-
-    if (s.userEmail) s.userEmail = String(s.userEmail).trim().toLowerCase();
 
     return s;
   } catch {

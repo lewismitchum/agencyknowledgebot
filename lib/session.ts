@@ -5,9 +5,8 @@ import { signSession } from "@/lib/auth";
 export const SESSION_COOKIE = "louis_session";
 
 /**
- * Session should include per-user identity.
- * Authz + role/status still come from DB in `lib/authz.ts`,
- * but we MUST persist userId so invited members don't "become" the agency email user.
+ * Session MUST include per-user identity (userId + userEmail) to prevent
+ * everyone resolving to the agency email (which causes cross-user bot visibility).
  */
 export function setSessionCookie(
   res: NextResponse,
@@ -15,21 +14,17 @@ export function setSessionCookie(
     agencyId: string;
     agencyEmail: string;
 
-    // ✅ per-user identity (required for correct isolation)
-    userId?: string;
-    userEmail?: string;
-    role?: "owner" | "admin" | "member";
-    status?: "active" | "pending" | "blocked";
+    // ✅ per-user identity
+    userId: string;
+    userEmail: string;
   }
 ) {
   const token = signSession({
     agencyId: opts.agencyId,
     agencyEmail: opts.agencyEmail,
     userId: opts.userId,
-    userEmail: opts.userEmail,
-    role: opts.role,
-    status: opts.status,
-  } as any);
+    userEmail: String(opts.userEmail || "").trim().toLowerCase(),
+  });
 
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,

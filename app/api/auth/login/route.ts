@@ -62,7 +62,6 @@ async function verifyTurnstile(token: string, ip: string | null) {
 /**
  * Ensures there is at least one owner for the agency.
  * Rule: if there are no users yet for this agency, the agency email becomes owner+active.
- * Otherwise do nothing.
  */
 async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
   await ensureUserColumns(db);
@@ -162,19 +161,13 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; password_hash: string | null; email_verified: number | null }
       | undefined;
 
-    if (!agency?.id) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-    }
+    if (!agency?.id) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
 
     const hash = String(agency.password_hash ?? "").trim();
-    if (!hash) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-    }
+    if (!hash) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
 
     const ok = await bcrypt.compare(password, hash);
-    if (!ok) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-    }
+    if (!ok) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
 
     const verified = Number(agency.email_verified ?? 0);
     if (verified === 0) {
@@ -183,7 +176,7 @@ export async function POST(req: NextRequest) {
 
     await ensureFirstOwner(db, { id: agency.id, email: agency.email });
 
-    // Find the user row for THIS agency email
+    // Find the user row for THIS email in this agency
     let user = (await db.get(
       `SELECT id, email, email_verified, role, status
        FROM users
@@ -195,7 +188,7 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; email_verified: number; role: string | null; status: string | null }
       | undefined;
 
-    // If missing, create as MEMBER + PENDING (approval flow)
+    // If missing, create as MEMBER + PENDING
     if (!user?.id) {
       const id = crypto.randomUUID();
       const t = nowIso();
@@ -220,20 +213,17 @@ export async function POST(req: NextRequest) {
       user: { id: user.id, email: user.email, role, status },
     });
 
-    // ✅ CRITICAL: include userId + userEmail in cookie
+    // ✅ MUST include per-user identity
     setSessionCookie(res, {
       agencyId: agency.id,
       agencyEmail: agency.email,
       userId: user.id,
       userEmail: user.email,
-    } as any);
+    });
 
     return res;
   } catch (err: any) {
     console.error("LOGIN_ERROR", err);
-    return NextResponse.json(
-      { error: "Server error", message: err?.message || "Unknown error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: err?.message || "Unknown error" }, { status: 500 });
   }
 }

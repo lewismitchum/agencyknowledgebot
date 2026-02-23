@@ -177,21 +177,18 @@ export async function POST(req: NextRequest) {
 
     await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
 
-    // ✅ Auto-login after accepting invite — MUST be per-user
     const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
 
+    // ✅ MUST be per-user
     setSessionCookie(res, {
       agencyId: agency.id,
-      agencyEmail: agency.email,     // agency contact
-      userId,                        // ✅ per-user identity
-      userEmail: emailLower,         // ✅ per-user identity
-    } as any);
+      agencyEmail: agency.email,
+      userId,
+      userEmail: emailLower,
+    });
 
     return res;
   } catch (err: any) {
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
