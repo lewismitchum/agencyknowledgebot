@@ -105,14 +105,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid role" }, { status: 400 });
     }
 
-    // ✅ Only the OWNER can transfer ownership or change the owner's role/status
-    if (role === "owner" && ctx.role !== "owner") {
-      return NextResponse.json({ error: "Owner only" }, { status: 403 });
-    }
-
-    // Prevent user from changing their own access (owner/admin safety)
+    // Prevent changing your own access
     if (user_id === ctx.userId) {
-      return NextResponse.json({ error: "You cannot change your own access." }, { status: 400 });
+      // owners/admins shouldn't be able to lock themselves out
+      if (status !== "active") {
+        return NextResponse.json({ error: "You cannot change your own access." }, { status: 400 });
+      }
+      // and don't allow self-role changes here (separate flow)
+      if (role !== ctx.role) {
+        return NextResponse.json({ error: "You cannot change your own role here." }, { status: 400 });
+      }
     }
 
     const target = (await db.get(
@@ -129,13 +131,18 @@ export async function POST(req: NextRequest) {
     const beforeRole = normalizeRole(target.role);
     const beforeStatus = normalizeStatus(target.status);
 
-    // If target is OWNER, only OWNER can modify them
-    if (beforeRole === "owner" && ctx.role !== "owner") {
+    const afterRole = normalizeRole(role);
+    const afterStatus = normalizeStatus(status);
+
+    // ✅ Only OWNER can transfer ownership
+    if (afterRole === "owner" && ctx.role !== "owner") {
       return NextResponse.json({ error: "Owner only" }, { status: 403 });
     }
 
-    const afterRole = normalizeRole(role);
-    const afterStatus = normalizeStatus(status);
+    // ✅ Nobody can change the current owner's role away from owner (except owner, via separate transfer flow)
+    if (beforeRole === "owner" && afterRole !== "owner") {
+      return NextResponse.json({ error: "Cannot demote owner" }, { status: 400 });
+    }
 
     // Seat safety: if this update would increase billable seats, enforce max_users
     const beforeBillable = isBillable(beforeRole, beforeStatus);
