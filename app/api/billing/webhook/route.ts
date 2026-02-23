@@ -20,11 +20,22 @@ function getWebhookSecret() {
 }
 
 async function ensureAgencyBillingColumns(db: Db) {
-  // Best-effort drift repair: these columns are required for billing persistence.
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
+}
+
+async function ensureStripeEventTable(db: Db) {
+  await db
+    .run(`
+      CREATE TABLE IF NOT EXISTS stripe_events (
+        id TEXT PRIMARY KEY,
+        type TEXT,
+        created_at TEXT
+      )
+    `)
+    .catch(() => {});
 }
 
 function planFromPriceId(priceId: string | null | undefined): PlanKey {
@@ -77,7 +88,10 @@ function toIsoFromUnixSeconds(sec: number | null | undefined) {
   return new Date(sec * 1000).toISOString();
 }
 
-async function findAgencyIdByStripeIds(db: Db, args: { customerId?: string | null; subscriptionId?: string | null }) {
+async function findAgencyIdByStripeIds(
+  db: Db,
+  args: { customerId?: string | null; subscriptionId?: string | null }
+) {
   const subId = String(args.subscriptionId || "").trim();
   const custId = String(args.customerId || "").trim();
 
@@ -141,14 +155,32 @@ async function updateAgencyBilling(
   await db.run(`UPDATE agencies SET ${fields.join(", ")} WHERE id = ?`, ...args);
 }
 
-async function forceDowngradeToFree(db: Db, agencyId: string, patch?: { customerId?: string | null; subscriptionId?: string | null }) {
-  if (!agencyId) return;
+async function recordStripeEventOnce(db: Db, event: Stripe.Event): Promise<boolean> {
+  try {
+    await db.run(
+      `INSERT INTO stripe_events (id, type, created_at)
+       VALUES (?, ?, ?)`,
+      event.id,
+      event.type,
+      new Date().toISOString()
+    );
+    return true; // first time
+  } catch {
+    // primary key conflict => already processed
+    return false;
+  }
+}
 
-  await updateAgencyBilling(db, agencyId, {
-    plan: "free",
-    stripe_customer_id: typeof patch?.customerId !== "undefined" ? patch.customerId : undefined,
-    stripe_subscription_id: typeof patch?.subscriptionId !== "undefined" ? patch.subscriptionId : undefined,
-  });
+async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
+  await db.run("BEGIN");
+  try {
+    const out = await fn();
+    await db.run("COMMIT");
+    return out;
+  } catch (e) {
+    await db.run("ROLLBACK").catch(() => {});
+    throw e;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -174,176 +206,198 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
     await ensureAgencyBillingColumns(db);
+    await ensureStripeEventTable(db);
 
-    // 1) Checkout completed: initial plan selection (metadata.plan) + customer/subscription ids
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object as Stripe.Checkout.Session;
-
-      const agencyId = agencyIdFromCheckoutSession(session);
-      const desired = normalizePlan(((session.metadata || {}) as any)?.plan);
-
-      const customerId =
-        typeof session.customer === "string"
-          ? session.customer
-          : (session.customer as any)?.id
-            ? String((session.customer as any).id)
-            : null;
-
-      const subscriptionId =
-        typeof session.subscription === "string"
-          ? session.subscription
-          : (session.subscription as any)?.id
-            ? String((session.subscription as any).id)
-            : null;
-
-      if (agencyId) {
-        await updateAgencyBilling(db, agencyId, {
-          plan: desired !== "free" ? desired : undefined,
-          stripe_customer_id: customerId ?? undefined,
-          stripe_subscription_id: subscriptionId ?? undefined,
-        });
-      }
-
+    const firstTime = await recordStripeEventOnce(db, event);
+    if (!firstTime) {
+      // idempotent: already processed
       return NextResponse.json({ ok: true });
     }
 
-    // 2) Subscription created/updated: authoritative plan + ids + period end
-    if (
-      event.type === "customer.subscription.created" ||
-      event.type === "customer.subscription.updated"
-    ) {
-      const sub = event.data.object as Stripe.Subscription;
+    await withTx(db, async () => {
+      // 1) Checkout completed
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object as Stripe.Checkout.Session;
 
-      let agencyId = agencyIdFromSubscription(sub);
+        const agencyId = agencyIdFromCheckoutSession(session);
+        const desired = normalizePlan(((session.metadata || {}) as any)?.plan);
 
-      const status = String(sub.status || "");
-      const active = status === "active" || status === "trialing";
+        const customerId =
+          typeof session.customer === "string"
+            ? session.customer
+            : (session.customer as any)?.id
+              ? String((session.customer as any).id)
+              : null;
 
-      const itemPriceIds = (sub.items?.data || [])
-        .map((it) => it.price?.id || null)
-        .filter(Boolean) as string[];
+        const subscriptionId =
+          typeof session.subscription === "string"
+            ? session.subscription
+            : (session.subscription as any)?.id
+              ? String((session.subscription as any).id)
+              : null;
 
-      const itemPlans: PlanKey[] = itemPriceIds.map((pid) => planFromPriceId(pid));
-      const bestPlan = pickBestPlan(itemPlans);
+        if (agencyId) {
+          await updateAgencyBilling(db, agencyId, {
+            plan: desired !== "free" ? desired : undefined,
+            stripe_customer_id: customerId ?? undefined,
+            stripe_subscription_id: subscriptionId ?? undefined,
+          });
+        }
 
-      const chosenPriceId = itemPriceIds.length ? itemPriceIds[0] : null;
-
-      const customerId =
-        typeof sub.customer === "string"
-          ? sub.customer
-          : (sub.customer as any)?.id
-            ? String((sub.customer as any).id)
-            : null;
-
-      const periodEndIso = toIsoFromUnixSeconds((sub as any).current_period_end);
-
-      if (!agencyId) {
-        agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
+        return;
       }
 
-      if (agencyId) {
-        await updateAgencyBilling(db, agencyId, {
-          plan: active ? bestPlan : "free",
-          stripe_customer_id: customerId ?? undefined,
-          stripe_subscription_id: sub.id ?? undefined,
-          stripe_price_id: chosenPriceId ?? undefined,
-          stripe_current_period_end: periodEndIso ?? undefined,
-        });
+      // 2) Subscription created/updated
+      if (
+        event.type === "customer.subscription.created" ||
+        event.type === "customer.subscription.updated"
+      ) {
+        const sub = event.data.object as Stripe.Subscription;
+
+        let agencyId = agencyIdFromSubscription(sub);
+
+        const status = String(sub.status || "");
+        const active = status === "active" || status === "trialing";
+
+        const itemPriceIds = (sub.items?.data || [])
+          .map((it) => it.price?.id || null)
+          .filter(Boolean) as string[];
+
+        const itemPlans: PlanKey[] = itemPriceIds.map((pid) => planFromPriceId(pid));
+        const bestPlan = pickBestPlan(itemPlans);
+        const chosenPriceId = itemPriceIds.length ? itemPriceIds[0] : null;
+
+        const customerId =
+          typeof sub.customer === "string"
+            ? sub.customer
+            : (sub.customer as any)?.id
+              ? String((sub.customer as any).id)
+              : null;
+
+        const periodEndIso = toIsoFromUnixSeconds((sub as any).current_period_end);
+
+        if (!agencyId) {
+          agencyId = await findAgencyIdByStripeIds(db, {
+            customerId,
+            subscriptionId: sub.id,
+          });
+        }
+
+        if (agencyId) {
+          await updateAgencyBilling(db, agencyId, {
+            plan: active ? bestPlan : "free",
+            stripe_customer_id: customerId ?? undefined,
+            stripe_subscription_id: sub.id ?? undefined,
+            stripe_price_id: chosenPriceId ?? undefined,
+            stripe_current_period_end: periodEndIso ?? undefined,
+          });
+        }
+
+        return;
       }
 
-      return NextResponse.json({ ok: true });
-    }
+      // 3) Subscription deleted
+      if (event.type === "customer.subscription.deleted") {
+        const sub = event.data.object as Stripe.Subscription;
 
-    // 3) Subscription deleted => downgrade + clear subscription fields (keep customer id if present)
-    if (event.type === "customer.subscription.deleted") {
-      const sub = event.data.object as Stripe.Subscription;
+        let agencyId = agencyIdFromSubscription(sub);
 
-      let agencyId = agencyIdFromSubscription(sub);
+        const customerId =
+          typeof sub.customer === "string"
+            ? sub.customer
+            : (sub.customer as any)?.id
+              ? String((sub.customer as any).id)
+              : null;
 
-      const customerId =
-        typeof sub.customer === "string"
-          ? sub.customer
-          : (sub.customer as any)?.id
-            ? String((sub.customer as any).id)
-            : null;
+        if (!agencyId) {
+          agencyId = await findAgencyIdByStripeIds(db, {
+            customerId,
+            subscriptionId: sub.id,
+          });
+        }
 
-      if (!agencyId) {
-        agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
+        if (agencyId) {
+          await updateAgencyBilling(db, agencyId, {
+            plan: "free",
+            stripe_customer_id: customerId ?? undefined,
+            stripe_subscription_id: null,
+            stripe_price_id: null,
+            stripe_current_period_end: null,
+          });
+        }
+
+        return;
       }
 
-      if (agencyId) {
-        await updateAgencyBilling(db, agencyId, {
-          plan: "free",
-          stripe_customer_id: customerId ?? undefined,
-          stripe_subscription_id: null,
-          stripe_price_id: null,
-          stripe_current_period_end: null,
-        });
+      // 4) Payment failed
+      if (event.type === "invoice.payment_failed") {
+        const inv = event.data.object as Stripe.Invoice;
+
+        const customerId =
+          typeof inv.customer === "string"
+            ? inv.customer
+            : (inv.customer as any)?.id
+              ? String((inv.customer as any).id)
+              : null;
+
+        const subscriptionId = (() => {
+          const s = (inv as any).subscription;
+          if (typeof s === "string") return s;
+          if (s && typeof s.id === "string") return String(s.id);
+          return null;
+        })();
+
+        let agencyId = agencyIdFromInvoice(inv);
+        if (!agencyId) {
+          agencyId = await findAgencyIdByStripeIds(db, {
+            customerId,
+            subscriptionId,
+          });
+        }
+
+        if (agencyId) {
+          await updateAgencyBilling(db, agencyId, {
+            plan: "free",
+          });
+        }
+
+        return;
       }
 
-      return NextResponse.json({ ok: true });
-    }
+      // 5) Optional paused
+      if (event.type === "customer.subscription.paused") {
+        const sub = event.data.object as Stripe.Subscription;
 
-    // 4) Payment failed => downgrade immediately (revenue safety)
-    if (event.type === "invoice.payment_failed") {
-      const inv = event.data.object as Stripe.Invoice;
+        let agencyId = agencyIdFromSubscription(sub);
 
-      const customerId =
-        typeof inv.customer === "string"
-          ? inv.customer
-          : (inv.customer as any)?.id
-            ? String((inv.customer as any).id)
-            : null;
+        const customerId =
+          typeof sub.customer === "string"
+            ? sub.customer
+            : (sub.customer as any)?.id
+              ? String((sub.customer as any).id)
+              : null;
 
-      const subscriptionId = (() => {
-        const s = (inv as any).subscription;
-        if (typeof s === "string") return s;
-        if (s && typeof s.id === "string") return String(s.id);
-        return null;
-      })();
+        if (!agencyId) {
+          agencyId = await findAgencyIdByStripeIds(db, {
+            customerId,
+            subscriptionId: sub.id,
+          });
+        }
 
-      let agencyId = agencyIdFromInvoice(inv);
-      if (!agencyId) {
-        agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId });
+        if (agencyId) {
+          await updateAgencyBilling(db, agencyId, {
+            plan: "free",
+          });
+        }
+
+        return;
       }
-
-      await forceDowngradeToFree(db, agencyId, { customerId, subscriptionId });
-
-      return NextResponse.json({ ok: true });
-    }
-
-    // 5) Optional: paused event (some accounts emit this). Treat as downgrade.
-    if (event.type === "customer.subscription.paused") {
-      const sub = event.data.object as Stripe.Subscription;
-
-      let agencyId = agencyIdFromSubscription(sub);
-
-      const customerId =
-        typeof sub.customer === "string"
-          ? sub.customer
-          : (sub.customer as any)?.id
-            ? String((sub.customer as any).id)
-            : null;
-
-      if (!agencyId) {
-        agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
-      }
-
-      if (agencyId) {
-        await updateAgencyBilling(db, agencyId, {
-          plan: "free",
-          stripe_customer_id: customerId ?? undefined,
-          stripe_subscription_id: sub.id ?? undefined,
-        });
-      }
-
-      return NextResponse.json({ ok: true });
-    }
+    });
 
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     console.error("STRIPE_WEBHOOK_ERROR", err);
-    // Stripe expects 2xx unless you want retries.
+    // Always 200 so Stripe doesn’t retry forever.
     return NextResponse.json({ ok: true, warning: "webhook_error_logged" }, { status: 200 });
   }
 }
