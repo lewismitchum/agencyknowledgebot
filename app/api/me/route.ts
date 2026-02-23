@@ -30,6 +30,26 @@ function defaultDailyMessagesForPlan(plan: string) {
   return null; // Pro+ unlimited
 }
 
+async function ensureAgencyBillingColumns(db: Db) {
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
+}
+
+async function ensureUserColumns(db: Db) {
+  // Drift repair (older DBs may not have these)
+  await db.run(`ALTER TABLE users ADD COLUMN role TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN status TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN email_verified INTEGER`).catch(() => {});
+}
+
+async function ensureUsageDailyColumns(db: Db) {
+  // Some older DBs used messages_count/uploads_count drift issues
+  await db.run(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER`).catch(() => {});
+  await db.run(`ALTER TABLE usage_daily ADD COLUMN uploads_count INTEGER`).catch(() => {});
+}
+
 async function getDailyUsage(db: Db, agencyId: string, date: string) {
   const row = (await db.get(
     `SELECT messages_count, uploads_count
@@ -46,23 +66,21 @@ async function getDailyUsage(db: Db, agencyId: string, date: string) {
   };
 }
 
-async function ensureAgencyBillingColumns(db: Db) {
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
-}
-
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
+
+    // ✅ harden: prevent SQL_INPUT_ERROR on older schemas
     await ensureAgencyBillingColumns(db);
+    await ensureUserColumns(db);
+    await ensureUsageDailyColumns(db);
 
     const agency = (await db.get(
-      `SELECT id, name, email, plan, stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_current_period_end
+      `SELECT id, name, email, plan,
+              stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_current_period_end
        FROM agencies
        WHERE id = ?
        LIMIT 1`,
@@ -97,12 +115,11 @@ export async function GET(req: NextRequest) {
         }
       | undefined;
 
-    // Authoritative plan is agencies.plan (webhook writes it). Fall back to ctx.plan.
-    const rawPlan = agency?.plan ?? (ctx as any)?.plan ?? "free";
+    // Plan + limits
+    const rawPlan = agency?.plan ?? ctx.plan ?? "free";
     const plan = normalizePlan(rawPlan);
     const limits = getPlanLimits(plan);
 
-    // Usage (messages)
     let dailyLimit: number | null = (limits as any)?.daily_messages ?? null;
     if (dailyLimit != null && Number(dailyLimit) <= 0) dailyLimit = null;
 
@@ -111,6 +128,7 @@ export async function GET(req: NextRequest) {
       if (fallback != null) dailyLimit = fallback;
     }
 
+    // Usage
     const date = todayYmd();
     const usage = await getDailyUsage(db, ctx.agencyId, date);
 
@@ -125,50 +143,33 @@ export async function GET(req: NextRequest) {
       ctx.agencyId
     )) as { c?: number } | undefined;
 
-    const role = normalizeUserRole(user?.role ?? (ctx as any)?.role);
-    const status = normalizeUserStatus(user?.status ?? (ctx as any)?.status);
+    const role = normalizeUserRole((user as any)?.role ?? (ctx as any)?.role);
+    const status = normalizeUserStatus((user as any)?.status ?? (ctx as any)?.status);
 
     return NextResponse.json({
       ok: true,
-
-      // ✅ Standardized plan payload for all UI
-      plan,
-      limits,
-
       agency: {
         id: agency?.id ?? ctx.agencyId,
         name: agency?.name ?? null,
         email: agency?.email ?? (ctx as any)?.agencyEmail ?? null,
-        plan: plan,
+        plan: agency?.plan ?? (ctx.plan ?? "free"),
         stripe_customer_id: agency?.stripe_customer_id ?? null,
         stripe_subscription_id: agency?.stripe_subscription_id ?? null,
         stripe_price_id: agency?.stripe_price_id ?? null,
         stripe_current_period_end: agency?.stripe_current_period_end ?? null,
       },
-
       user: {
         id: user?.id ?? ctx.userId,
         email: user?.email ?? (ctx as any)?.userEmail ?? (ctx as any)?.agencyEmail ?? "",
-        email_verified: Number(user?.email_verified ?? 0),
+        email_verified: Number((user as any)?.email_verified ?? 0),
         role,
         status,
-        is_owner_admin: status === "active" && (role === "owner" || role === "admin"),
       },
-
       documents_count: Number(docsRow?.c ?? 0),
 
       // Chat page expects these
       daily_remaining, // null => unlimited
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
-
-      // Helpful to clients doing seat/bot UI math
-      usage: {
-        date,
-        messages_count: Number(usage.messages_count),
-        uploads_count: Number(usage.uploads_count),
-        daily_limit: dailyLimit,
-        daily_remaining,
-      },
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
