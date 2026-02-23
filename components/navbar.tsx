@@ -327,6 +327,8 @@ export default function Navbar() {
           </div>
 
           <NavLink href="/app/bots">Bots</NavLink>
+          <NavLink href="/app/notifications">Notifications</NavLink>
+          <NavLink href="/support">Support</NavLink>
           <NavLink href="/launch">Launch</NavLink>
         </nav>
 
@@ -347,6 +349,15 @@ export default function Navbar() {
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/bots">Bots</Link>
             </Button>
+
+            <Button asChild variant="ghost" size="sm" className="rounded-full">
+              <Link href="/app/notifications">Notify</Link>
+            </Button>
+
+            <Button asChild variant="ghost" size="sm" className="rounded-full">
+              <Link href="/support">Support</Link>
+            </Button>
+
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/launch">Launch</Link>
             </Button>
