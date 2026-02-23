@@ -1,9 +1,11 @@
 // app/api/me/route.ts
 import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { normalizeUserRole, normalizeUserStatus } from "@/lib/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -95,29 +97,25 @@ export async function GET(req: NextRequest) {
         }
       | undefined;
 
-   // Usage (messages)
-const rawPlan = agency?.plan ?? ctx.plan ?? "free";
-const plan = normalizePlan(rawPlan);
-const limits = getPlanLimits(plan);
+    // Usage (messages)
+    const rawPlan = agency?.plan ?? ctx.plan ?? "free";
+    const plan = normalizePlan(rawPlan);
+    const limits = getPlanLimits(plan);
 
-let dailyLimit: number | null = (limits as any)?.daily_messages ?? null;
-if (dailyLimit != null && Number(dailyLimit) <= 0) dailyLimit = null;
+    let dailyLimit: number | null = (limits as any)?.daily_messages ?? null;
+    if (dailyLimit != null && Number(dailyLimit) <= 0) dailyLimit = null;
 
-// fallback only for tiers that should have a numeric default
-if (dailyLimit == null) {
-  const fallback = defaultDailyMessagesForPlan(plan);
-  if (fallback != null) dailyLimit = fallback;
-}
+    if (dailyLimit == null) {
+      const fallback = defaultDailyMessagesForPlan(plan);
+      if (fallback != null) dailyLimit = fallback;
+    }
 
-const date = todayYmd();
-const usage = await getDailyUsage(db, ctx.agencyId, date);
+    const date = todayYmd();
+    const usage = await getDailyUsage(db, ctx.agencyId, date);
 
-// ✅ unlimited => null
-const daily_remaining =
-  dailyLimit == null ? null : Math.max(0, Number(dailyLimit) - Number(usage.messages_count));
+    const daily_remaining =
+      dailyLimit == null ? null : Math.max(0, Number(dailyLimit) - Number(usage.messages_count));
 
-// (optional but useful for UI)
-const daily_used = Number(usage.messages_count);
     // Documents count (agency-scoped)
     const docsRow = (await db.get(
       `SELECT COUNT(1) as c
@@ -126,12 +124,15 @@ const daily_used = Number(usage.messages_count);
       ctx.agencyId
     )) as { c?: number } | undefined;
 
-    return Response.json({
+    const role = normalizeUserRole(user?.role ?? ctx.role);
+    const status = normalizeUserStatus(user?.status ?? ctx.status);
+
+    return NextResponse.json({
       ok: true,
       agency: {
         id: agency?.id ?? ctx.agencyId,
         name: agency?.name ?? null,
-        email: agency?.email ?? null,
+        email: agency?.email ?? ctx.agencyEmail,
         plan: agency?.plan ?? (ctx.plan ?? "free"),
         stripe_customer_id: agency?.stripe_customer_id ?? null,
         stripe_subscription_id: agency?.stripe_subscription_id ?? null,
@@ -140,22 +141,21 @@ const daily_used = Number(usage.messages_count);
       },
       user: {
         id: user?.id ?? ctx.userId,
-        email: user?.email ?? ctx.agencyEmail,
+        email: user?.email ?? ctx.userEmail ?? ctx.agencyEmail,
         email_verified: Number(user?.email_verified ?? 0),
-        role: user?.role ?? "member",
-        status: user?.status ?? "active",
+        role,
+        status,
       },
-
       documents_count: Number(docsRow?.c ?? 0),
 
-      // ✅ Chat page expects these
-      daily_remaining,
+      // Chat page expects these
+      daily_remaining, // null => unlimited
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }

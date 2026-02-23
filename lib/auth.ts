@@ -1,8 +1,14 @@
+// lib/auth.ts
 import jwt from "jsonwebtoken";
 import type { NextRequest } from "next/server";
 
-const JWT_SECRET = process.env.JWT_SECRET!;
-const COOKIE_NAME = "louis_session";
+export const COOKIE_NAME = "louis_session";
+
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  // Fail fast in dev/build so you don't get silent auth bugs.
+  throw new Error("Missing JWT_SECRET env var");
+}
 
 export type Session = {
   agencyId: string;
@@ -30,12 +36,12 @@ function readCookieFromHeader(cookieHeader: string | null, name: string) {
 }
 
 export function signSession(payload: Session): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+  return jwt.sign(payload, JWT_SECRET!, { expiresIn: "7d" });
 }
 
 export function verifySession(token: string): Session | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(token, JWT_SECRET!) as any;
     if (!decoded?.agencyId || !decoded?.agencyEmail) return null;
 
     const s: Session = {
