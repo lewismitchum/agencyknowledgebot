@@ -133,6 +133,7 @@ export async function POST(req: NextRequest) {
         id, name, email, password_hash, vector_store_id, created_at,
         email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+
       agencyId,
       name.trim(),
       normalizedEmail,
@@ -184,15 +185,7 @@ export async function POST(req: NextRequest) {
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
 
-    // ✅ IMPORTANT:
-    // If email verification is required, do NOT set a session cookie yet.
-    // This avoids “pending session” confusion and prevents any accidental identity blending.
-    if (willSendEmail) {
-      if (isJson) return NextResponse.json({ ok: true, redirectTo });
-      return NextResponse.redirect(new URL(redirectTo, req.url));
-    }
-
-    // ✅ If email is already verified (no email provider), set a per-user session cookie.
+    // ✅ CRITICAL: per-user cookie identity (prevents shared identity bugs)
     if (isJson) {
       const res = NextResponse.json({ ok: true, redirectTo });
       setSessionCookie(res, {
