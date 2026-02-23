@@ -2,7 +2,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
-import { requireOwner } from "@/lib/authz";
+import { requireOwnerOrAdmin } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { nowIso } from "@/lib/tokens";
 import { ensureSchema } from "@/lib/schema";
@@ -85,7 +85,7 @@ function normalizeStatus(raw: any): "active" | "pending" | "blocked" {
 
 export async function POST(req: NextRequest) {
   try {
-    const ctx = await requireOwner(req);
+    const ctx = await requireOwnerOrAdmin(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
@@ -105,11 +105,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid role" }, { status: 400 });
     }
 
-    // Prevent owner from blocking/demoting themselves
+    // ✅ Only the OWNER can transfer ownership or change the owner's role/status
+    if (role === "owner" && ctx.role !== "owner") {
+      return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    }
+
+    // Prevent user from changing their own access (owner/admin safety)
     if (user_id === ctx.userId) {
-      if (status !== "active" || role !== "owner") {
-        return NextResponse.json({ error: "You cannot change your own access." }, { status: 400 });
-      }
+      return NextResponse.json({ error: "You cannot change your own access." }, { status: 400 });
     }
 
     const target = (await db.get(
@@ -125,6 +128,11 @@ export async function POST(req: NextRequest) {
 
     const beforeRole = normalizeRole(target.role);
     const beforeStatus = normalizeStatus(target.status);
+
+    // If target is OWNER, only OWNER can modify them
+    if (beforeRole === "owner" && ctx.role !== "owner") {
+      return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    }
 
     const afterRole = normalizeRole(role);
     const afterStatus = normalizeStatus(status);
@@ -175,7 +183,7 @@ export async function POST(req: NextRequest) {
 
     if (msg === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ error: "Pending approval" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     console.error("AGENCY_USERS_UPDATE_ERROR", err);
     return NextResponse.json({ error: "Server error", message: msg }, { status: 500 });

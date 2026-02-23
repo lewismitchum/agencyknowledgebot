@@ -2,7 +2,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
-import { requireOwner } from "@/lib/authz";
+import { requireOwnerOrAdmin } from "@/lib/authz";
 import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { nowIso } from "@/lib/tokens";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
@@ -60,7 +60,7 @@ async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | nu
 
 export async function GET(req: NextRequest) {
   try {
-    const ctx = await requireOwner(req);
+    const ctx = await requireOwnerOrAdmin(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
@@ -158,8 +158,8 @@ export async function GET(req: NextRequest) {
     if (msg === "FORBIDDEN_NOT_ACTIVE") {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
     }
-    if (msg === "FORBIDDEN_NOT_OWNER") {
-      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
     }
 
     console.error("AGENCY_USERS_GET_ERROR", err);
