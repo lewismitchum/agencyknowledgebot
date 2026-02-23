@@ -43,7 +43,6 @@ async function ensureUserRoleColumns(db: Db) {
 }
 
 function resendConfigured() {
-  // We’re using Resend now
   return Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM);
 }
 
@@ -125,7 +124,6 @@ export async function POST(req: NextRequest) {
       tokenHash = hashToken(token);
       expiresAt = isoFromNowMinutes(60);
 
-      // ✅ IMPORTANT: url-encode the token so email clients don’t destroy it
       const tokenParam = encodeURIComponent(token);
       verifyUrl = `${getAppUrl()}/verify-email?token=${tokenParam}`;
     }
@@ -186,14 +184,33 @@ export async function POST(req: NextRequest) {
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
 
+    // ✅ IMPORTANT:
+    // If email verification is required, do NOT set a session cookie yet.
+    // This avoids “pending session” confusion and prevents any accidental identity blending.
+    if (willSendEmail) {
+      if (isJson) return NextResponse.json({ ok: true, redirectTo });
+      return NextResponse.redirect(new URL(redirectTo, req.url));
+    }
+
+    // ✅ If email is already verified (no email provider), set a per-user session cookie.
     if (isJson) {
       const res = NextResponse.json({ ok: true, redirectTo });
-      setSessionCookie(res, { agencyId, agencyEmail: normalizedEmail });
+      setSessionCookie(res, {
+        agencyId,
+        agencyEmail: normalizedEmail,
+        userId: ownerUserId,
+        userEmail: normalizedEmail,
+      });
       return res;
     }
 
     const res = NextResponse.redirect(new URL(redirectTo, req.url));
-    setSessionCookie(res, { agencyId, agencyEmail: normalizedEmail });
+    setSessionCookie(res, {
+      agencyId,
+      agencyEmail: normalizedEmail,
+      userId: ownerUserId,
+      userEmail: normalizedEmail,
+    });
     return res;
   } catch (err: any) {
     console.error("SIGNUP_ERROR", err);
