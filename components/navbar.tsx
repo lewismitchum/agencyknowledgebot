@@ -32,13 +32,7 @@ type DocRow = {
   created_at: string;
 };
 
-function NavLink({
-  href,
-  children,
-}: {
-  href: string;
-  children: React.ReactNode;
-}) {
+function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
   const pathname = usePathname();
   const active = pathname === href;
 
@@ -48,9 +42,7 @@ function NavLink({
       className={[
         "text-sm transition-colors",
         "rounded-full px-3 py-1.5",
-        active
-          ? "bg-muted text-foreground"
-          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
       ].join(" ")}
     >
       {children}
@@ -222,7 +214,7 @@ export default function Navbar() {
   return (
     <header className="sticky top-0 z-50 border-b bg-background/70 backdrop-blur">
       <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 md:px-6">
-        <Link href="/" className="group flex items-center gap-2">
+        <Link href="/app" className="group flex items-center gap-2">
           <div className="badge-glow relative overflow-hidden rounded-full px-3 py-1.5">
             <div className="pointer-events-none absolute inset-0 opacity-60 [background:radial-gradient(600px_200px_at_20%_0%,hsl(var(--primary)/0.16),transparent_60%)]" />
             <span className="relative text-sm font-semibold tracking-tight">
@@ -230,13 +222,12 @@ export default function Navbar() {
             </span>
           </div>
 
-          <span className="hidden text-sm text-muted-foreground md:block">
-            Docs-prioritized AI for agencies
-          </span>
+          <span className="hidden text-sm text-muted-foreground md:block">Docs-prioritized AI for agencies</span>
         </Link>
 
         {/* Desktop nav */}
         <nav className="hidden items-center gap-2 md:flex">
+          <NavLink href="/app">Dashboard</NavLink>
           <NavLink href="/app/chat">Chat</NavLink>
 
           {/* Docs dropdown (shows docs list) */}
@@ -258,9 +249,7 @@ export default function Navbar() {
             {docsOpen ? (
               <div className="absolute right-0 mt-2 w-[360px] rounded-xl border bg-background p-3 shadow-lg">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Docs
-                  </div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Docs</div>
 
                   <Link
                     href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}
@@ -299,9 +288,7 @@ export default function Navbar() {
                   ) : docsError ? (
                     <div className="px-3 py-2 text-sm text-red-500">{docsError}</div>
                   ) : docs.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-muted-foreground">
-                      No docs for this bot.
-                    </div>
+                    <div className="px-3 py-2 text-sm text-muted-foreground">No docs for this bot.</div>
                   ) : (
                     <div className="flex flex-col">
                       {docs.map((d) => (
@@ -319,16 +306,14 @@ export default function Navbar() {
                   )}
                 </div>
 
-                <div className="mt-2 text-[11px] text-muted-foreground">
-                  This list is scoped to the selected bot.
-                </div>
+                <div className="mt-2 text-[11px] text-muted-foreground">This list is scoped to the selected bot.</div>
               </div>
             ) : null}
           </div>
 
+          <NavLink href="/app/schedule">Schedule</NavLink>
           <NavLink href="/app/bots">Bots</NavLink>
-          <NavLink href="/app/notifications">Notifications</NavLink>
-          <NavLink href="/support">Support</NavLink>
+          <NavLink href="/app/support">Support</NavLink>
           <NavLink href="/launch">Launch</NavLink>
         </nav>
 
@@ -336,28 +321,23 @@ export default function Navbar() {
           {/* Mobile quick links */}
           <div className="flex items-center gap-1 md:hidden">
             <Button asChild variant="ghost" size="sm" className="rounded-full">
+              <Link href="/app">Dash</Link>
+            </Button>
+            <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/chat">Chat</Link>
             </Button>
-
-            {/* Mobile docs opens docs page (dropdown UI is desktop-only here) */}
             <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}>
-                Docs
-              </Link>
+              <Link href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}>Docs</Link>
             </Button>
-
+            <Button asChild variant="ghost" size="sm" className="rounded-full">
+              <Link href="/app/schedule">Schedule</Link>
+            </Button>
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/bots">Bots</Link>
             </Button>
-
             <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/notifications">Notify</Link>
+              <Link href="/app/support">Support</Link>
             </Button>
-
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/support">Support</Link>
-            </Button>
-
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/launch">Launch</Link>
             </Button>
@@ -380,26 +360,14 @@ export default function Navbar() {
                 {emailVerified ? "Verified" : "Unverified"}
               </Badge>
 
-              <span className="max-w-[220px] truncate text-xs text-muted-foreground">
-                {email}
-              </span>
+              <span className="max-w-[220px] truncate text-xs text-muted-foreground">{email}</span>
 
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                onClick={logout}
-              >
+              <Button variant="outline" size="sm" className="rounded-full" onClick={logout}>
                 Logout
               </Button>
             </div>
           ) : (
-            <Button
-              asChild
-              variant="outline"
-              size="sm"
-              className="hidden rounded-full md:inline-flex"
-            >
+            <Button asChild variant="outline" size="sm" className="hidden rounded-full md:inline-flex">
               <Link href="/login">Login</Link>
             </Button>
           )}
