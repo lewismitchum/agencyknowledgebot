@@ -29,10 +29,9 @@ async function tryCreateVectorStore(name: string) {
 }
 
 async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | null) {
-  const planRow = (await db.get(
-    `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
-    agencyId
-  )) as { plan: string | null } | undefined;
+  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { plan: string | null }
+    | undefined;
 
   return normalizePlan(planRow?.plan ?? fallbackPlan ?? null);
 }
@@ -90,7 +89,7 @@ export async function GET(req: NextRequest) {
 
     await ensureDefaultAgencyBot(db, ctx.agencyId);
 
-    // ✅ Only agency bots + THIS USER’s private bots
+    // ✅ CRITICAL: private bots are owned by ctx.userId (NOT agencyEmail)
     const bots = (await db.all(
       `SELECT id, agency_id, owner_user_id, name, description, vector_store_id, created_at
        FROM bots
@@ -140,6 +139,7 @@ export async function POST(req: NextRequest) {
 
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const limits = getPlanLimits(plan);
+
     const maxAgencyBots = (limits as any)?.max_agency_bots ?? null;
 
     if (maxAgencyBots != null) {
