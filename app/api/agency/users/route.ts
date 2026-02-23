@@ -1,14 +1,14 @@
+// app/api/agency/users/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
-import { ensureSchema } from "@/lib/schema";
 import { requireOwnerOrAdmin } from "@/lib/authz";
 import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { nowIso } from "@/lib/tokens";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 type UserRow = {
   id: string;
@@ -60,7 +60,6 @@ async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | nu
 
 export async function GET(req: NextRequest) {
   try {
-    // ✅ owner OR admin can view members (UI requires it)
     const ctx = await requireOwnerOrAdmin(req);
 
     const db: Db = await getDb();
@@ -68,10 +67,12 @@ export async function GET(req: NextRequest) {
     await ensureRoleStatusColumns(db);
     await ensureInviteTables();
 
+    // Plan + seat limits
     const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
     const maxUsers = pickMaxUsersFromLimits(limits);
 
+    // Users
     const users = (await db.all(
       `SELECT id, email, role, status, created_at
        FROM users
@@ -80,7 +81,7 @@ export async function GET(req: NextRequest) {
       ctx.agencyId
     )) as UserRow[];
 
-    // self-heal legacy rows
+    // Self-heal: backfill missing role/status so old rows don't bypass approvals.
     for (const u of users) {
       const role = normalizeRole(u.role);
       const status = normalizeStatus(u.status);
@@ -112,10 +113,12 @@ export async function GET(req: NextRequest) {
       created_at: u.created_at,
     }));
 
+    // Billable seats used (exclude owner/admin, ignore blocked)
     const billableUsed = normalizedUsers.filter(
       (u) => u.status !== "blocked" && u.role !== "owner" && u.role !== "admin"
     ).length;
 
+    // Pending invites (unaccepted, unrevoked, unexpired)
     const invites = (await db.all(
       `SELECT id, email, created_at, expires_at
        FROM agency_invites
@@ -145,21 +148,29 @@ export async function GET(req: NextRequest) {
       },
       users: normalizedUsers,
       invites: pendingInvites,
+      can_manage: {
+        view: true,
+        edit_members: ctx.role === "owner" || ctx.role === "admin",
+        transfer_ownership: ctx.role === "owner",
+      },
     });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
+    const msg = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED") {
+    if (msg === "UNAUTHENTICATED") {
       return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
     }
-    if (code === "FORBIDDEN_NOT_ACTIVE") {
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
     }
-    if (code === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
     }
 
     console.error("AGENCY_USERS_GET_ERROR", err);
-    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: code }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
   }
 }
