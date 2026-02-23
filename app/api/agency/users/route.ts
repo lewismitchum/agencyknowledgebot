@@ -6,6 +6,7 @@ import { requireOwner } from "@/lib/authz";
 import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { nowIso } from "@/lib/tokens";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
@@ -40,13 +41,12 @@ function normalizeStatus(raw: unknown): "active" | "pending" | "blocked" {
   const v = String(raw ?? "").toLowerCase();
   if (v === "active") return "active";
   if (v === "blocked") return "blocked";
-  // safest default: pending (forces explicit approval)
   return "pending";
 }
 
 function pickMaxUsersFromLimits(limits: any): number | null {
   const raw = limits?.max_users ?? limits?.users ?? limits?.seats ?? null;
-  if (raw == null) return null; // unlimited or not configured
+  if (raw == null) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }
@@ -63,6 +63,7 @@ export async function GET(req: NextRequest) {
     const ctx = await requireOwner(req);
 
     const db: Db = await getDb();
+    await ensureSchema(db);
     await ensureRoleStatusColumns(db);
     await ensureInviteTables();
 
@@ -143,7 +144,7 @@ export async function GET(req: NextRequest) {
       seats: {
         used: billableUsed,
         pending_invites: pendingInvites.length,
-        limit: maxUsers, // null => unlimited
+        limit: maxUsers,
       },
       users: normalizedUsers,
       invites: pendingInvites,
@@ -161,6 +162,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
     }
 
+    console.error("AGENCY_USERS_GET_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
   }
 }
