@@ -15,11 +15,10 @@ type BotRow = {
   vector_store_id: string | null;
 };
 
-type RouteCtx = {
-  params: Promise<{ botId: string }>;
-};
-
-export async function DELETE(req: NextRequest, context: RouteCtx) {
+export async function DELETE(
+  req: NextRequest,
+  context: { params: Promise<{ botId: string }> }
+) {
   try {
     const session = await requireActiveMember(req);
 
@@ -45,7 +44,7 @@ export async function DELETE(req: NextRequest, context: RouteCtx) {
 
     // ✅ HARD RULES:
     // - NEVER delete agency bots here
-    // - ONLY delete your own private bot (owner_user_id must equal session.userId)
+    // - ONLY delete your own private user bots
     if (!bot.owner_user_id) {
       return NextResponse.json(
         { ok: false, error: "FORBIDDEN", message: "Agency bots cannot be deleted." },
@@ -60,7 +59,7 @@ export async function DELETE(req: NextRequest, context: RouteCtx) {
       );
     }
 
-    // Get docs for this bot owned by this user
+    // Load docs owned by this user for this bot
     const docs = (await db.all(
       `SELECT id, openai_file_id
        FROM documents
@@ -72,7 +71,7 @@ export async function DELETE(req: NextRequest, context: RouteCtx) {
       session.userId
     )) as Array<{ id: string; openai_file_id: string | null }>;
 
-    // Best-effort: remove vector store files
+    // Best-effort: remove files from vector store first
     if (bot.vector_store_id) {
       for (const d of docs) {
         if (!d.openai_file_id) continue;
@@ -82,14 +81,14 @@ export async function DELETE(req: NextRequest, context: RouteCtx) {
       }
     }
 
-    // Remove derived data for those docs
+    // Remove derived data
     for (const d of docs) {
       await db.run(`DELETE FROM schedule_events WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
-      await db.run(`DELETE FROM schedule_tasks WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
-      await db.run(`DELETE FROM extractions WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
+      await db.run(`DELETE FROM schedule_tasks  WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
+      await db.run(`DELETE FROM extractions     WHERE agency_id = ? AND bot_id = ? AND document_id = ?`, session.agencyId, id, d.id);
     }
 
-    // Delete docs rows
+    // Delete docs
     await db.run(
       `DELETE FROM documents
        WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?`,
@@ -102,8 +101,7 @@ export async function DELETE(req: NextRequest, context: RouteCtx) {
     await db.run(
       `DELETE FROM conversation_messages
        WHERE conversation_id IN (
-         SELECT id FROM conversations
-         WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?
+         SELECT id FROM conversations WHERE agency_id = ? AND bot_id = ? AND owner_user_id = ?
        )`,
       session.agencyId,
       id,
@@ -118,7 +116,7 @@ export async function DELETE(req: NextRequest, context: RouteCtx) {
       session.userId
     );
 
-    // Delete bot row
+    // Delete the bot row
     await db.run(
       `DELETE FROM bots
        WHERE id = ? AND agency_id = ? AND owner_user_id = ?`,
