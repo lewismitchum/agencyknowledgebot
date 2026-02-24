@@ -153,6 +153,30 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-2xl border p-4">
+              <div className="text-sm font-medium">Timezone</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Controls daily usage keys (chats/uploads) and schedule defaults.
+              </div>
+              <div className="mt-3">
+                <Button asChild variant="outline" className="rounded-full">
+                  <Link href="/app/settings/timezone">Set timezone</Link>
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border p-4">
+              <div className="text-sm font-medium">Usage</div>
+              <div className="mt-1 text-sm text-muted-foreground">View today’s chat/upload usage for your plan.</div>
+              <div className="mt-3">
+                <Button asChild variant="outline" className="rounded-full">
+                  <Link href="/app/usage">View usage</Link>
+                </Button>
+              </div>
+            </div>
+          </div>
+
           <div className="text-sm text-muted-foreground">
             New users should be <span className="font-medium">pending</span> until an owner approves them.
           </div>
