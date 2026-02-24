@@ -21,7 +21,7 @@ function summarizeThresholdForPlan(plan: string | null) {
   if (p === "starter") return 30;
   if (p === "pro") return 40;
   if (p === "enterprise") return 50;
-  if (p === "corporation" || p === "corp") return 60;
+  if (p === "corporation") return 60;
   return 40;
 }
 
@@ -42,48 +42,24 @@ function looksLikeTimeQuestion(s: string) {
   return t === "what time is it" || t.includes("current time") || t.includes("time is it");
 }
 
-function formatTimeStringForTz(tz: string) {
+function chicagoTimeString() {
   const dt = new Date();
+  const time = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(dt);
 
-  let time = "";
-  let date = "";
-  try {
-    time = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    }).format(dt);
+  const date = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(dt);
 
-    date = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    }).format(dt);
-  } catch {
-    // fallback if tz is invalid
-    const fallbackTz = "America/Chicago";
-    time = new Intl.DateTimeFormat("en-US", {
-      timeZone: fallbackTz,
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    }).format(dt);
-
-    date = new Intl.DateTimeFormat("en-US", {
-      timeZone: fallbackTz,
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    }).format(dt);
-
-    tz = fallbackTz;
-  }
-
-  return `It’s ${time} in ${tz} (${date}).`;
+  return `It’s ${time} in Chicago (${date}).`;
 }
 
 async function getAgencyTimezone(db: Db, agencyId: string) {
@@ -96,7 +72,7 @@ async function getAgencyTimezone(db: Db, agencyId: string) {
 }
 
 function ymdInTz(tz: string) {
-  // en-CA => YYYY-MM-DD
+  // en-CA -> YYYY-MM-DD
   try {
     return new Intl.DateTimeFormat("en-CA", {
       timeZone: tz,
@@ -130,12 +106,21 @@ async function getDailyUsage(db: Db, agencyId: string, date: string) {
   };
 }
 
-async function incrementMessages(db: Db, agencyId: string, date: string) {
+async function ensureUsageRow(db: Db, agencyId: string, date: string) {
   await db.run(
-    `INSERT INTO usage_daily (agency_id, date, messages_count, uploads_count)
-     VALUES (?, ?, 1, 0)
-     ON CONFLICT(agency_id, date)
-     DO UPDATE SET messages_count = messages_count + 1`,
+    `INSERT OR IGNORE INTO usage_daily (agency_id, date, messages_count, uploads_count)
+     VALUES (?, ?, 0, 0)`,
+    agencyId,
+    date
+  );
+}
+
+async function incrementMessages(db: Db, agencyId: string, date: string) {
+  await ensureUsageRow(db, agencyId, date);
+  await db.run(
+    `UPDATE usage_daily
+     SET messages_count = messages_count + 1
+     WHERE agency_id = ? AND date = ?`,
     agencyId,
     date
   );
@@ -150,7 +135,7 @@ async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string |
   const plan = normalizePlan(rawPlan);
 
   const limits = getPlanLimits(plan);
-  const dailyLimit = (limits as any)?.daily_messages;
+  const dailyLimit = limits.daily_messages;
 
   if (dailyLimit == null || Number(dailyLimit) <= 0) {
     return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
@@ -245,7 +230,9 @@ async function summarizeConversation(openaiInput: string) {
   });
 
   const text =
-    typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
+    typeof resp.output_text === "string" && resp.output_text.trim().length > 0
+      ? resp.output_text.trim()
+      : "";
 
   return text.slice(0, 4000);
 }
@@ -260,6 +247,9 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
+    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+    const dateKey = ymdInTz(agencyTz);
+
     const body = (await req.json().catch(() => null)) as ChatBody | null;
     const bot_id = String(body?.bot_id ?? "").trim();
     const message = String(body?.message ?? "").trim();
@@ -267,22 +257,19 @@ export async function POST(req: NextRequest) {
     if (!bot_id) return Response.json({ error: "Missing bot_id" }, { status: 400 });
     if (!message) return Response.json({ error: "Missing message" }, { status: 400 });
 
-    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
-    const dateKey = ymdInTz(agencyTz);
-
-    const usage = await enforceDailyLimit(db, ctx.agencyId, ctx.plan, dateKey);
-    if (!usage.ok) {
+    const usageGate = await enforceDailyLimit(db, ctx.agencyId, ctx.plan, dateKey);
+    if (!usageGate.ok) {
       return Response.json(
-        { error: "DAILY_LIMIT_EXCEEDED", used: usage.used, daily_limit: usage.dailyLimit, plan: usage.plan },
+        {
+          error: "DAILY_LIMIT_EXCEEDED",
+          used: usageGate.used,
+          daily_limit: usageGate.dailyLimit,
+          plan: usageGate.plan,
+          timezone: agencyTz,
+          date: dateKey,
+        },
         { status: 429 }
       );
-    }
-
-    // count this request as a message (including time questions)
-    await incrementMessages(db, ctx.agencyId, dateKey);
-
-    if (looksLikeTimeQuestion(message)) {
-      return Response.json({ ok: true, answer: formatTimeStringForTz(agencyTz), source: "system" });
     }
 
     const bot = (await db.get(
@@ -316,9 +303,14 @@ export async function POST(req: NextRequest) {
       (convo.summary ? `Conversation memory:\n${convo.summary}\n\n` : "") +
       recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
 
-    const resp = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      instructions: `
+    let answer: string;
+
+    if (looksLikeTimeQuestion(message)) {
+      answer = chicagoTimeString();
+    } else {
+      const resp = await openai.responses.create({
+        model: "gpt-4.1-mini",
+        instructions: `
 You are Louis.Ai.
 
 Rules:
@@ -329,17 +321,23 @@ Rules:
 ${FALLBACK}
 Never fabricate internal details.
 `.trim(),
-      input: openaiInput,
-      tools,
-    });
+        input: openaiInput,
+        tools,
+      });
 
-    const answer =
-      typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : FALLBACK;
+      answer =
+        typeof resp.output_text === "string" && resp.output_text.trim().length > 0
+          ? resp.output_text.trim()
+          : FALLBACK;
+    }
 
     await insertMessage(db, convo.id, "assistant", answer);
 
+    // Count 1 user message per call (what billing cares about)
+    await incrementMessages(db, ctx.agencyId, dateKey);
+
     // auto-summarize + compact memory (plan-aware)
-    const plan = normalizePlan(usage.plan);
+    const plan = normalizePlan(usageGate.plan);
     const newCount = Number(convo.message_count ?? 0) + 2;
 
     if (await shouldSummarize(plan, newCount)) {
@@ -369,9 +367,11 @@ Never fabricate internal details.
       ok: true,
       answer,
       usage: {
-        used: usage.used + 1,
-        daily_limit: usage.dailyLimit,
-        plan: usage.plan,
+        used: usageGate.used + 1,
+        daily_limit: usageGate.dailyLimit,
+        plan: usageGate.plan,
+        timezone: agencyTz,
+        date: dateKey,
       },
     });
   } catch (err: any) {
