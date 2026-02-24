@@ -1,3 +1,4 @@
+// app/api/schedule/prefs/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -30,6 +31,23 @@ function assertScheduleEnabled(plan: string) {
   }
 }
 
+async function getAgencyTimezone(db: Db, agencyId: string) {
+  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { timezone?: string | null }
+    | undefined;
+
+  const tz = String(row?.timezone ?? "").trim();
+  return tz || "America/Chicago";
+}
+
+function normalizeWeekStartsOn(v: any): "sun" | "mon" {
+  return v === "sun" ? "sun" : "mon";
+}
+
+function normalizeDefaultView(v: any): "day" | "week" | "month" {
+  return v === "day" || v === "month" ? v : "week";
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -43,6 +61,8 @@ export async function GET(req: NextRequest) {
     const plan = await getAgencyPlan(db, ctx.agencyId);
     assertScheduleEnabled(plan);
 
+    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+
     const row = (await db.get(
       `SELECT timezone, week_starts_on, default_view, show_tasks, show_events, show_done_tasks
        FROM schedule_prefs
@@ -53,24 +73,31 @@ export async function GET(req: NextRequest) {
     )) as
       | {
           timezone: string | null;
-          week_starts_on: "sun" | "mon";
-          default_view: "day" | "week" | "month";
-          show_tasks: number | boolean;
-          show_events: number | boolean;
-          show_done_tasks: number | boolean;
+          week_starts_on: string | null;
+          default_view: string | null;
+          show_tasks: number | boolean | null;
+          show_events: number | boolean | null;
+          show_done_tasks: number | boolean | null;
         }
       | undefined;
 
     const prefs = row
       ? {
-          timezone: row.timezone ?? null,
-          week_starts_on: (row.week_starts_on as any) || "mon",
-          default_view: (row.default_view as any) || "week",
+          timezone: (row.timezone ?? agencyTz) || "America/Chicago",
+          week_starts_on: normalizeWeekStartsOn(row.week_starts_on),
+          default_view: normalizeDefaultView(row.default_view),
           show_tasks: Boolean(row.show_tasks),
           show_events: Boolean(row.show_events),
           show_done_tasks: Boolean(row.show_done_tasks),
         }
-      : null;
+      : {
+          timezone: agencyTz,
+          week_starts_on: "mon" as const,
+          default_view: "week" as const,
+          show_tasks: true,
+          show_events: true,
+          show_done_tasks: false,
+        };
 
     return Response.json({ ok: true, prefs });
   } catch (err: any) {
@@ -98,14 +125,15 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => null)) as any;
 
     const timezone = body?.timezone ?? null;
-    const week_starts_on = body?.week_starts_on === "sun" ? "sun" : "mon";
-    const default_view = body?.default_view === "day" || body?.default_view === "month" ? body.default_view : "week";
+    const week_starts_on = normalizeWeekStartsOn(body?.week_starts_on);
+    const default_view = normalizeDefaultView(body?.default_view);
 
     const show_tasks = Boolean(body?.show_tasks);
     const show_events = Boolean(body?.show_events);
     const show_done_tasks = Boolean(body?.show_done_tasks);
 
-    // Upsert
+    const t = nowIso();
+
     await db.run(
       `INSERT INTO schedule_prefs (
          agency_id, user_id,
@@ -130,8 +158,8 @@ export async function POST(req: NextRequest) {
       show_tasks ? 1 : 0,
       show_events ? 1 : 0,
       show_done_tasks ? 1 : 0,
-      nowIso(),
-      nowIso()
+      t,
+      t
     );
 
     return Response.json({ ok: true });

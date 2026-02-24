@@ -10,7 +10,7 @@ export const runtime = "nodejs";
  * - Safe to call on EVERY request
  * - Idempotent
  * - Repairs legacy drift instead of assuming fresh DB
- * - Matches what routes actually expect (no “thin tables”)
+ * - Matches what routes actually expect
  */
 
 type Db = Pick<RealDb, "exec" | "run" | "get" | "all">;
@@ -30,9 +30,7 @@ async function tableExists(db: Db, tableName: string) {
 }
 
 async function getTableColumns(db: Db, tableName: string): Promise<string[]> {
-  const rows = (await db.all(`PRAGMA table_info(${qIdent(tableName)})`)) as Array<{
-    name: string;
-  }>;
+  const rows = (await db.all(`PRAGMA table_info(${qIdent(tableName)})`)) as Array<{ name: string }>;
   return rows.map((r) => r.name);
 }
 
@@ -47,7 +45,7 @@ async function addColumnIfMissing(db: Db, table: string, col: string, sqlTypeAnd
 }
 
 /**
- * usage_daily has been the biggest drift landmine.
+ * usage_daily has been a drift landmine.
  * If canonical columns are missing, rebuild safely.
  */
 async function rebuildUsageDailyIfNeeded(db: Db) {
@@ -112,14 +110,157 @@ async function ensureUsageDaily(db: Db) {
   const cols = await getTableColumns(db, "usage_daily");
 
   const missingCanonical =
-    !has(cols, "agency_id") ||
-    !has(cols, "date") ||
-    !has(cols, "messages_count") ||
-    !has(cols, "uploads_count");
+    !has(cols, "agency_id") || !has(cols, "date") || !has(cols, "messages_count") || !has(cols, "uploads_count");
 
   if (missingCanonical) {
     await rebuildUsageDailyIfNeeded(db);
     return;
+  }
+}
+
+/**
+ * schedule_prefs drift repair:
+ * Old versions stored one row per agency (agency_id PK) with integer week_starts_on + day hours.
+ * New canonical is per-user: (agency_id, user_id) PK + view + visibility toggles + timestamps.
+ *
+ * If legacy table detected, rebuild and COPY the agency-level prefs to EVERY user in the agency.
+ */
+async function rebuildSchedulePrefsIfNeeded(db: Db) {
+  const exists = await tableExists(db, "schedule_prefs");
+  if (!exists) return;
+
+  const cols = await getTableColumns(db, "schedule_prefs");
+
+  const wants = [
+    "agency_id",
+    "user_id",
+    "timezone",
+    "week_starts_on",
+    "default_view",
+    "show_tasks",
+    "show_events",
+    "show_done_tasks",
+    "created_at",
+    "updated_at",
+  ];
+
+  if (wants.every((c) => has(cols, c))) return;
+
+  const hasAgencyOnly = has(cols, "agency_id") && !has(cols, "user_id");
+
+  // If it's some other weird shape, still rebuild into canonical.
+  // We'll attempt to pull timezone/week_starts_on from whatever exists.
+  const tzExpr = has(cols, "timezone") ? `timezone` : `NULL`;
+
+  // Legacy week_starts_on could be INTEGER 0/1; canonical is TEXT 'mon'/'sun'
+  let weekExpr = `'mon'`;
+  if (has(cols, "week_starts_on")) {
+    // If it's already text, this CASE still works (sun/mon pass through; 1 => sun; else mon)
+    weekExpr = `CASE
+      WHEN CAST(week_starts_on AS TEXT) = 'sun' THEN 'sun'
+      WHEN CAST(week_starts_on AS TEXT) = 'mon' THEN 'mon'
+      WHEN CAST(week_starts_on AS INTEGER) = 1 THEN 'sun'
+      ELSE 'mon'
+    END`;
+  }
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS schedule_prefs_new (
+      agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      timezone TEXT,
+      week_starts_on TEXT NOT NULL DEFAULT 'mon',
+      default_view TEXT NOT NULL DEFAULT 'week',
+      show_tasks INTEGER NOT NULL DEFAULT 1,
+      show_events INTEGER NOT NULL DEFAULT 1,
+      show_done_tasks INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (agency_id, user_id)
+    );
+  `);
+
+  if (hasAgencyOnly) {
+    // Copy the single agency-level row to every user in that agency.
+    await db.exec(`
+      INSERT OR REPLACE INTO schedule_prefs_new (
+        agency_id, user_id,
+        timezone, week_starts_on, default_view,
+        show_tasks, show_events, show_done_tasks,
+        created_at, updated_at
+      )
+      SELECT
+        u.agency_id AS agency_id,
+        u.id AS user_id,
+        sp.${tzExpr} AS timezone,
+        ${weekExpr} AS week_starts_on,
+        'week' AS default_view,
+        1 AS show_tasks,
+        1 AS show_events,
+        0 AS show_done_tasks,
+        datetime('now') AS created_at,
+        datetime('now') AS updated_at
+      FROM users u
+      LEFT JOIN schedule_prefs sp
+        ON sp.agency_id = u.agency_id;
+    `);
+  } else {
+    // Best-effort migration from whatever rows exist.
+    // If user_id exists but other cols missing, we still get rows in.
+    const userIdExpr = has(cols, "user_id") ? `user_id` : `''`;
+
+    await db.exec(`
+      INSERT OR REPLACE INTO schedule_prefs_new (
+        agency_id, user_id,
+        timezone, week_starts_on, default_view,
+        show_tasks, show_events, show_done_tasks,
+        created_at, updated_at
+      )
+      SELECT
+        agency_id AS agency_id,
+        ${userIdExpr} AS user_id,
+        ${tzExpr} AS timezone,
+        ${weekExpr} AS week_starts_on,
+        CASE
+          WHEN ${has(cols, "default_view") ? "CAST(default_view AS TEXT)" : "'week'"} IN ('day','week','month')
+            THEN ${has(cols, "default_view") ? "CAST(default_view AS TEXT)" : "'week'"}
+          ELSE 'week'
+        END AS default_view,
+        ${has(cols, "show_tasks") ? "CASE WHEN show_tasks IS NULL THEN 1 ELSE CAST(show_tasks AS INTEGER) END" : "1"} AS show_tasks,
+        ${has(cols, "show_events") ? "CASE WHEN show_events IS NULL THEN 1 ELSE CAST(show_events AS INTEGER) END" : "1"} AS show_events,
+        ${has(cols, "show_done_tasks") ? "CASE WHEN show_done_tasks IS NULL THEN 0 ELSE CAST(show_done_tasks AS INTEGER) END" : "0"} AS show_done_tasks,
+        datetime('now') AS created_at,
+        datetime('now') AS updated_at
+      FROM schedule_prefs;
+    `);
+  }
+
+  await db.exec(`
+    DROP TABLE schedule_prefs;
+    ALTER TABLE schedule_prefs_new RENAME TO schedule_prefs;
+  `);
+}
+
+async function ensureSchedulePrefs(db: Db) {
+  const exists = await tableExists(db, "schedule_prefs");
+  if (!exists) return;
+
+  const cols = await getTableColumns(db, "schedule_prefs");
+  const wants = [
+    "agency_id",
+    "user_id",
+    "timezone",
+    "week_starts_on",
+    "default_view",
+    "show_tasks",
+    "show_events",
+    "show_done_tasks",
+    "created_at",
+    "updated_at",
+  ];
+
+  if (!wants.every((c) => has(cols, c))) {
+    await rebuildSchedulePrefsIfNeeded(db);
   }
 }
 
@@ -240,14 +381,22 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Canonical per-user schedule prefs (route expects this)
     CREATE TABLE IF NOT EXISTS schedule_prefs (
-      agency_id TEXT NOT NULL PRIMARY KEY,
-      week_starts_on INTEGER NOT NULL DEFAULT 0,
-      day_start_hour INTEGER NOT NULL DEFAULT 8,
-      day_end_hour INTEGER NOT NULL DEFAULT 18,
-      timezone TEXT
+      agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      timezone TEXT,
+      week_starts_on TEXT NOT NULL DEFAULT 'mon',
+      default_view TEXT NOT NULL DEFAULT 'week',
+      show_tasks INTEGER NOT NULL DEFAULT 1,
+      show_events INTEGER NOT NULL DEFAULT 1,
+      show_done_tasks INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (agency_id, user_id)
     );
 
+    -- Keep legacy table around if anything old still references it
     CREATE TABLE IF NOT EXISTS schedule_preferences (
       agency_id TEXT NOT NULL PRIMARY KEY,
       week_starts_on INTEGER NOT NULL DEFAULT 0,
@@ -282,7 +431,7 @@ async function ensureCoreTables(db: Db) {
   await addColumnIfMissing(db, "agencies", "stripe_price_id", "TEXT");
   await addColumnIfMissing(db, "agencies", "stripe_current_period_end", "TEXT");
 
-  // Agency timezone (used for daily usage keys)
+  // Agency timezone (used for daily usage keys + schedule default tz)
   await addColumnIfMissing(db, "agencies", "timezone", "TEXT");
 }
 
@@ -296,6 +445,7 @@ export async function ensureSchema(dbArg?: Db) {
 
   await ensureCoreTables(db);
   await ensureUsageDaily(db);
+  await ensureSchedulePrefs(db);
 
   _schemaEnsured = true;
 }
