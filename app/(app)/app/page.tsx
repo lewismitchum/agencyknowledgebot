@@ -22,9 +22,7 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-6xl space-y-6">
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
-          Quick access to your workspace.
-        </p>
+        <p className="text-sm text-muted-foreground">Quick access to your workspace.</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-2xl border bg-card p-2">
@@ -45,22 +43,16 @@ export default function DashboardPage() {
         ))}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Link
-            href="/app/chat"
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-          >
+          <Link href="/app/usage" className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">
+            Usage
+          </Link>
+          <Link href="/app/chat" className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">
             Open Chat
           </Link>
-          <Link
-            href="/app/docs"
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-          >
+          <Link href="/app/docs" className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">
             Open Docs
           </Link>
-          <Link
-            href="/app/schedule"
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-accent"
-          >
+          <Link href="/app/schedule" className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">
             Open Schedule
           </Link>
         </div>
@@ -83,6 +75,9 @@ export default function DashboardPage() {
               <Link className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" href="/app/schedule">
                 Schedule
               </Link>
+              <Link className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" href="/app/usage">
+                Usage
+              </Link>
               <Link className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" href="/app/support">
                 Support
               </Link>
@@ -102,17 +97,16 @@ export default function DashboardPage() {
       ) : (
         <div className="rounded-3xl border bg-card p-5 shadow-sm">
           <div className="text-sm font-medium">Notifications</div>
-          <div className="mt-2 text-sm text-muted-foreground">
-            This is the notifications tab on the dashboard.
-          </div>
+          <div className="mt-2 text-sm text-muted-foreground">This is the notifications tab on the dashboard.</div>
 
-          <div className="mt-4 rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">
-            No notifications yet.
-          </div>
+          <div className="mt-4 rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">No notifications yet.</div>
 
           <div className="mt-4 flex flex-wrap gap-2">
             <Link className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" href="/app/schedule">
               Go to Schedule
+            </Link>
+            <Link className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" href="/app/usage">
+              View Usage
             </Link>
             <Link className="rounded-xl border px-3 py-2 text-sm hover:bg-accent" href="/app/support">
               Contact Support
