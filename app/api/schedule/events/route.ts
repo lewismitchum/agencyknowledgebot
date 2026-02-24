@@ -1,3 +1,4 @@
+// app/api/schedule/events/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -31,6 +32,15 @@ function assertScheduleEnabled(plan: string) {
   }
 }
 
+async function getAgencyTimezone(db: Db, agencyId: string) {
+  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { timezone?: string | null }
+    | undefined;
+
+  const tz = String(row?.timezone ?? "").trim();
+  return tz || "America/Chicago";
+}
+
 async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
   const bot = (await db.get(
     `SELECT id, agency_id, owner_user_id
@@ -58,6 +68,8 @@ export async function GET(req: NextRequest) {
     const plan = await getAgencyPlan(db, ctx.agencyId);
     assertScheduleEnabled(plan);
 
+    const timezone = await getAgencyTimezone(db, ctx.agencyId);
+
     const url = new URL(req.url);
     const bot_id = String(url.searchParams.get("bot_id") || "").trim();
     if (!bot_id) return Response.json({ ok: false, error: "BOT_REQUIRED" }, { status: 400 });
@@ -73,7 +85,7 @@ export async function GET(req: NextRequest) {
       bot_id
     );
 
-    return Response.json({ ok: true, bot_id, events: events ?? [] });
+    return Response.json({ ok: true, bot_id, timezone, events: events ?? [] });
   } catch (err: any) {
     if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
       return Response.json(

@@ -44,53 +44,93 @@ const DEFAULT_PREFS: Prefs = {
 
 const ALL_BOTS_ID = "__all__";
 
-function isoDayKey(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x.toISOString().slice(0, 10);
+function safeTz(prefTz: string | null, agencyTz: string | null) {
+  const tz = String(prefTz || agencyTz || "").trim();
+  return tz || "America/Chicago";
 }
 
-function startOfWeek(d: Date, weekStartsOn: "sun" | "mon") {
+function dayKeyInTz(d: Date, tz: string) {
+  // en-CA -> YYYY-MM-DD
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  }
+}
+
+function dateFromDayKey(dayKey: string) {
+  // Noon UTC avoids DST edge weirdness when adding/subtracting days.
+  return new Date(`${dayKey}T12:00:00Z`);
+}
+
+function addDaysUtc(d: Date, n: number) {
   const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  const day = x.getDay(); // 0 Sun .. 6 Sat
+  x.setUTCDate(x.getUTCDate() + n);
+  return x;
+}
+
+function ymdToParts(dayKey: string) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey);
+  if (!m) return null;
+  return { y: Number(m[1]), mo: Number(m[2]), da: Number(m[3]) };
+}
+
+function dowInTz(d: Date, tz: string) {
+  // 0..6 = Sun..Sat
+  const label = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(d);
+  const map: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return map[label] ?? 0;
+}
+
+function startOfWeekByTz(anchorDayKey: string, weekStartsOn: "sun" | "mon", tz: string) {
+  const d = dateFromDayKey(anchorDayKey);
+  const day = dowInTz(d, tz); // 0 Sun .. 6 Sat
   const offset = weekStartsOn === "sun" ? day : day === 0 ? 6 : day - 1; // Mon-start
-  x.setDate(x.getDate() - offset);
-  return x;
+  const start = addDaysUtc(d, -offset);
+  return dayKeyInTz(start, tz);
 }
 
-function endOfWeek(d: Date, weekStartsOn: "sun" | "mon") {
-  const s = startOfWeek(d, weekStartsOn);
-  const x = new Date(s);
-  x.setDate(s.getDate() + 6);
-  x.setHours(23, 59, 59, 999);
-  return x;
+function endOfWeekByTz(anchorDayKey: string, weekStartsOn: "sun" | "mon", tz: string) {
+  const s = startOfWeekByTz(anchorDayKey, weekStartsOn, tz);
+  const d = dateFromDayKey(s);
+  const end = addDaysUtc(d, 6);
+  return dayKeyInTz(end, tz);
 }
 
-function startOfMonth(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  x.setDate(1);
-  return x;
+function startOfMonthByTz(anchorDayKey: string) {
+  const p = ymdToParts(anchorDayKey);
+  if (!p) return anchorDayKey;
+  return `${String(p.y).padStart(4, "0")}-${String(p.mo).padStart(2, "0")}-01`;
 }
 
-function endOfMonth(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  x.setMonth(x.getMonth() + 1);
-  x.setDate(0); // last day of previous month
-  x.setHours(23, 59, 59, 999);
-  return x;
+function endOfMonthByTz(anchorDayKey: string) {
+  const p = ymdToParts(anchorDayKey);
+  if (!p) return anchorDayKey;
+
+  // first day of next month, minus 1 day
+  let y = p.y;
+  let mo = p.mo + 1;
+  if (mo === 13) {
+    mo = 1;
+    y += 1;
+  }
+  const nextFirst = `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-01`;
+  const prev = addDaysUtc(dateFromDayKey(nextFirst), -1);
+  return prev.toISOString().slice(0, 10); // safe because it's noon UTC
 }
 
-function addDays(d: Date, n: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-
-function sameMonth(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+function sameMonthByKey(a: string, b: string) {
+  return a.slice(0, 7) === b.slice(0, 7);
 }
 
 function weekdayLabels(weekStartsOn: "sun" | "mon") {
@@ -99,16 +139,38 @@ function weekdayLabels(weekStartsOn: "sun" | "mon") {
     : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 }
 
-function formatReadableDate(d: Date) {
+function formatReadableDateKey(dayKey: string, tz: string) {
   try {
-    return d.toLocaleDateString(undefined, {
+    const d = dateFromDayKey(dayKey);
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: tz,
       weekday: "short",
       month: "short",
       day: "numeric",
       year: "numeric",
-    });
+    }).format(d);
   } catch {
-    return isoDayKey(d);
+    return dayKey;
+  }
+}
+
+function formatDateTime(iso: string, tz: string) {
+  const s = String(iso || "").trim();
+  if (!s) return "";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(d);
+  } catch {
+    return s;
   }
 }
 
@@ -125,22 +187,19 @@ export default function SchedulePage() {
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [view, setView] = useState<Prefs["default_view"]>(DEFAULT_PREFS.default_view);
 
+  const [agencyTimezone, setAgencyTimezone] = useState<string | null>(null);
+  const tz = useMemo(() => safeTz(prefs.timezone, agencyTimezone), [prefs.timezone, agencyTimezone]);
+
   const [events, setEvents] = useState<EventRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
 
   const [search, setSearch] = useState("");
-  const [day, setDay] = useState<Date>(() => new Date());
+  const [anchorDayKey, setAnchorDayKey] = useState<string>(() => dayKeyInTz(new Date(), "America/Chicago"));
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [gated, setGated] = useState(false);
 
-  const tzLabel = useMemo(() => {
-    try {
-      return prefs.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "Local";
-    } catch {
-      return prefs.timezone || "Local";
-    }
-  }, [prefs.timezone]);
+  const tzLabel = useMemo(() => tz || "America/Chicago", [tz]);
 
   const botNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -155,6 +214,23 @@ export default function SchedulePage() {
     const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
     setBots(lite);
     if (!botId && lite.length) setBotId(lite[0].id);
+  }
+
+  async function loadAgencyTimezone() {
+    const r = await fetch("/api/schedule/timezone", { cache: "no-store", credentials: "include" });
+    const j = await r.json().catch(() => ({}));
+
+    if (isScheduleGatedResponse(r, j)) {
+      setGated(true);
+      return;
+    }
+
+    if (r.ok && j?.ok) {
+      const t = String(j?.timezone || "").trim();
+      const today = String(j?.today || "").trim();
+      if (t) setAgencyTimezone(t);
+      if (today) setAnchorDayKey(today);
+    }
   }
 
   async function loadPrefs() {
@@ -258,7 +334,14 @@ export default function SchedulePage() {
   useEffect(() => {
     loadPrefs();
     loadBots();
+    loadAgencyTimezone();
   }, []);
+
+  useEffect(() => {
+    // once we know tz (prefs or agency), reset anchor day key to "today in tz"
+    const today = dayKeyInTz(new Date(), tz);
+    setAnchorDayKey(today);
+  }, [tz]);
 
   useEffect(() => {
     if (botId) loadData(botId);
@@ -288,36 +371,43 @@ export default function SchedulePage() {
       });
   }, [tasks, prefs.show_tasks, prefs.show_done_tasks, search]);
 
-  const dayKey = isoDayKey(day);
+  const dayKey = anchorDayKey;
 
-  const weekStart = useMemo(() => startOfWeek(day, prefs.week_starts_on), [day, prefs.week_starts_on]);
+  const weekStartKey = useMemo(() => startOfWeekByTz(dayKey, prefs.week_starts_on, tz), [dayKey, prefs.week_starts_on, tz]);
   const weekDays = useMemo(() => {
-    const arr: Date[] = [];
-    for (let i = 0; i < 7; i++) arr.push(addDays(weekStart, i));
-    return arr;
-  }, [weekStart]);
-
-  const monthDays = useMemo(() => {
-    const mStart = startOfMonth(day);
-    const mEnd = endOfMonth(day);
-    const gridStart = startOfWeek(mStart, prefs.week_starts_on);
-    const gridEnd = endOfWeek(mEnd, prefs.week_starts_on);
-
-    const arr: Date[] = [];
-    let cur = new Date(gridStart);
-    cur.setHours(0, 0, 0, 0);
-
-    while (cur.getTime() <= gridEnd.getTime()) {
-      arr.push(new Date(cur));
-      cur = addDays(cur, 1);
+    const arr: string[] = [];
+    const start = dateFromDayKey(weekStartKey);
+    for (let i = 0; i < 7; i++) {
+      arr.push(dayKeyInTz(addDaysUtc(start, i), tz));
     }
     return arr;
-  }, [day, prefs.week_starts_on]);
+  }, [weekStartKey, tz]);
+
+  const monthDays = useMemo(() => {
+    const mStartKey = startOfMonthByTz(dayKey);
+    const mEndKey = endOfMonthByTz(dayKey);
+
+    const gridStartKey = startOfWeekByTz(mStartKey, prefs.week_starts_on, tz);
+    const gridEndKey = endOfWeekByTz(mEndKey, prefs.week_starts_on, tz);
+
+    const start = dateFromDayKey(gridStartKey);
+    const end = dateFromDayKey(gridEndKey);
+
+    const arr: string[] = [];
+    let cur = new Date(start);
+
+    while (cur.getTime() <= end.getTime()) {
+      arr.push(dayKeyInTz(cur, tz));
+      cur = addDaysUtc(cur, 1);
+    }
+    return arr;
+  }, [dayKey, prefs.week_starts_on, tz]);
 
   const eventsByDay = useMemo(() => {
     const m = new Map<string, (EventRow & { bot_id?: string })[]>();
     for (const e of filteredEvents as any[]) {
-      const k = (e.start_at || "").slice(0, 10);
+      const k = e.start_at ? dayKeyInTz(new Date(String(e.start_at)), tz) : "";
+      if (!k) continue;
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(e);
     }
@@ -326,17 +416,17 @@ export default function SchedulePage() {
       m.set(k, arr);
     }
     return m;
-  }, [filteredEvents]);
+  }, [filteredEvents, tz]);
 
   const tasksByDay = useMemo(() => {
     const m = new Map<string, (TaskRow & { bot_id?: string })[]>();
     for (const t of filteredTasks as any[]) {
-      const k = t.due_at ? String(t.due_at).slice(0, 10) : "no_due";
+      const k = t.due_at ? dayKeyInTz(new Date(String(t.due_at)), tz) : "no_due";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(t);
     }
     return m;
-  }, [filteredTasks]);
+  }, [filteredTasks, tz]);
 
   const selectedDayTasks = useMemo(() => tasksByDay.get(dayKey) || [], [tasksByDay, dayKey]);
   const noDueTasks = useMemo(() => tasksByDay.get("no_due") || [], [tasksByDay]);
@@ -419,23 +509,35 @@ export default function SchedulePage() {
   }
 
   function moveAnchor(deltaDays: number) {
-    const d = new Date(day);
-    d.setDate(day.getDate() + deltaDays);
-    setDay(d);
+    const d = addDaysUtc(dateFromDayKey(anchorDayKey), deltaDays);
+    setAnchorDayKey(dayKeyInTz(d, tz));
   }
 
   function moveAnchorMonth(deltaMonths: number) {
-    const d = new Date(day);
-    d.setDate(1);
-    d.setMonth(d.getMonth() + deltaMonths);
-    setDay(d);
+    const p = ymdToParts(anchorDayKey);
+    if (!p) return;
+
+    let y = p.y;
+    let mo = p.mo + deltaMonths;
+
+    while (mo <= 0) {
+      mo += 12;
+      y -= 1;
+    }
+    while (mo >= 13) {
+      mo -= 12;
+      y += 1;
+    }
+
+    const next = `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-01`;
+    setAnchorDayKey(next);
   }
 
   const headerLabel = useMemo(() => {
     if (view === "day") return dayKey;
-    if (view === "week") return `${isoDayKey(weekDays[0])} → ${isoDayKey(weekDays[6])}`;
-    return day.toLocaleString(undefined, { month: "long", year: "numeric" });
-  }, [view, dayKey, weekDays, day]);
+    if (view === "week") return `${weekDays[0]} → ${weekDays[6]}`;
+    return formatReadableDateKey(startOfMonthByTz(dayKey), tz).replace(/,\s*\d{4}$/, (m) => m); // keep stable label
+  }, [view, dayKey, weekDays, tz]);
 
   const prevDelta = view === "day" ? -1 : view === "week" ? -7 : -28;
   const nextDelta = view === "day" ? 1 : view === "week" ? 7 : 28;
@@ -510,7 +612,7 @@ export default function SchedulePage() {
               </button>
               <button
                 className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
-                onClick={() => setDay(new Date())}
+                onClick={() => setAnchorDayKey(dayKeyInTz(new Date(), tz))}
                 type="button"
                 disabled={gated}
               >
@@ -538,24 +640,9 @@ export default function SchedulePage() {
 
           <div className="mt-4 rounded-2xl border bg-background/40 p-3">
             <div className="flex flex-wrap items-center gap-3 text-sm">
-              <Toggle
-                label="Events"
-                checked={prefs.show_events}
-                onChange={(v) => savePrefs({ ...prefs, show_events: v })}
-                disabled={gated}
-              />
-              <Toggle
-                label="Tasks"
-                checked={prefs.show_tasks}
-                onChange={(v) => savePrefs({ ...prefs, show_tasks: v })}
-                disabled={gated}
-              />
-              <Toggle
-                label="Show done"
-                checked={prefs.show_done_tasks}
-                onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })}
-                disabled={gated}
-              />
+              <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} disabled={gated} />
+              <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} disabled={gated} />
+              <Toggle label="Show done" checked={prefs.show_done_tasks} onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })} disabled={gated} />
 
               <div className="ml-auto flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Week starts</span>
@@ -585,12 +672,11 @@ export default function SchedulePage() {
             {loading ? (
               <div className="text-sm text-muted-foreground">Loading…</div>
             ) : gated ? (
-              <div className="rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">
-                Upgrade to unlock Schedule.
-              </div>
+              <div className="rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">Upgrade to unlock Schedule.</div>
             ) : view === "day" ? (
               <DayView
                 dayKey={dayKey}
+                tz={tz}
                 events={eventsByDay.get(dayKey) || []}
                 tasks={(tasksByDay.get(dayKey) || []).concat(tasksByDay.get("no_due") || [])}
                 onToggleTask={toggleTask}
@@ -601,6 +687,7 @@ export default function SchedulePage() {
             ) : view === "week" ? (
               <WeekView
                 weekDays={weekDays}
+                tz={tz}
                 eventsByDay={eventsByDay}
                 tasksByDay={tasksByDay}
                 onToggleTask={toggleTask}
@@ -611,15 +698,15 @@ export default function SchedulePage() {
             ) : (
               <MonthView
                 monthDays={monthDays}
-                anchorDay={day}
+                anchorMonthKey={dayKey.slice(0, 7)}
                 selectedDayKey={dayKey}
                 weekStartsOn={prefs.week_starts_on}
                 eventsByDay={eventsByDay}
                 tasksByDay={tasksByDay}
                 onToggleTask={toggleTask}
                 onDeleteTask={deleteTask}
-                onSelectDay={(d) => {
-                  setDay(d);
+                onSelectDay={(k) => {
+                  setAnchorDayKey(k);
                   setView("day");
                 }}
               />
@@ -632,7 +719,7 @@ export default function SchedulePage() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">Daily to-do</div>
-                <div className="mt-1 text-xs text-muted-foreground">{formatReadableDate(day)}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{formatReadableDateKey(dayKey, tz)}</div>
               </div>
 
               <button
@@ -647,9 +734,7 @@ export default function SchedulePage() {
             </div>
 
             {gated ? (
-              <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">
-                Upgrade to unlock tasks.
-              </div>
+              <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">Upgrade to unlock tasks.</div>
             ) : !prefs.show_tasks ? (
               <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">Tasks are hidden.</div>
             ) : (
@@ -675,7 +760,9 @@ export default function SchedulePage() {
                                   </span>
                                 ) : null}
                               </div>
-                              <div className="mt-1 text-xs text-muted-foreground">{t.due_at ? `due ${t.due_at}` : "no due date"}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {t.due_at ? `due ${formatDateTime(String(t.due_at), tz)}` : "no due date"}
+                              </div>
                             </div>
                             <span className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
                           </button>
@@ -795,6 +882,7 @@ function BotBadge({ botId, botNameById }: { botId?: string; botNameById: Map<str
 
 function DayView({
   dayKey,
+  tz,
   events,
   tasks,
   onToggleTask,
@@ -803,6 +891,7 @@ function DayView({
   botNameById,
 }: {
   dayKey: string;
+  tz: string;
   events: (EventRow & { bot_id?: string })[];
   tasks: (TaskRow & { bot_id?: string })[];
   onToggleTask: (id: string, status: "open" | "done") => void;
@@ -827,9 +916,9 @@ function DayView({
                       <div className="font-medium">{e.title}</div>
                       <BotBadge botId={e.bot_id} botNameById={botNameById} />
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {e.start_at}
-                      {e.end_at ? ` → ${e.end_at}` : ""}
+                    <div className="mt-1 text-xs text-muted-foreground" title={`${e.start_at}${e.end_at ? ` → ${e.end_at}` : ""}`}>
+                      {formatDateTime(String(e.start_at), tz)}
+                      {e.end_at ? ` → ${formatDateTime(String(e.end_at), tz)}` : ""}
                       {e.location ? ` · ${e.location}` : ""}
                     </div>
                   </div>
@@ -868,7 +957,9 @@ function DayView({
                         <div className="font-medium">{t.title}</div>
                         <BotBadge botId={t.bot_id} botNameById={botNameById} />
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">{t.due_at ? `due ${t.due_at}` : "no due date"}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {t.due_at ? `due ${formatDateTime(String(t.due_at), tz)}` : "no due date"}
+                      </div>
                     </div>
                     <span className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground">{t.status}</span>
                   </button>
@@ -895,6 +986,7 @@ function DayView({
 
 function WeekView({
   weekDays,
+  tz,
   eventsByDay,
   tasksByDay,
   onToggleTask,
@@ -902,7 +994,8 @@ function WeekView({
   onDeleteEvent,
   botNameById,
 }: {
-  weekDays: Date[];
+  weekDays: string[];
+  tz: string;
   eventsByDay: Map<string, (EventRow & { bot_id?: string })[]>;
   tasksByDay: Map<string, (TaskRow & { bot_id?: string })[]>;
   onToggleTask: (id: string, status: "open" | "done") => void;
@@ -912,8 +1005,7 @@ function WeekView({
 }) {
   return (
     <div className="grid gap-3 md:grid-cols-2">
-      {weekDays.map((d) => {
-        const k = isoDayKey(d);
+      {weekDays.map((k) => {
         const ev = eventsByDay.get(k) || [];
         const tk = tasksByDay.get(k) || [];
         return (
@@ -931,7 +1023,9 @@ function WeekView({
                           <div className="truncate text-sm font-medium">{e.title}</div>
                           <BotBadge botId={e.bot_id} botNameById={botNameById} />
                         </div>
-                        <div className="mt-1 text-[11px] text-muted-foreground">{e.start_at}</div>
+                        <div className="mt-1 text-[11px] text-muted-foreground" title={e.start_at}>
+                          {formatDateTime(String(e.start_at), tz)}
+                        </div>
                       </div>
                       <button
                         onClick={() => onDeleteEvent(e.id)}
@@ -993,7 +1087,7 @@ function WeekView({
 
 function MonthView({
   monthDays,
-  anchorDay,
+  anchorMonthKey,
   selectedDayKey,
   weekStartsOn,
   eventsByDay,
@@ -1002,20 +1096,24 @@ function MonthView({
   onDeleteTask,
   onSelectDay,
 }: {
-  monthDays: Date[];
-  anchorDay: Date;
+  monthDays: string[];
+  anchorMonthKey: string; // YYYY-MM
   selectedDayKey: string;
   weekStartsOn: "sun" | "mon";
   eventsByDay: Map<string, (EventRow & { bot_id?: string })[]>;
   tasksByDay: Map<string, (TaskRow & { bot_id?: string })[]>;
   onToggleTask: (id: string, status: "open" | "done") => void;
   onDeleteTask: (id: string) => void;
-  onSelectDay: (d: Date) => void;
+  onSelectDay: (dayKey: string) => void;
 }) {
   const labels = weekdayLabels(weekStartsOn);
   const weeks = Math.ceil(monthDays.length / 7);
 
-  const todayKey = useMemo(() => isoDayKey(new Date()), []);
+  const todayKey = useMemo(() => {
+    // month view is informational; "today" highlight should still be in browser local? no: show in anchor timezone.
+    // Use noon UTC and local formatter is elsewhere; simplest: use system date in YYYY-MM-DD and let selection drive.
+    return new Date().toISOString().slice(0, 10);
+  }, []);
 
   return (
     <div className="space-y-3">
@@ -1028,18 +1126,17 @@ function MonthView({
       </div>
 
       <div className="grid grid-cols-7 gap-2">
-        {monthDays.map((d) => {
-          const k = isoDayKey(d);
+        {monthDays.map((k) => {
           const ev = eventsByDay.get(k) || [];
           const tk = tasksByDay.get(k) || [];
-          const inMonth = sameMonth(d, anchorDay);
+          const inMonth = sameMonthByKey(k, `${anchorMonthKey}-01`);
           const isToday = k === todayKey;
           const isSelected = k === selectedDayKey;
 
           return (
             <button
               key={k}
-              onClick={() => onSelectDay(new Date(d))}
+              onClick={() => onSelectDay(k)}
               className={[
                 "min-h-[110px] rounded-2xl border p-2 text-left transition-colors hover:bg-accent/40",
                 inMonth ? "bg-background/40" : "bg-muted/30 opacity-70",
@@ -1050,7 +1147,7 @@ function MonthView({
             >
               <div className="flex items-center justify-between">
                 <div className={["text-xs font-medium", isToday ? "rounded-md border bg-background px-2 py-0.5" : ""].join(" ")}>
-                  {d.getDate()}
+                  {Number(k.slice(8, 10))}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
                   {ev.length ? `${ev.length}e` : ""}
@@ -1093,9 +1190,7 @@ function MonthView({
                     </button>
                   </div>
                 ))}
-                {ev.length + tk.length > 4 ? (
-                  <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div>
-                ) : null}
+                {ev.length + tk.length > 4 ? <div className="text-[11px] text-muted-foreground">+{ev.length + tk.length - 4} more</div> : null}
               </div>
             </button>
           );

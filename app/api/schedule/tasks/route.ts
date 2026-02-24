@@ -1,3 +1,4 @@
+// app/api/schedule/tasks/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -29,6 +30,15 @@ function assertScheduleEnabled(plan: string) {
     err.code = "SCHEDULE_NOT_ENABLED";
     throw err;
   }
+}
+
+async function getAgencyTimezone(db: Db, agencyId: string) {
+  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { timezone?: string | null }
+    | undefined;
+
+  const tz = String(row?.timezone ?? "").trim();
+  return tz || "America/Chicago";
 }
 
 async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
@@ -83,6 +93,8 @@ export async function GET(req: NextRequest) {
     const plan = await getAgencyPlan(db, ctx.agencyId);
     assertScheduleEnabled(plan);
 
+    const timezone = await getAgencyTimezone(db, ctx.agencyId);
+
     const url = new URL(req.url);
     let bot_id = String(url.searchParams.get("bot_id") || "").trim();
 
@@ -106,7 +118,7 @@ export async function GET(req: NextRequest) {
       bot_id
     );
 
-    return Response.json({ ok: true, bot_id, tasks: tasks ?? [] });
+    return Response.json({ ok: true, bot_id, timezone, tasks: tasks ?? [] });
   } catch (err: any) {
     if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
       return Response.json(
@@ -184,7 +196,9 @@ export async function PATCH(req: NextRequest) {
     const status = String(body?.status ?? "").trim();
 
     if (!id) return Response.json({ ok: false, error: "ID_REQUIRED" }, { status: 400 });
-    if (status !== "open" && status !== "done") return Response.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
+    if (status !== "open" && status !== "done") {
+      return Response.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
+    }
 
     const row = (await db.get(
       `SELECT id, bot_id
