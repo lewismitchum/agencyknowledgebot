@@ -21,7 +21,7 @@ function summarizeThresholdForPlan(plan: string | null) {
   if (p === "starter") return 30;
   if (p === "pro") return 40;
   if (p === "enterprise") return 50;
-  if (p === "corporation") return 60;
+  if (p === "corporation" || p === "corp") return 60;
   return 40;
 }
 
@@ -42,32 +42,76 @@ function looksLikeTimeQuestion(s: string) {
   return t === "what time is it" || t.includes("current time") || t.includes("time is it");
 }
 
-function chicagoTimeString() {
+function formatTimeStringForTz(tz: string) {
   const dt = new Date();
-  const time = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  }).format(dt);
 
-  const date = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  }).format(dt);
+  let time = "";
+  let date = "";
+  try {
+    time = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(dt);
 
-  return `It’s ${time} in Chicago (${date}).`;
+    date = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(dt);
+  } catch {
+    // fallback if tz is invalid
+    const fallbackTz = "America/Chicago";
+    time = new Intl.DateTimeFormat("en-US", {
+      timeZone: fallbackTz,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(dt);
+
+    date = new Intl.DateTimeFormat("en-US", {
+      timeZone: fallbackTz,
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(dt);
+
+    tz = fallbackTz;
+  }
+
+  return `It’s ${time} in ${tz} (${date}).`;
 }
 
-function todayYmd() {
-  const d = new Date();
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+async function getAgencyTimezone(db: Db, agencyId: string) {
+  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { timezone?: string | null }
+    | undefined;
+
+  const tz = String(row?.timezone ?? "").trim();
+  return tz || "America/Chicago";
+}
+
+function ymdInTz(tz: string) {
+  // en-CA => YYYY-MM-DD
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  }
 }
 
 async function getDailyUsage(db: Db, agencyId: string, date: string) {
@@ -97,7 +141,7 @@ async function incrementMessages(db: Db, agencyId: string, date: string) {
   );
 }
 
-async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string | null) {
+async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string | null, dateKey: string) {
   const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
     | { plan?: string | null }
     | undefined;
@@ -112,7 +156,7 @@ async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string |
     return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
   }
 
-  const usage = await getDailyUsage(db, agencyId, todayYmd());
+  const usage = await getDailyUsage(db, agencyId, dateKey);
 
   if (usage.messages_count >= Number(dailyLimit)) {
     return { ok: false as const, used: usage.messages_count, dailyLimit: Number(dailyLimit), plan };
@@ -201,11 +245,8 @@ async function summarizeConversation(openaiInput: string) {
   });
 
   const text =
-    typeof resp.output_text === "string" && resp.output_text.trim().length > 0
-      ? resp.output_text.trim()
-      : "";
+    typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
-  // hard cap to avoid runaway memory
   return text.slice(0, 4000);
 }
 
@@ -226,16 +267,22 @@ export async function POST(req: NextRequest) {
     if (!bot_id) return Response.json({ error: "Missing bot_id" }, { status: 400 });
     if (!message) return Response.json({ error: "Missing message" }, { status: 400 });
 
-    if (looksLikeTimeQuestion(message)) {
-      return Response.json({ ok: true, answer: chicagoTimeString(), source: "system" });
-    }
+    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+    const dateKey = ymdInTz(agencyTz);
 
-    const usage = await enforceDailyLimit(db, ctx.agencyId, ctx.plan);
+    const usage = await enforceDailyLimit(db, ctx.agencyId, ctx.plan, dateKey);
     if (!usage.ok) {
       return Response.json(
         { error: "DAILY_LIMIT_EXCEEDED", used: usage.used, daily_limit: usage.dailyLimit, plan: usage.plan },
         { status: 429 }
       );
+    }
+
+    // count this request as a message (including time questions)
+    await incrementMessages(db, ctx.agencyId, dateKey);
+
+    if (looksLikeTimeQuestion(message)) {
+      return Response.json({ ok: true, answer: formatTimeStringForTz(agencyTz), source: "system" });
     }
 
     const bot = (await db.get(
@@ -287,15 +334,10 @@ Never fabricate internal details.
     });
 
     const answer =
-      typeof resp.output_text === "string" && resp.output_text.trim().length > 0
-        ? resp.output_text.trim()
-        : FALLBACK;
+      typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : FALLBACK;
 
     await insertMessage(db, convo.id, "assistant", answer);
-    if (looksLikeTimeQuestion(message)) {
-  await incrementMessages(db, ctx.agencyId, todayYmd());
-  return Response.json({ ok: true, answer: chicagoTimeString(), source: "system" });
-}
+
     // auto-summarize + compact memory (plan-aware)
     const plan = normalizePlan(usage.plan);
     const newCount = Number(convo.message_count ?? 0) + 2;

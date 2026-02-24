@@ -16,16 +16,117 @@ export async function GET() {
   return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
 
+type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corp";
+
 function nowIso() {
   return new Date().toISOString();
 }
 
-function todayYmd() {
-  const d = new Date();
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+async function getAgencyTimezone(db: Db, agencyId: string) {
+  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { timezone?: string | null }
+    | undefined;
+
+  const tz = String(row?.timezone ?? "").trim();
+  return tz || "America/Chicago";
+}
+
+function ymdInTz(tz: string) {
+  // en-CA -> YYYY-MM-DD
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  }
+}
+
+function asPlanKey(p: any): PlanKey {
+  const s = String(p || "free").toLowerCase().trim();
+  if (s === "free") return "free";
+  if (s === "starter") return "starter";
+  if (s === "pro") return "pro";
+  if (s === "enterprise") return "enterprise";
+  if (s === "corp" || s === "corporation") return "corp";
+  return "free";
+}
+
+function uploadPolicy(plan: PlanKey): {
+  plan: PlanKey;
+  allowImages: boolean;
+  allowVideo: boolean;
+  allowOtherBinary: boolean;
+  maxBytes: number;
+} {
+  if (plan === "free") {
+    return {
+      plan,
+      allowImages: false,
+      allowVideo: false,
+      allowOtherBinary: false,
+      maxBytes: 25 * 1024 * 1024, // 25MB
+    };
+  }
+  if (plan === "starter") {
+    return {
+      plan,
+      allowImages: false,
+      allowVideo: false,
+      allowOtherBinary: false,
+      maxBytes: 25 * 1024 * 1024, // 25MB
+    };
+  }
+  if (plan === "pro") {
+    return {
+      plan,
+      allowImages: true,
+      allowVideo: true,
+      allowOtherBinary: true,
+      maxBytes: 100 * 1024 * 1024, // 100MB
+    };
+  }
+  if (plan === "enterprise") {
+    return {
+      plan,
+      allowImages: true,
+      allowVideo: true,
+      allowOtherBinary: true,
+      maxBytes: 250 * 1024 * 1024, // 250MB
+    };
+  }
+  return {
+    plan,
+    allowImages: true,
+    allowVideo: true,
+    allowOtherBinary: true,
+    maxBytes: 500 * 1024 * 1024, // 500MB
+  };
+}
+
+function classifyMime(mime: string): "doc" | "image" | "video" | "other" {
+  const m = String(mime || "").toLowerCase().trim();
+  if (!m) return "other";
+  if (m.startsWith("image/")) return "image";
+  if (m.startsWith("video/")) return "video";
+  if (m.startsWith("text/")) return "doc";
+  if (m === "application/pdf") return "doc";
+  if (m === "application/msword") return "doc";
+  if (m.startsWith("application/vnd.openxmlformats-officedocument.")) return "doc";
+  if (m.startsWith("application/vnd.ms-")) return "doc";
+  if (m === "application/rtf") return "doc";
+  if (m === "application/json") return "doc";
+  if (m === "application/xml" || m === "text/xml") return "doc";
+  if (m === "application/octet-stream") return "other";
+  return "other";
 }
 
 async function getDailyUsage(db: Db, agencyId: string, date: string) {
@@ -57,7 +158,7 @@ async function incrementUploads(db: Db, agencyId: string, date: string, by: numb
   );
 }
 
-async function enforceUploadLimit(db: Db, agencyId: string, planFromCtx: string | null, count: number) {
+async function enforceUploadLimit(db: Db, agencyId: string, planFromCtx: string | null, count: number, dateKey: string) {
   const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
     | { plan?: string | null }
     | undefined;
@@ -70,7 +171,7 @@ async function enforceUploadLimit(db: Db, agencyId: string, planFromCtx: string 
     return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
   }
 
-  const usage = await getDailyUsage(db, agencyId, todayYmd());
+  const usage = await getDailyUsage(db, agencyId, dateKey);
 
   if (usage.uploads_count + count > Number(dailyLimit)) {
     return {
@@ -152,6 +253,17 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
+    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+    const dateKey = ymdInTz(agencyTz);
+
+    // Resolve plan (agency DB is source of truth, ctx.plan is fallback)
+    const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, ctx.agencyId)) as
+      | { plan?: string | null }
+      | undefined;
+
+    const planKey = asPlanKey(planRow?.plan ?? ctx.plan ?? "free");
+    const policy = uploadPolicy(planKey);
+
     const form = await req.formData();
 
     // Compatibility:
@@ -176,7 +288,72 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const uploadGate = await enforceUploadLimit(db, ctx.agencyId, ctx.plan, files.length);
+    // HARD GATING: size + mime before any OpenAI calls
+    for (const file of files) {
+      const size = Number((file as any).size ?? 0);
+      if (!Number.isFinite(size) || size <= 0) {
+        return Response.json({ ok: false, error: "INVALID_FILE" }, { status: 400 });
+      }
+
+      if (size > policy.maxBytes) {
+        return Response.json(
+          {
+            ok: false,
+            error: "FILE_TOO_LARGE",
+            message: `File exceeds size limit for plan '${policy.plan}'.`,
+            plan: policy.plan,
+            maxBytes: policy.maxBytes,
+            file: { name: file.name, size },
+          },
+          { status: 413 }
+        );
+      }
+
+      const mime = String((file as any).type ?? "");
+      const kind = classifyMime(mime);
+
+      if (kind === "image" && !policy.allowImages) {
+        return Response.json(
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `Images are not allowed on plan '${policy.plan}'.`,
+            plan: policy.plan,
+            file: { name: file.name, type: mime, kind },
+          },
+          { status: 403 }
+        );
+      }
+
+      if (kind === "video" && !policy.allowVideo) {
+        return Response.json(
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `Video is not allowed on plan '${policy.plan}'.`,
+            plan: policy.plan,
+            file: { name: file.name, type: mime, kind },
+          },
+          { status: 403 }
+        );
+      }
+
+      if (kind === "other" && !policy.allowOtherBinary) {
+        return Response.json(
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `This file type is not allowed on plan '${policy.plan}'.`,
+            plan: policy.plan,
+            file: { name: file.name, type: mime, kind },
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Daily upload limit (from plans.ts) — uses agency-local day key
+    const uploadGate = await enforceUploadLimit(db, ctx.agencyId, ctx.plan, files.length, dateKey);
     if (!uploadGate.ok) {
       return Response.json(
         {
@@ -184,6 +361,8 @@ export async function POST(req: NextRequest) {
           used: uploadGate.used,
           daily_limit: uploadGate.dailyLimit,
           plan: uploadGate.plan,
+          timezone: agencyTz,
+          date: dateKey,
         },
         { status: 429 }
       );
@@ -278,9 +457,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    await incrementUploads(db, ctx.agencyId, todayYmd(), files.length);
+    await incrementUploads(db, ctx.agencyId, dateKey, files.length);
 
-    return Response.json({ ok: true, bot_id, uploaded });
+    return Response.json({ ok: true, bot_id, uploaded, date: dateKey, timezone: agencyTz });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 

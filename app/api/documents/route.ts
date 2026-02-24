@@ -6,6 +6,8 @@ import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
+type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corp";
+
 async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
   const agencyBot = (await db.get(
     `SELECT id
@@ -43,6 +45,175 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
   if (!bot?.id) throw new Error("BOT_NOT_FOUND");
   if (bot.agency_id !== args.agency_id) throw new Error("FORBIDDEN_BOT");
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
+}
+
+function normalizePlan(plan: any): PlanKey {
+  const p = String(plan || "free").toLowerCase().trim();
+  if (p === "free") return "free";
+  if (p === "starter") return "starter";
+  if (p === "pro") return "pro";
+  if (p === "enterprise") return "enterprise";
+  if (p === "corp" || p === "corporation") return "corp";
+  return "free";
+}
+
+async function getAgencyPlan(db: Db, agencyId: string): Promise<PlanKey> {
+  const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { plan?: string | null }
+    | undefined;
+  return normalizePlan(row?.plan);
+}
+
+async function getAgencyTimezone(db: Db, agencyId: string) {
+  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { timezone?: string | null }
+    | undefined;
+
+  const tz = String(row?.timezone ?? "").trim();
+  return tz || "America/Chicago";
+}
+
+function ymdInTz(tz: string) {
+  // en-CA -> YYYY-MM-DD
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  }
+}
+
+function uploadPolicy(plan: PlanKey): {
+  plan: PlanKey;
+  dailyUploadsLimit: number | null; // null = unlimited
+  allowImages: boolean;
+  allowVideo: boolean;
+  allowOtherBinary: boolean;
+  maxBytes: number;
+} {
+  if (plan === "free") {
+    return {
+      plan,
+      dailyUploadsLimit: 5,
+      allowImages: false,
+      allowVideo: false,
+      allowOtherBinary: false,
+      maxBytes: 25 * 1024 * 1024, // 25MB
+    };
+  }
+  if (plan === "starter") {
+    return {
+      plan,
+      dailyUploadsLimit: null, // unlimited docs
+      allowImages: false,
+      allowVideo: false,
+      allowOtherBinary: false,
+      maxBytes: 25 * 1024 * 1024, // 25MB
+    };
+  }
+  if (plan === "pro") {
+    return {
+      plan,
+      dailyUploadsLimit: null,
+      allowImages: true,
+      allowVideo: true,
+      allowOtherBinary: true,
+      maxBytes: 100 * 1024 * 1024, // 100MB
+    };
+  }
+  if (plan === "enterprise") {
+    return {
+      plan,
+      dailyUploadsLimit: null,
+      allowImages: true,
+      allowVideo: true,
+      allowOtherBinary: true,
+      maxBytes: 250 * 1024 * 1024, // 250MB
+    };
+  }
+  return {
+    plan,
+    dailyUploadsLimit: null,
+    allowImages: true,
+    allowVideo: true,
+    allowOtherBinary: true,
+    maxBytes: 500 * 1024 * 1024, // 500MB
+  };
+}
+
+function classifyMime(mime: string): "doc" | "image" | "video" | "other" {
+  const m = String(mime || "").toLowerCase().trim();
+  if (!m) return "other";
+  if (m.startsWith("image/")) return "image";
+  if (m.startsWith("video/")) return "video";
+  if (m.startsWith("text/")) return "doc";
+  if (m === "application/pdf") return "doc";
+  if (m === "application/msword") return "doc";
+  if (m.startsWith("application/vnd.openxmlformats-officedocument.")) return "doc";
+  if (m.startsWith("application/vnd.ms-")) return "doc";
+  if (m === "application/rtf") return "doc";
+  if (m === "application/json") return "doc";
+  if (m === "application/xml" || m === "text/xml") return "doc";
+  if (m === "application/octet-stream") return "other";
+  return "other";
+}
+
+function pickFilesFromFormData(formData: FormData): File[] {
+  const keys = ["file", "files", "upload", "uploads", "document", "documents"];
+  const out: File[] = [];
+
+  for (const k of keys) {
+    const vals = formData.getAll(k);
+    for (const v of vals) {
+      if (v && typeof v === "object" && "arrayBuffer" in (v as any) && "size" in (v as any)) {
+        out.push(v as File);
+      }
+    }
+    if (out.length) break;
+  }
+
+  if (!out.length) {
+    for (const v of formData.values()) {
+      if (v && typeof v === "object" && "arrayBuffer" in (v as any) && "size" in (v as any)) {
+        out.push(v as File);
+      }
+    }
+  }
+
+  return out;
+}
+
+async function ensureUsageRow(db: Db, agencyId: string, dateKey: string) {
+  await db.run(
+    `INSERT OR IGNORE INTO usage_daily (agency_id, date, messages_count, uploads_count)
+     VALUES (?, ?, 0, 0)`,
+    agencyId,
+    dateKey
+  );
+}
+
+async function getUploadsUsedToday(db: Db, agencyId: string, dateKey: string): Promise<number> {
+  await ensureUsageRow(db, agencyId, dateKey);
+  const row = (await db.get(
+    `SELECT uploads_count
+     FROM usage_daily
+     WHERE agency_id = ? AND date = ?
+     LIMIT 1`,
+    agencyId,
+    dateKey
+  )) as { uploads_count?: number } | undefined;
+
+  const n = Number(row?.uploads_count ?? 0);
+  return Number.isFinite(n) ? n : 0;
 }
 
 export async function OPTIONS() {
@@ -100,8 +271,16 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    // Keep auth behavior consistent: if not authed, fail here.
-    await requireActiveMember(req);
+    const ctx = await requireActiveMember(req);
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
+    const plan = await getAgencyPlan(db, ctx.agencyId);
+    const policy = uploadPolicy(plan);
+
+    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+    const dateKey = ymdInTz(agencyTz);
 
     // Compatibility shim:
     // Older UI still POSTs /api/documents with multipart form-data.
@@ -109,6 +288,99 @@ export async function POST(req: NextRequest) {
     // Instead, forward the FormData server-side to POST /api/upload.
     const formData = await req.formData();
 
+    // --- HARD UPLOAD ENFORCEMENT (server-side, before forwarding) ---
+    const files = pickFilesFromFormData(formData);
+
+    if (!files.length) {
+      return Response.json({ ok: false, error: "NO_FILE" }, { status: 400 });
+    }
+
+    // daily uploads gating (Free only for now; Starter+ unlimited docs)
+    if (policy.dailyUploadsLimit !== null) {
+      const used = await getUploadsUsedToday(db, ctx.agencyId, dateKey);
+      if (used + files.length > policy.dailyUploadsLimit) {
+        return Response.json(
+          {
+            ok: false,
+            error: "UPLOAD_LIMIT",
+            message: `Daily upload limit reached for plan '${policy.plan}'.`,
+            plan: policy.plan,
+            limit: policy.dailyUploadsLimit,
+            used,
+            attempted: files.length,
+            timezone: agencyTz,
+            date: dateKey,
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // mime + size gating
+    for (const f of files) {
+      const size = Number((f as any).size ?? 0);
+      if (!Number.isFinite(size) || size <= 0) {
+        return Response.json({ ok: false, error: "INVALID_FILE" }, { status: 400 });
+      }
+
+      if (size > policy.maxBytes) {
+        return Response.json(
+          {
+            ok: false,
+            error: "FILE_TOO_LARGE",
+            message: `File exceeds size limit for plan '${policy.plan}'.`,
+            plan: policy.plan,
+            maxBytes: policy.maxBytes,
+            file: { name: (f as any).name ?? null, size },
+          },
+          { status: 413 }
+        );
+      }
+
+      const mime = String((f as any).type ?? "");
+      const kind = classifyMime(mime);
+
+      if (kind === "image" && !policy.allowImages) {
+        return Response.json(
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `Images are not allowed on plan '${policy.plan}'.`,
+            plan: policy.plan,
+            file: { name: (f as any).name ?? null, type: mime, kind },
+          },
+          { status: 403 }
+        );
+      }
+
+      if (kind === "video" && !policy.allowVideo) {
+        return Response.json(
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `Video is not allowed on plan '${policy.plan}'.`,
+            plan: policy.plan,
+            file: { name: (f as any).name ?? null, type: mime, kind },
+          },
+          { status: 403 }
+        );
+      }
+
+      if (kind === "other" && !policy.allowOtherBinary) {
+        return Response.json(
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `This file type is not allowed on plan '${policy.plan}'.`,
+            plan: policy.plan,
+            file: { name: (f as any).name ?? null, type: mime, kind },
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Forward auth to /api/upload (do NOT redirect)
     const headers = new Headers();
     const cookie = req.headers.get("cookie");
     const authorization = req.headers.get("authorization");

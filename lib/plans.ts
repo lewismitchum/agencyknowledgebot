@@ -21,7 +21,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     allow_video: false,
   },
   starter: {
-    daily_messages: 500, // your spec
+    daily_messages: 500,
     daily_uploads: null, // unlimited docs
     max_users: 5,
     max_agency_bots: 1,
@@ -29,12 +29,12 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     allow_video: false,
   },
   pro: {
-    daily_messages: 999999, // unlimited chats (enforced by other rate limiting)
+    daily_messages: 999999,
     daily_uploads: null,
     max_users: 15,
     max_agency_bots: 3,
     allow_images: true,
-    allow_video: true, // spec allows video
+    allow_video: true,
   },
   enterprise: {
     daily_messages: 999999,
@@ -56,7 +56,14 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
 
 export function normalizePlan(plan: unknown): PlanKey {
   const p = String(plan || "").toLowerCase().trim();
-  if (p === "starter" || p === "pro" || p === "enterprise" || p === "corporation") return p;
+
+  // accept common aliases so old DB values don’t break enforcement
+  if (p === "starter") return "starter";
+  if (p === "pro") return "pro";
+  if (p === "enterprise") return "enterprise";
+  if (p === "corporation") return "corporation";
+  if (p === "corp") return "corporation";
+
   return "free";
 }
 

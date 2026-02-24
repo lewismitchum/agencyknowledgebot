@@ -15,6 +15,11 @@ export const runtime = "nodejs";
  * Billing note:
  * - We add Stripe columns to agencies (customer/subscription ids, current_period_end)
  *   using ALTER TABLE guards (SQLite safe/idempotent).
+ *
+ * Timezone note:
+ * - We store an agency-level timezone on agencies.timezone for consistent “daily limits”
+ *   and schedule behavior. If missing, we backfill from schedule_prefs.timezone (or
+ *   schedule_preferences.timezone) when available.
  */
 
 type Db = Pick<RealDb, "exec" | "run" | "get" | "all">;
@@ -128,6 +133,65 @@ async function ensureUsageDaily(db: Db) {
 }
 
 /**
+ * Ensure agencies.timezone exists, and backfill from schedule prefs if present.
+ * This keeps “daily limits” consistent and local to the agency.
+ */
+async function ensureAgencyTimezone(db: Db) {
+  const agenciesExists = await tableExists(db, "agencies");
+  if (!agenciesExists) return;
+
+  await addColumnIfMissing(db, "agencies", "timezone", "TEXT");
+
+  // If schedule_prefs exists and has timezone, backfill agencies.timezone when NULL/empty
+  const prefsExists = await tableExists(db, "schedule_prefs");
+  if (prefsExists) {
+    const cols = await getTableColumns(db, "schedule_prefs");
+    if (has(cols, "timezone")) {
+      await db.run(`
+        UPDATE agencies
+        SET timezone = (
+          SELECT sp.timezone
+          FROM schedule_prefs sp
+          WHERE sp.agency_id = agencies.id
+          LIMIT 1
+        )
+        WHERE (timezone IS NULL OR TRIM(timezone) = '')
+          AND EXISTS (
+            SELECT 1 FROM schedule_prefs sp2
+            WHERE sp2.agency_id = agencies.id
+              AND sp2.timezone IS NOT NULL
+              AND TRIM(sp2.timezone) <> ''
+          );
+      `);
+    }
+  }
+
+  // Legacy table backfill
+  const legacyExists = await tableExists(db, "schedule_preferences");
+  if (legacyExists) {
+    const cols = await getTableColumns(db, "schedule_preferences");
+    if (has(cols, "timezone")) {
+      await db.run(`
+        UPDATE agencies
+        SET timezone = (
+          SELECT sp.timezone
+          FROM schedule_preferences sp
+          WHERE sp.agency_id = agencies.id
+          LIMIT 1
+        )
+        WHERE (timezone IS NULL OR TRIM(timezone) = '')
+          AND EXISTS (
+            SELECT 1 FROM schedule_preferences sp2
+            WHERE sp2.agency_id = agencies.id
+              AND sp2.timezone IS NOT NULL
+              AND TRIM(sp2.timezone) <> ''
+          );
+      `);
+    }
+  }
+}
+
+/**
  * Core tables — canonical shape
  */
 async function ensureCoreTables(db: Db) {
@@ -142,6 +206,7 @@ async function ensureCoreTables(db: Db) {
       email_verify_token_hash TEXT,
       email_verify_expires_at TEXT,
       email_verify_last_sent_at TEXT,
+      timezone TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -297,6 +362,9 @@ export async function ensureSchema(dbArg?: Db) {
 
   await ensureCoreTables(db);
   await ensureUsageDaily(db);
+
+  // Must run after tables exist
+  await ensureAgencyTimezone(db);
 
   _schemaEnsured = true;
 }
