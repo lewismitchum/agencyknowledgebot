@@ -154,7 +154,7 @@ function AcceptInviteInner() {
                 <p className="text-sm text-destructive">{state.message}</p>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  By joining, your account will be pending until the owner approves you.
+                  Invites are pre-approved. You’ll be logged in immediately after accepting.
                 </p>
               )}
 

@@ -21,7 +21,6 @@ type MemberRow = {
 type InviteRow = {
   id: string;
   email: string;
-  token?: string | null;
   created_at: string | null;
   expires_at: string | null;
 };
@@ -123,6 +122,7 @@ export default function MembersPage() {
   const [inviteBusy, setInviteBusy] = useState(false);
 
   const [toast, setToast] = useState<string>("");
+  const [lastInviteLink, setLastInviteLink] = useState<string>("");
 
   const myRole = useMemo(() => normRole(meRole), [meRole]);
   const myStatus = useMemo(() => normStatus(meStatus), [meStatus]);
@@ -225,7 +225,6 @@ export default function MembersPage() {
 
       const j = await r.json().catch(() => null);
 
-      // IMPORTANT: plan is authoritative from /api/me now.
       setSeats(j?.seats ?? null);
       setEnforcement(j?.enforcement ?? null);
       setMembers(Array.isArray(j?.users) ? j.users : []);
@@ -342,6 +341,7 @@ export default function MembersPage() {
 
       const link = String(j?.link ?? "");
       if (link) {
+        setLastInviteLink(link);
         try {
           await navigator.clipboard.writeText(link);
           showToast("Invite created. Link copied to clipboard.");
@@ -349,6 +349,7 @@ export default function MembersPage() {
           showToast("Invite created.");
         }
       } else {
+        setLastInviteLink("");
         showToast("Invite created.");
       }
 
@@ -488,6 +489,32 @@ export default function MembersPage() {
             </div>
           ) : null}
 
+          {lastInviteLink ? (
+            <div className="rounded-2xl border bg-background/40 p-3 text-xs">
+              <div className="font-medium">Last invite link</div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <code className="rounded-lg border bg-background px-2 py-1 text-[11px]">{lastInviteLink}</code>
+                <Button
+                  variant="outline"
+                  className="rounded-full"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(lastInviteLink);
+                      showToast("Invite link copied.");
+                    } catch {
+                      showToast("Could not copy invite link.");
+                    }
+                  }}
+                >
+                  Copy
+                </Button>
+              </div>
+              <div className="mt-1 text-muted-foreground">
+                (Tip: your invites list won’t show tokens — copy the link when you create the invite.)
+              </div>
+            </div>
+          ) : null}
+
           {invites.length ? (
             <>
               <Separator />
@@ -496,33 +523,15 @@ export default function MembersPage() {
                 <div className="space-y-2">
                   {invites.map((inv) => {
                     const busy = savingId === inv.id;
-                    const link = inv.token ? `${window.location.origin}/join?token=${encodeURIComponent(inv.token)}` : "";
 
                     return (
                       <div key={inv.id} className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between">
                         <div className="space-y-1">
                           <div className="font-medium">{inv.email}</div>
                           <div className="text-xs text-muted-foreground">Expires: {formatWhen(inv.expires_at)}</div>
-                          {inv.token ? (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <code className="rounded-lg border bg-background px-2 py-1 text-[11px]">{link}</code>
-                              <Button
-                                variant="outline"
-                                className="rounded-full"
-                                disabled={busy}
-                                onClick={async () => {
-                                  try {
-                                    await navigator.clipboard.writeText(link);
-                                    showToast("Invite link copied.");
-                                  } catch {
-                                    showToast("Could not copy invite link.");
-                                  }
-                                }}
-                              >
-                                Copy link
-                              </Button>
-                            </div>
-                          ) : null}
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            For security, invite links are only shown once (when created).
+                          </div>
                         </div>
                         <div className="mt-3 flex gap-2 md:mt-0">
                           <Button
@@ -658,7 +667,9 @@ export default function MembersPage() {
                       </div>
 
                       {!canActivateAnotherMember && status !== "active" ? (
-                        <div className="text-xs text-muted-foreground">Activation disabled: seat limit reached. Revoke invites or upgrade.</div>
+                        <div className="text-xs text-muted-foreground">
+                          Activation disabled: seat limit reached. Revoke invites or upgrade.
+                        </div>
                       ) : null}
                     </div>
                   </div>

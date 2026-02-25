@@ -40,6 +40,7 @@ async function ensureUserRoleColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
 }
 
 function resendConfigured() {
@@ -80,6 +81,7 @@ export async function POST(req: NextRequest) {
   try {
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureUserRoleColumns(db);
 
     const { name, email, password, turnstile_token, isJson } = await readBody(req);
 
@@ -99,12 +101,24 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    const existing = (await db.get(
+    // IMPORTANT: "signup" here is for creating a NEW agency/owner.
+    // If the email already exists as an AGENCY login, block.
+    const existingAgency = (await db.get(
       "SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
     )) as { id: string } | undefined;
 
-    if (existing?.id) {
+    if (existingAgency?.id) {
+      return NextResponse.json({ error: "Email already in use" }, { status: 409 });
+    }
+
+    // Also block if this email is already a USER in any agency (prevents confusion / takeover).
+    const existingUser = (await db.get(
+      "SELECT id FROM users WHERE lower(email) = ? LIMIT 1",
+      normalizedEmail
+    )) as { id: string } | undefined;
+
+    if (existingUser?.id) {
       return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
 
@@ -133,7 +147,6 @@ export async function POST(req: NextRequest) {
         id, name, email, password_hash, vector_store_id, created_at,
         email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-
       agencyId,
       name.trim(),
       normalizedEmail,
@@ -146,18 +159,18 @@ export async function POST(req: NextRequest) {
       willSendEmail ? nowIso() : null
     );
 
-    await ensureUserRoleColumns(db);
-
+    // Owner user: always active if no email verification, otherwise pending until verified.
     await db.run(
-      `INSERT INTO users (id, agency_id, email, email_verified, role, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'owner', ?, ?, ?)`,
+      `INSERT INTO users (id, agency_id, email, email_verified, role, status, created_at, updated_at, password_hash)
+       VALUES (?, ?, ?, ?, 'owner', ?, ?, ?, ?)`,
       ownerUserId,
       agencyId,
       normalizedEmail,
       emailVerified,
       emailVerified ? "active" : "pending",
       nowIso(),
-      nowIso()
+      nowIso(),
+      password_hash
     );
 
     if (willSendEmail && verifyUrl) {
@@ -185,7 +198,6 @@ export async function POST(req: NextRequest) {
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
 
-    // ✅ CRITICAL: per-user cookie identity (prevents shared identity bugs)
     if (isJson) {
       const res = NextResponse.json({ ok: true, redirectTo });
       setSessionCookie(res, {

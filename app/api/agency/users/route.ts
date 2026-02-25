@@ -304,12 +304,13 @@ export async function POST(req: NextRequest) {
     )) as InviteRow | undefined;
 
     const origin = req.nextUrl.origin;
-    const joinPath = "/join";
+
+    // ✅ You chose /accept-invite as the public invite-accept UI
+    const acceptPath = "/accept-invite";
+
     const expiresAt = addDaysIso(7);
 
     if (existingInvite?.id) {
-      // NOTE: We intentionally do NOT return a link here because this endpoint
-      // does not assume a 'token' column exists in agency_invites.
       return NextResponse.json({
         ok: true,
         invite: {
@@ -320,16 +321,13 @@ export async function POST(req: NextRequest) {
         },
         link: null,
         hint: `Invite already exists. Have the user check email or request a new invite.`,
-        join_url: `${origin}${joinPath}`,
+        join_url: `${origin}${acceptPath}`,
       });
     }
 
     const id = crypto.randomUUID();
     const token = randomToken();
 
-    // We store token_hash (canonical) – ensureInviteTables should have created it.
-    // If your table uses plain token instead, you should adjust ensureInviteTables, not this file.
-    // But this endpoint does not depend on token existing for reads.
     const { hashToken } = await import("@/lib/tokens");
     const token_hash = hashToken(token);
 
@@ -344,11 +342,10 @@ export async function POST(req: NextRequest) {
       expiresAt
     );
 
-    // Return the token only on creation so UI can copy the link immediately.
     return NextResponse.json({
       ok: true,
       invite: { id, email, created_at: nowIso(), expires_at: expiresAt },
-      link: `${origin}${joinPath}?token=${encodeURIComponent(token)}`,
+      link: `${origin}${acceptPath}?token=${encodeURIComponent(token)}`,
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
@@ -413,10 +410,12 @@ export async function PATCH(req: NextRequest) {
       return forbidden("OWNERSHIP_TRANSFER_NOT_SUPPORTED_HERE");
     }
 
-    const becomingActive = currentStatus !== "active" && nextStatus === "active";
-    const billableMember = nextRole !== "owner" && nextRole !== "admin";
+    const currentBillableActive = currentStatus === "active" && currentRole === "member";
+    const nextBillableActive = nextStatus === "active" && nextRole === "member";
 
-    if (becomingActive && billableMember) {
+    const enteringBillableActiveSeat = nextBillableActive && !currentBillableActive;
+
+    if (enteringBillableActiveSeat) {
       const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
       if (!seatState.canActivateAnotherMember) {
         return NextResponse.json(
