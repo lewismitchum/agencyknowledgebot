@@ -6,32 +6,19 @@ import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
-async function getAgencyTimezone(db: Db, agencyId: string) {
-  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { timezone?: string | null }
-    | undefined;
-
-  const tz = String(row?.timezone ?? "").trim();
-  return tz || "America/Chicago";
+function safeTz(tz: any) {
+  const s = String(tz || "").trim();
+  return s || "America/Chicago";
 }
 
-function ymdInTz(tz: string) {
-  // en-CA -> YYYY-MM-DD
-  try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-  } catch {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Chicago",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-  }
+function dayKeyInTz(d: Date, tz: string) {
+  // YYYY-MM-DD
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
 }
 
 export async function OPTIONS() {
@@ -44,16 +31,20 @@ export async function GET(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const timezone = await getAgencyTimezone(db, ctx.agencyId);
-    const today = ymdInTz(timezone);
+    const row = (await db.get(
+      `SELECT timezone
+       FROM agencies
+       WHERE id = ?
+       LIMIT 1`,
+      ctx.agencyId
+    )) as { timezone?: string | null } | undefined;
+
+    const timezone = safeTz(row?.timezone);
+    const today = dayKeyInTz(new Date(), timezone);
 
     return Response.json({ ok: true, timezone, today });
-  } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
+  } catch (err) {
     console.error("SCHEDULE_TIMEZONE_GET_ERROR", err);
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
   }
 }

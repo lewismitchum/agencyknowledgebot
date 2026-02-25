@@ -1,7 +1,7 @@
 // app/(app)/app/settings/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,26 @@ type MeResponse =
     }
   | { ok?: false; error?: string; message?: string };
 
+const COMMON_TZ = [
+  "America/Chicago",
+  "America/New_York",
+  "America/Los_Angeles",
+  "America/Denver",
+  "America/Phoenix",
+  "America/Toronto",
+  "America/Vancouver",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Dublin",
+  "Europe/Warsaw",
+  "Asia/Tokyo",
+  "Asia/Seoul",
+  "Asia/Singapore",
+  "Asia/Kolkata",
+  "Australia/Sydney",
+];
+
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState("");
@@ -28,6 +48,10 @@ export default function SettingsPage() {
 
   const [role, setRole] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+
+  const [timezone, setTimezone] = useState<string>("America/Chicago");
+  const [tzLoading, setTzLoading] = useState(false);
+  const [tzError, setTzError] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -59,7 +83,6 @@ export default function SettingsPage() {
         setPlan(agency?.plan ?? null);
 
         setUserId(user?.id ?? null);
-
         setRole(user?.role ?? null);
         setStatus(user?.status ?? null);
       } catch (e: any) {
@@ -70,6 +93,16 @@ export default function SettingsPage() {
     })();
   }, []);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/agency/timezone", { credentials: "include", cache: "no-store" });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j?.ok && j?.timezone) setTimezone(String(j.timezone));
+      } catch {}
+    })();
+  }, []);
+
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login";
@@ -77,6 +110,43 @@ export default function SettingsPage() {
 
   const isOwner = String(role || "").toLowerCase() === "owner";
   const isPending = String(status || "").toLowerCase() === "pending";
+
+  const tzPreview = useMemo(() => {
+    try {
+      const s = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date());
+      return s;
+    } catch {
+      return "Invalid timezone";
+    }
+  }, [timezone]);
+
+  async function saveTimezone() {
+    if (!isOwner) return;
+    setTzLoading(true);
+    setTzError("");
+    try {
+      const r = await fetch("/api/agency/timezone", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ timezone }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.message || j?.error || "Failed to save timezone");
+      setTimezone(String(j.timezone || timezone));
+    } catch (e: any) {
+      setTzError(e?.message || "Failed to save timezone");
+    } finally {
+      setTzLoading(false);
+    }
+  }
 
   return (
     <div className="space-y-8">
@@ -153,32 +223,50 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="rounded-2xl border p-4">
-              <div className="text-sm font-medium">Timezone</div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Controls daily usage keys (chats/uploads) and schedule defaults.
-              </div>
-              <div className="mt-3">
-                <Button asChild variant="outline" className="rounded-full">
-                  <Link href="/app/settings/timezone">Set timezone</Link>
-                </Button>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border p-4">
-              <div className="text-sm font-medium">Usage</div>
-              <div className="mt-1 text-sm text-muted-foreground">View today’s chat/upload usage for your plan.</div>
-              <div className="mt-3">
-                <Button asChild variant="outline" className="rounded-full">
-                  <Link href="/app/usage">View usage</Link>
-                </Button>
-              </div>
-            </div>
-          </div>
-
           <div className="text-sm text-muted-foreground">
             New users should be <span className="font-medium">pending</span> until an owner approves them.
+          </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Workspace timezone</div>
+            <div className="text-sm text-muted-foreground">
+              Used for daily limits and schedule day keys. Preview: <span className="font-medium">{tzPreview}</span>
+            </div>
+
+            <div className="flex flex-col gap-2 md:flex-row md:items-center">
+              <select
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-[320px]"
+                disabled={!isOwner || tzLoading}
+              >
+                {COMMON_TZ.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz}
+                  </option>
+                ))}
+              </select>
+
+              <input
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                placeholder="Or type IANA timezone (e.g. America/Chicago)"
+                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                disabled={!isOwner || tzLoading}
+              />
+
+              <Button className="rounded-full" onClick={saveTimezone} disabled={!isOwner || tzLoading}>
+                {tzLoading ? "Saving…" : "Save timezone"}
+              </Button>
+            </div>
+
+            {tzError ? <div className="text-sm text-red-600">{tzError}</div> : null}
+
+            {!isOwner ? (
+              <div className="text-xs text-muted-foreground">Owner only can change timezone.</div>
+            ) : null}
           </div>
         </CardContent>
       </Card>

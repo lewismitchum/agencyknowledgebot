@@ -32,6 +32,7 @@ function pickMaxAgencyBotsFromLimits(limits: any): number | null {
     limits?.max_bots ??
     limits?.bots ??
     null;
+
   if (raw == null) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
@@ -103,9 +104,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  // TX-safe:
-  // - agency bots: owner/admin only + plan limit enforced inside TX
-  // - private bots: any active member, no plan limit, no seat count
+  // Rules:
+  // - Agency bots: owner/admin only + plan cap enforced (max_agency_bots)
+  // - Private bots: any active member (not capped here)
+  // - Owner/admin do NOT count toward seat limits (handled elsewhere)
   try {
     const body = (await req.json().catch(() => ({}))) as any;
     const scopeRaw = String(body?.scope ?? body?.type ?? "agency").toLowerCase();
@@ -125,32 +127,41 @@ export async function POST(req: NextRequest) {
     const limits = getPlanLimits(plan);
     const maxAgencyBots = pickMaxAgencyBotsFromLimits(limits);
 
-    return await withTx(db, async () => {
-      if (scope === "agency" && maxAgencyBots != null) {
-        const row = (await db.get(
-          `SELECT COUNT(1) as n
-           FROM bots
-           WHERE agency_id = ? AND owner_user_id IS NULL`,
-          ctx.agencyId
-        )) as { n: number } | undefined;
+    const ownerUserId = scope === "private" ? ctx.userId : null;
 
-        const used = Number(row?.n ?? 0);
-        if (used >= maxAgencyBots) {
-          return NextResponse.json(
-            { ok: false, error: "BOT_LIMIT_REACHED", bots: { used, limit: maxAgencyBots } },
-            { status: 403 }
-          );
+    // Create vector store OUTSIDE the DB transaction to avoid holding locks during OpenAI call.
+    // If we later fail (cap hit / insert fails), we best-effort delete the vector store.
+    const vs = await openai.vectorStores.create({ name });
+
+    try {
+      const result = await withTx(db, async () => {
+        if (scope === "agency" && maxAgencyBots != null) {
+          const row = (await db.get(
+            `SELECT COUNT(1) as n
+             FROM bots
+             WHERE agency_id = ? AND owner_user_id IS NULL`,
+            ctx.agencyId
+          )) as { n: number } | undefined;
+
+          const used = Number(row?.n ?? 0);
+
+          if (used >= maxAgencyBots) {
+            return NextResponse.json(
+              {
+                ok: false,
+                error: "BOT_LIMIT_EXCEEDED",
+                code: "BOT_LIMIT_EXCEEDED",
+                plan,
+                used,
+                limit: maxAgencyBots,
+              },
+              { status: 403 }
+            );
+          }
         }
-      }
 
-      // Create vector store inside TX so count+insert is atomic under concurrency.
-      // This holds the DB transaction during the OpenAI call (intentional for correctness).
-      const vs = await openai.vectorStores.create({ name });
+        const id = crypto.randomUUID();
 
-      const id = crypto.randomUUID();
-      const ownerUserId = scope === "private" ? ctx.userId : null;
-
-      try {
         await db.run(
           `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?)`,
@@ -161,25 +172,39 @@ export async function POST(req: NextRequest) {
           vs.id,
           new Date().toISOString()
         );
-      } catch (e) {
-        // Best-effort cleanup if DB insert fails after VS created
+
+        return NextResponse.json({
+          ok: true,
+          bot: {
+            id,
+            name,
+            scope,
+            owner_user_id: ownerUserId,
+            vector_store_id: vs.id,
+          },
+        });
+      });
+
+      // If we returned a cap error response inside the TX, clean up the created VS.
+      if (result.status === 403) {
         try {
-          await openai.vectorStores.delete(vs.id);
+          const payload = (await result.clone().json().catch(() => null)) as any;
+          if (payload?.code === "BOT_LIMIT_EXCEEDED") {
+            try {
+              await openai.vectorStores.delete(vs.id);
+            } catch {}
+          }
         } catch {}
-        throw e;
       }
 
-      return NextResponse.json({
-        ok: true,
-        bot: {
-          id,
-          name,
-          scope,
-          owner_user_id: ownerUserId,
-          vector_store_id: vs.id,
-        },
-      });
-    });
+      return result;
+    } catch (e) {
+      // Best-effort cleanup if DB op fails after VS created
+      try {
+        await openai.vectorStores.delete(vs.id);
+      } catch {}
+      throw e;
+    }
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
 
