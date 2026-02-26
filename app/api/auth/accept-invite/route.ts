@@ -40,6 +40,21 @@ async function countActiveBillableSeatsTx(db: Db, agencyId: string): Promise<num
   return Number(row?.c ?? 0);
 }
 
+async function countActivePendingInvitesTx(db: Db, agencyId: string): Promise<number> {
+  const row = (await db.get(
+    `SELECT COUNT(*) as c
+     FROM agency_invites
+     WHERE agency_id = ?
+       AND accepted_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > ?`,
+    agencyId,
+    nowIso()
+  )) as { c: number } | undefined;
+
+  return Number(row?.c ?? 0);
+}
+
 export async function POST(req: NextRequest) {
   try {
     await ensureInviteTables();
@@ -60,7 +75,6 @@ export async function POST(req: NextRequest) {
 
     const token_hash = hashToken(token);
 
-    // BEGIN TRANSACTION (critical)
     await db.run("BEGIN IMMEDIATE TRANSACTION");
 
     try {
@@ -122,23 +136,23 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "User already exists" }, { status: 409 });
       }
 
-      // Seat enforcement INSIDE transaction
       const plan = normalizePlan(agency.plan);
       const limits = getPlanLimits(plan);
       const maxUsers = pickMaxUsersFromLimits(limits);
 
-      // Invites should produce ACTIVE members immediately (invite == approval).
-      // Enforce max_users against ACTIVE BILLABLE seats only (owners/admin excluded).
       if (maxUsers != null) {
-        const usedActive = await countActiveBillableSeatsTx(db, invite.agency_id);
-        if (usedActive + 1 > Number(maxUsers)) {
+        const usedActiveBillable = await countActiveBillableSeatsTx(db, invite.agency_id);
+        const pendingInvites = await countActivePendingInvitesTx(db, invite.agency_id);
+
+        if (usedActiveBillable + pendingInvites >= Number(maxUsers)) {
           await db.run("ROLLBACK");
           return NextResponse.json(
             {
               ok: false,
               error: "SEAT_LIMIT_EXCEEDED",
               plan,
-              used_active: usedActive,
+              used: usedActiveBillable,
+              pending_invites: pendingInvites,
               limit: Number(maxUsers),
             },
             { status: 403 }
@@ -183,6 +197,9 @@ export async function POST(req: NextRequest) {
       throw inner;
     }
   } catch (err: any) {
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }

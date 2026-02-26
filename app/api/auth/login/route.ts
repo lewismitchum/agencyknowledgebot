@@ -37,6 +37,28 @@ async function ensureUserColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
 }
 
+async function verifyTurnstile(token: string, ip: string | null) {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) return { ok: false as const, error: "TURNSTILE_SECRET_MISSING" };
+  if (!token) return { ok: false as const, error: "TURNSTILE_REQUIRED" };
+
+  const form = new URLSearchParams();
+  form.set("secret", secret);
+  form.set("response", token);
+  if (ip) form.set("remoteip", ip);
+
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  const j = (await r.json().catch(() => null)) as any;
+  if (j && j.success) return { ok: true as const };
+
+  return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
+}
+
 /**
  * Ensures there is at least one owner for the agency.
  * Rule: if there are no users yet for this agency, the agency email becomes owner+active.
@@ -108,28 +130,6 @@ function normStatus(s: any): "active" | "pending" | "blocked" {
   return "pending";
 }
 
-async function verifyTurnstile(token: string, ip: string | null) {
-  const secret = process.env.TURNSTILE_SECRET_KEY;
-  if (!secret) return { ok: false as const, error: "TURNSTILE_SECRET_MISSING" };
-  if (!token) return { ok: false as const, error: "TURNSTILE_REQUIRED" };
-
-  const form = new URLSearchParams();
-  form.set("secret", secret);
-  form.set("response", token);
-  if (ip) form.set("remoteip", ip);
-
-  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form.toString(),
-  });
-
-  const j = (await r.json().catch(() => null)) as any;
-  if (j && j.success) return { ok: true as const };
-
-  return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
-}
-
 export async function POST(req: NextRequest) {
   try {
     const { email, password, turnstile_token } = await readBody(req);
@@ -176,10 +176,8 @@ export async function POST(req: NextRequest) {
 
     await ensureFirstOwner(db, { id: agency.id, email: agency.email });
 
-    // IMPORTANT:
-    // Logging into the agency workspace should ONLY succeed for users who are ACTIVE.
-    // We do NOT auto-create member rows on login (that bypasses approvals + seats).
-    const user = (await db.get(
+    // Find the user row for THIS email in this agency
+    let user = (await db.get(
       `SELECT id, email, email_verified, role, status
        FROM users
        WHERE agency_id = ? AND lower(email) = ?
@@ -190,26 +188,34 @@ export async function POST(req: NextRequest) {
       | { id: string; email: string; email_verified: number; role: string | null; status: string | null }
       | undefined;
 
+    // If missing, create as MEMBER + PENDING (BUT do not log them in)
     if (!user?.id) {
-      return NextResponse.json(
-        { ok: false, error: "NO_MEMBERSHIP", message: "You are not a member of this agency. Ask an owner/admin to invite you." },
-        { status: 403 }
+      const id = crypto.randomUUID();
+      const t = nowIso();
+      await db.run(
+        `INSERT INTO users (id, agency_id, email, email_verified, role, status, created_at, updated_at)
+         VALUES (?, ?, ?, 1, 'member', 'pending', ?, ?)`,
+        id,
+        agency.id,
+        normalizedEmail,
+        t,
+        t
       );
+      user = { id, email: normalizedEmail, email_verified: 1, role: "member", status: "pending" };
     }
 
     const role = normRole(user.role);
     const status = normStatus(user.status);
 
-    if (status === "pending") {
+    // ✅ Critical gate: pending/blocked users cannot obtain a session
+    if (status !== "active") {
       return NextResponse.json(
-        { ok: false, error: "PENDING_APPROVAL", message: "Your account is pending approval by an owner/admin." },
-        { status: 403 }
-      );
-    }
-
-    if (status === "blocked") {
-      return NextResponse.json(
-        { ok: false, error: "BLOCKED", message: "Your account is blocked. Contact your owner/admin." },
+        {
+          ok: false,
+          error: status === "blocked" ? "ACCOUNT_BLOCKED" : "PENDING_APPROVAL",
+          redirectTo: "/pending-approval",
+          user: { id: user.id, email: user.email, role, status },
+        },
         { status: 403 }
       );
     }

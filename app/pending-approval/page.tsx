@@ -1,3 +1,4 @@
+// app/pending-approval/page.tsx
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -21,8 +22,8 @@ export default function PendingApprovalPage() {
 
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Ask your agency owner/admin to open <span className="font-medium">Settings → Members</span> (or the
-            Users page) and activate your account.
+            Ask your agency owner/admin to open <span className="font-medium">Settings → Members</span> and activate
+            your account.
           </p>
 
           <div className="flex gap-2">

@@ -27,6 +27,16 @@ function looksLikeNotVerified(msg: string) {
   return s.includes("not verified") || s.includes("email_not_verified") || s.includes("verify your email");
 }
 
+function looksLikePending(msg: string) {
+  const s = (msg || "").toLowerCase();
+  return s.includes("pending") || s.includes("pending_approval") || s.includes("forbidden_not_active");
+}
+
+function looksLikeBlocked(msg: string) {
+  const s = (msg || "").toLowerCase();
+  return s.includes("blocked") || s.includes("account_blocked");
+}
+
 export default function LoginPage() {
   const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 
@@ -91,7 +101,6 @@ export default function LoginPage() {
         body: JSON.stringify({ email }),
       });
 
-      // your API should return ok even if email doesn't exist (avoid enumeration)
       if (!r.ok) {
         const raw = await r.text().catch(() => "");
         setErr(raw || "Could not resend verification email.");
@@ -161,8 +170,22 @@ export default function LoginPage() {
       }
 
       if (!r.ok) {
-        const msg = j?.error || j?.message || raw || "Login failed";
-        setErr(msg);
+        const code = String(j?.error || "").trim();
+        const msg = String(j?.message || j?.error || raw || "Login failed").trim();
+        const redirectTo = String(j?.redirectTo || j?.redirect_to || "").trim();
+
+        if (
+          r.status === 403 &&
+          (code === "PENDING_APPROVAL" ||
+            code === "ACCOUNT_BLOCKED" ||
+            looksLikePending(msg) ||
+            looksLikeBlocked(msg))
+        ) {
+          window.location.href = redirectTo || "/pending-approval";
+          return;
+        }
+
+        setErr(msg || "Login failed");
         resetTurnstile();
         return;
       }
@@ -273,8 +296,11 @@ export default function LoginPage() {
                 <Link href="/forgot-password" className="underline underline-offset-4">
                   Forgot password?
                 </Link>
-                <span>
-                  New here?{" "}
+                <span className="flex items-center gap-3">
+                  <Link href="/request-access" className="underline underline-offset-4">
+                    Request access
+                  </Link>
+                  <span className="text-muted-foreground/50">•</span>
                   <Link href="/signup" className="text-foreground underline underline-offset-4">
                     Create account
                   </Link>
