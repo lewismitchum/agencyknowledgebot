@@ -279,11 +279,10 @@ export default function MembersPage() {
   async function revokeInvite(inviteId: string) {
     setSavingId(inviteId);
     try {
-      const r = await fetch("/api/agency/users", {
+      // IMPORTANT: avoid DELETE bodies (some proxies strip them). Put inviteId in the query string.
+      const r = await fetch(`/api/agency/users?inviteId=${encodeURIComponent(inviteId)}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ inviteId }),
       });
 
       if (r.status === 401) {
