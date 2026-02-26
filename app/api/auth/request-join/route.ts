@@ -33,6 +33,7 @@ async function readBody(req: NextRequest) {
       agency_name: j?.agency_name,
       email: j?.email,
       password: j?.password,
+      turnstile_token: j?.turnstile_token,
       isJson: true as const,
     };
   }
@@ -43,8 +44,31 @@ async function readBody(req: NextRequest) {
     agency_name: params.get("agency_name"),
     email: params.get("email"),
     password: params.get("password"),
+    turnstile_token: params.get("turnstile_token"),
     isJson: false as const,
   };
+}
+
+async function verifyTurnstile(token: string, ip: string | null) {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) return { ok: false as const, error: "TURNSTILE_SECRET_MISSING" };
+  if (!token) return { ok: false as const, error: "TURNSTILE_REQUIRED" };
+
+  const form = new URLSearchParams();
+  form.set("secret", secret);
+  form.set("response", token);
+  if (ip) form.set("remoteip", ip);
+
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  const j = (await r.json().catch(() => null)) as any;
+  if (j && j.success) return { ok: true as const };
+
+  return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
 }
 
 export async function POST(req: NextRequest) {
@@ -53,7 +77,17 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureUserColumns(db);
 
-    const { agency_email, agency_name, email, password, isJson } = await readBody(req);
+    const { agency_email, agency_name, email, password, turnstile_token, isJson } = await readBody(req);
+
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("x-real-ip") ||
+      null;
+
+    const ts = await verifyTurnstile(String(turnstile_token || ""), ip);
+    if (!ts.ok) {
+      return NextResponse.json({ ok: false, error: ts.error }, { status: 400 });
+    }
 
     const agencyEmail = String(agency_email ?? "").trim().toLowerCase();
     const agencyName = String(agency_name ?? "").trim();
@@ -71,9 +105,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Find agency by email or name
-    let agency:
-      | { id: string; email: string; name: string | null }
-      | undefined;
+    let agency: { id: string; email: string; name: string | null } | undefined;
 
     if (agencyEmail) {
       agency = (await db.get(
@@ -107,7 +139,6 @@ export async function POST(req: NextRequest) {
     )) as { id: string; agency_id: string } | undefined;
 
     if (existingUser?.id) {
-      // If they already belong to this agency, tell them.
       if (existingUser.agency_id === agency.id) {
         return NextResponse.json({ ok: false, error: "USER_ALREADY_EXISTS" }, { status: 409 });
       }
@@ -117,7 +148,7 @@ export async function POST(req: NextRequest) {
     // Create as PENDING member. Owner/admin must activate.
     const userId = randomUUID();
     const password_hash = await bcrypt.hash(pw, 10);
-    const ts = nowIso();
+    const tsNow = nowIso();
 
     await db.run(
       `INSERT INTO users (id, agency_id, email, email_verified, role, status, password_hash, created_at, updated_at)
@@ -129,12 +160,10 @@ export async function POST(req: NextRequest) {
       "member",
       "pending",
       password_hash,
-      ts,
-      ts
+      tsNow,
+      tsNow
     );
 
-    // Do NOT set session cookie; they are pending.
-    // Return enough info for UI to show "Request sent".
     const payload = {
       ok: true,
       status: "pending",
@@ -147,9 +176,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.redirect(new URL("/pending-approval", req.url));
   } catch (err: any) {
     console.error("REQUEST_JOIN_ERROR", err);
-    return NextResponse.json(
-      { ok: false, error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
