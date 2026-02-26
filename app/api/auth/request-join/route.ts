@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { nowIso } from "@/lib/tokens";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,21 +74,27 @@ async function verifyTurnstile(token: string, ip: string | null) {
 
 export async function POST(req: NextRequest) {
   try {
-    const db: Db = await getDb();
-    await ensureSchema(db);
-    await ensureUserColumns(db);
-
     const { agency_email, agency_name, email, password, turnstile_token, isJson } = await readBody(req);
 
     const ip =
       req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
       req.headers.get("x-real-ip") ||
-      null;
+      "unknown";
 
-    const ts = await verifyTurnstile(String(turnstile_token || ""), ip);
+    // ✅ Rate limit BEFORE captcha + DB work
+    const rl = rateLimit(`request_join:${ip}`, 5, 60_000); // 5/min per IP
+    if (!rl.allowed) {
+      return NextResponse.json({ ok: false, error: "TOO_MANY_ATTEMPTS" }, { status: 429 });
+    }
+
+    const ts = await verifyTurnstile(String(turnstile_token || ""), ip === "unknown" ? null : ip);
     if (!ts.ok) {
       return NextResponse.json({ ok: false, error: ts.error }, { status: 400 });
     }
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
+    await ensureUserColumns(db);
 
     const agencyEmail = String(agency_email ?? "").trim().toLowerCase();
     const agencyName = String(agency_name ?? "").trim();

@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import { getDb, type Db } from "@/lib/db";
 import { setSessionCookie } from "@/lib/session";
 import { ensureSchema } from "@/lib/schema";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -141,9 +142,15 @@ export async function POST(req: NextRequest) {
     const ip =
       req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
       req.headers.get("x-real-ip") ||
-      null;
+      "unknown";
 
-    const ts = await verifyTurnstile(String(turnstile_token || ""), ip);
+    // ✅ Rate limit BEFORE captcha + DB work
+    const rl = rateLimit(`login:${ip}`, 10, 60_000); // 10/min per IP
+    if (!rl.allowed) {
+      return NextResponse.json({ error: "Too many attempts. Try again shortly." }, { status: 429 });
+    }
+
+    const ts = await verifyTurnstile(String(turnstile_token || ""), ip === "unknown" ? null : ip);
     if (!ts.ok) {
       return NextResponse.json({ error: ts.error }, { status: 400 });
     }

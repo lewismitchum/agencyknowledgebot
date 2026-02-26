@@ -8,6 +8,7 @@ import { hashToken, nowIso } from "@/lib/tokens";
 import { setSessionCookie } from "@/lib/session";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -57,6 +58,17 @@ async function countActivePendingInvitesTx(db: Db, agencyId: string): Promise<nu
 
 export async function POST(req: NextRequest) {
   try {
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("x-real-ip") ||
+      "unknown";
+
+    // ✅ Rate limit BEFORE DB work
+    const rl = rateLimit(`accept_invite:${ip}`, 10, 60_000); // 10/min per IP
+    if (!rl.allowed) {
+      return NextResponse.json({ ok: false, error: "TOO_MANY_ATTEMPTS" }, { status: 429 });
+    }
+
     await ensureInviteTables();
 
     const body = await req.json().catch(() => ({}));
@@ -197,9 +209,6 @@ export async function POST(req: NextRequest) {
       throw inner;
     }
   } catch (err: any) {
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
