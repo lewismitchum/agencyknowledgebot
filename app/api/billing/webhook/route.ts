@@ -164,15 +164,15 @@ async function recordStripeEventOnce(db: Db, event: Stripe.Event): Promise<boole
       event.type,
       new Date().toISOString()
     );
-    return true; // first time
+    return true;
   } catch {
-    // primary key conflict => already processed
     return false;
   }
 }
 
 async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
-  await db.run("BEGIN");
+  // ✅ important: lock write early for idempotency + updates
+  await db.run("BEGIN IMMEDIATE");
   try {
     const out = await fn();
     await db.run("COMMIT");
@@ -210,17 +210,15 @@ export async function POST(req: NextRequest) {
 
     const firstTime = await recordStripeEventOnce(db, event);
     if (!firstTime) {
-      // idempotent: already processed
       return NextResponse.json({ ok: true });
     }
 
     await withTx(db, async () => {
-      // 1) Checkout completed
       if (event.type === "checkout.session.completed") {
         const session = event.data.object as Stripe.Checkout.Session;
 
         const agencyId = agencyIdFromCheckoutSession(session);
-        const desired = normalizePlan(((session.metadata || {}) as any)?.plan);
+        const desired = normalizePlan(((session.metadata || {}) as any)?.plan) as PlanKey;
 
         const customerId =
           typeof session.customer === "string"
@@ -237,6 +235,7 @@ export async function POST(req: NextRequest) {
               : null;
 
         if (agencyId) {
+          // ✅ never let webhook “upgrade” to free from checkout completion
           await updateAgencyBilling(db, agencyId, {
             plan: desired !== "free" ? desired : undefined,
             stripe_customer_id: customerId ?? undefined,
@@ -247,7 +246,6 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      // 2) Subscription created/updated
       if (
         event.type === "customer.subscription.created" ||
         event.type === "customer.subscription.updated"
@@ -296,7 +294,6 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      // 3) Subscription deleted
       if (event.type === "customer.subscription.deleted") {
         const sub = event.data.object as Stripe.Subscription;
 
@@ -329,7 +326,6 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      // 4) Payment failed
       if (event.type === "invoice.payment_failed") {
         const inv = event.data.object as Stripe.Invoice;
 
@@ -364,7 +360,6 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      // 5) Optional paused
       if (event.type === "customer.subscription.paused") {
         const sub = event.data.object as Stripe.Subscription;
 
@@ -397,7 +392,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     console.error("STRIPE_WEBHOOK_ERROR", err);
-    // Always 200 so Stripe doesn’t retry forever.
     return NextResponse.json({ ok: true, warning: "webhook_error_logged" }, { status: 200 });
   }
 }
