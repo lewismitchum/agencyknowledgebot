@@ -442,7 +442,7 @@ export async function ensureSchema(dbArg?: Db) {
   if (_schemaEnsured) return;
 
   const db: Db = dbArg ?? ((await getDb()) as unknown as Db);
-
+await db.run("ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT").catch(() => {});
   await ensureCoreTables(db);
   await ensureUsageDaily(db);
   await ensureSchedulePrefs(db);
