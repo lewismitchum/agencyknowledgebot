@@ -26,20 +26,12 @@ function getStripe() {
   return new Stripe(key);
 }
 
-async function ensureAgencyBillingColumns(db: Db) {
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
-}
-
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireOwner(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
-    await ensureAgencyBillingColumns(db);
 
     const row = (await db.get(
       `SELECT stripe_customer_id

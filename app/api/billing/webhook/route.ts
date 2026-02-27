@@ -19,13 +19,6 @@ function getWebhookSecret() {
   return secret;
 }
 
-async function ensureAgencyBillingColumns(db: Db) {
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
-  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
-}
-
 async function ensureStripeEventTable(db: Db) {
   await db
     .run(`
@@ -166,13 +159,12 @@ async function recordStripeEventOnce(db: Db, event: Stripe.Event): Promise<boole
     );
     return true;
   } catch {
-    return false;
+    return false; // already processed
   }
 }
 
 async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
-  // ✅ important: lock write early for idempotency + updates
-  await db.run("BEGIN IMMEDIATE");
+  await db.run("BEGIN");
   try {
     const out = await fn();
     await db.run("COMMIT");
@@ -205,7 +197,6 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db);
-    await ensureAgencyBillingColumns(db);
     await ensureStripeEventTable(db);
 
     const firstTime = await recordStripeEventOnce(db, event);
@@ -218,7 +209,7 @@ export async function POST(req: NextRequest) {
         const session = event.data.object as Stripe.Checkout.Session;
 
         const agencyId = agencyIdFromCheckoutSession(session);
-        const desired = normalizePlan(((session.metadata || {}) as any)?.plan) as PlanKey;
+        const desired = normalizePlan(((session.metadata || {}) as any)?.plan);
 
         const customerId =
           typeof session.customer === "string"
@@ -235,7 +226,6 @@ export async function POST(req: NextRequest) {
               : null;
 
         if (agencyId) {
-          // ✅ never let webhook “upgrade” to free from checkout completion
           await updateAgencyBilling(db, agencyId, {
             plan: desired !== "free" ? desired : undefined,
             stripe_customer_id: customerId ?? undefined,
@@ -246,10 +236,7 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      if (
-        event.type === "customer.subscription.created" ||
-        event.type === "customer.subscription.updated"
-      ) {
+      if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated") {
         const sub = event.data.object as Stripe.Subscription;
 
         let agencyId = agencyIdFromSubscription(sub);
@@ -352,9 +339,7 @@ export async function POST(req: NextRequest) {
         }
 
         if (agencyId) {
-          await updateAgencyBilling(db, agencyId, {
-            plan: "free",
-          });
+          await updateAgencyBilling(db, agencyId, { plan: "free" });
         }
 
         return;
@@ -380,9 +365,7 @@ export async function POST(req: NextRequest) {
         }
 
         if (agencyId) {
-          await updateAgencyBilling(db, agencyId, {
-            plan: "free",
-          });
+          await updateAgencyBilling(db, agencyId, { plan: "free" });
         }
 
         return;
