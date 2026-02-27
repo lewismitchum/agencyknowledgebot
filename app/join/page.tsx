@@ -60,7 +60,7 @@ function AcceptInviteInner() {
     setState({ status: "submitting" });
 
     try {
-      const res = await fetch("/api/accept-invite", {
+      const res = await fetch("/api/auth/accept-invite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token, password: p }),

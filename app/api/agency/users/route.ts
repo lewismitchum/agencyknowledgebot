@@ -305,8 +305,8 @@ export async function POST(req: NextRequest) {
 
     const origin = req.nextUrl.origin;
 
-    // ✅ You chose /accept-invite as the public invite-accept UI
-    const acceptPath = "/accept-invite";
+    // ✅ Permanent public invite landing page
+    const acceptPath = "/join";
 
     const expiresAt = addDaysIso(7);
 
