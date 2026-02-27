@@ -14,6 +14,12 @@ type Body = {
 const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
 
 export async function POST(req: NextRequest) {
+  // 🔒 Hard lock: dev-only route must not exist in production.
+  // Return 404 (not 403) to avoid advertising the endpoint.
+  if (process.env.NODE_ENV === "production") {
+    return new Response("Not Found", { status: 404 });
+  }
+
   try {
     const ctx = await requireOwner(req);
 
@@ -33,8 +39,10 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    if (code === "UNAUTHENTICATED")
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (code === "FORBIDDEN_NOT_OWNER")
+      return NextResponse.json({ error: "Owner only" }, { status: 403 });
 
     console.error("DEV_SET_PLAN_ERROR", err);
     return NextResponse.json(
