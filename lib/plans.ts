@@ -4,11 +4,15 @@ export type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corporation";
 
 export type PlanLimits = {
   daily_messages: number;
-  daily_uploads: number | null;
+  daily_uploads: number | null; // null = unlimited
   max_users: number | null; // billable members only (exclude owner/admin)
   max_agency_bots: number | null;
+
   allow_images: boolean;
   allow_video: boolean;
+
+  // conversation "invisible refresh" threshold
+  summarize_after_messages: number;
 };
 
 const LIMITS: Record<PlanKey, PlanLimits> = {
@@ -19,6 +23,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     max_agency_bots: 1,
     allow_images: false,
     allow_video: false,
+    summarize_after_messages: 20,
   },
   starter: {
     daily_messages: 500,
@@ -27,6 +32,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     max_agency_bots: 1,
     allow_images: false,
     allow_video: false,
+    summarize_after_messages: 30,
   },
   pro: {
     daily_messages: 999999,
@@ -35,6 +41,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     max_agency_bots: 3,
     allow_images: true,
     allow_video: true,
+    summarize_after_messages: 40,
   },
   enterprise: {
     daily_messages: 999999,
@@ -43,6 +50,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     max_agency_bots: 5,
     allow_images: true,
     allow_video: true,
+    summarize_after_messages: 50,
   },
   corporation: {
     daily_messages: 999999,
@@ -51,13 +59,13 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     max_agency_bots: 10,
     allow_images: true,
     allow_video: true,
+    summarize_after_messages: 60,
   },
 };
 
 export function normalizePlan(plan: unknown): PlanKey {
   const p = String(plan || "").toLowerCase().trim();
 
-  // accept common aliases so old DB values don’t break enforcement
   if (p === "starter") return "starter";
   if (p === "pro") return "pro";
   if (p === "enterprise") return "enterprise";
@@ -71,7 +79,7 @@ export function getPlanLimits(plan: unknown): PlanLimits {
   return LIMITS[normalizePlan(plan)];
 }
 
-export function isPaidPlan(plan: string | null) {
+export function isPaidPlan(plan: unknown): boolean {
   return normalizePlan(plan) !== "free";
 }
 
@@ -100,8 +108,8 @@ export function requireFeature(
     ok: false,
     status: 403,
     body: {
-      error: "Upgrade required",
-      code: "PLAN_REQUIRED",
+      ok: false,
+      error: "PLAN_REQUIRED",
       feature,
       plan: p,
     },
