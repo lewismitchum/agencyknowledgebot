@@ -305,7 +305,7 @@ export async function POST(req: NextRequest) {
 
     const origin = req.nextUrl.origin;
 
-    // ✅ Permanent public invite landing page
+    // ✅ Standard invite landing page
     const acceptPath = "/join";
 
     const expiresAt = addDaysIso(7);
