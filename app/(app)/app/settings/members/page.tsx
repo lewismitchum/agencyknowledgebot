@@ -152,6 +152,24 @@ export default function MembersPage() {
     window.setTimeout(() => setToast(""), 3500);
   }
 
+  function seatLimitToast(j: any) {
+    const used = Number(j?.seats?.used ?? seats?.used ?? 0);
+    const reserved = Number(j?.seats?.reserved ?? seats?.reserved ?? 0);
+    const limit = j?.seats?.limit ?? seats?.limit ?? null;
+
+    if (limit == null) {
+      showToast("Seat limit reached. Upgrade in Billing.");
+      return;
+    }
+
+    if (typeof j?.mode === "string" && j.mode === "invite") {
+      showToast(`Seat limit reached (${used} used, ${reserved} reserved, limit ${limit}). Upgrade in Billing.`);
+      return;
+    }
+
+    showToast(`Seat limit reached (${used} / ${limit}). Upgrade in Billing.`);
+  }
+
   async function loadAll() {
     setBootError("");
     setLoading(true);
@@ -259,13 +277,24 @@ export default function MembersPage() {
       const j = await r.json().catch(() => null);
 
       if (!r.ok) {
-        if (j?.error === "SEAT_LIMIT_REACHED") {
+        const code = String(j?.code ?? j?.error ?? "");
+
+        // NEW standardized code from API
+        if (code === "USER_LIMIT_EXCEEDED") {
+          seatLimitToast(j);
+          await loadAll();
+          return;
+        }
+
+        // Back-compat (older API responses)
+        if (code === "SEAT_LIMIT_REACHED") {
           const used = Number(j?.seats?.used ?? seats?.used ?? 0);
           const limit = j?.seats?.limit ?? seats?.limit ?? null;
           showToast(limit == null ? "Seat limit reached." : `Seat limit reached (${used} / ${limit}). Upgrade in Billing.`);
           await loadAll();
           return;
         }
+
         alert(j?.error || `Update failed (${r.status})`);
         return;
       }
@@ -323,7 +352,17 @@ export default function MembersPage() {
       const j = await r.json().catch(() => null);
 
       if (!r.ok) {
-        if (j?.error === "SEAT_LIMIT_REACHED") {
+        const code = String(j?.code ?? j?.error ?? "");
+
+        // NEW standardized code from API
+        if (code === "USER_LIMIT_EXCEEDED") {
+          seatLimitToast(j);
+          await loadAll();
+          return;
+        }
+
+        // Back-compat (older API responses)
+        if (code === "SEAT_LIMIT_REACHED") {
           const used = Number(j?.seats?.used ?? seats?.used ?? 0);
           const reserved = Number(j?.seats?.reserved ?? seats?.reserved ?? 0);
           const limit = j?.seats?.limit ?? seats?.limit ?? null;
@@ -332,6 +371,7 @@ export default function MembersPage() {
           await loadAll();
           return;
         }
+
         alert(j?.error || `Invite failed (${r.status})`);
         return;
       }
@@ -396,7 +436,7 @@ export default function MembersPage() {
               <Link href="/app/settings">Back to settings</Link>
             </Button>
             <Button asChild variant="outline" className="rounded-full">
-              <Link href="/app/settings/billing">Billing</Link>
+              <Link href="/app/billing">Billing</Link>
             </Button>
           </div>
         </div>
@@ -429,7 +469,7 @@ export default function MembersPage() {
             <Link href="/app/settings">Back to settings</Link>
           </Button>
           <Button asChild variant="outline" className="rounded-full">
-            <Link href="/app/settings/billing">Billing</Link>
+            <Link href="/app/billing">Billing</Link>
           </Button>
         </div>
       </div>
@@ -438,6 +478,11 @@ export default function MembersPage() {
         <div className="rounded-2xl border bg-muted p-4 text-sm">
           <div className="font-medium">Heads up</div>
           <div className="mt-1 text-muted-foreground">{toast}</div>
+          <div className="mt-3 flex gap-2">
+            <Button asChild className="rounded-full">
+              <Link href="/app/billing">Upgrade in Billing</Link>
+            </Button>
+          </div>
         </div>
       ) : null}
 
@@ -476,7 +521,11 @@ export default function MembersPage() {
                 placeholder="Invite by email…"
                 className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
-              <Button className="rounded-full" disabled={!canCreateInvite || inviteBusy || !inviteEmail.trim()} onClick={sendInvite}>
+              <Button
+                className="rounded-full"
+                disabled={!canCreateInvite || inviteBusy || !inviteEmail.trim()}
+                onClick={sendInvite}
+              >
                 Send invite
               </Button>
             </div>
@@ -485,6 +534,11 @@ export default function MembersPage() {
           {!canCreateInvite ? (
             <div className="rounded-2xl border bg-background/40 p-3 text-xs text-muted-foreground">
               Invites disabled: seat limit reached. Revoke pending invites or upgrade in Billing.
+              <div className="mt-2">
+                <Button asChild size="sm" className="rounded-full">
+                  <Link href="/app/billing">Upgrade</Link>
+                </Button>
+              </div>
             </div>
           ) : null}
 
@@ -524,7 +578,10 @@ export default function MembersPage() {
                     const busy = savingId === inv.id;
 
                     return (
-                      <div key={inv.id} className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between">
+                      <div
+                        key={inv.id}
+                        className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between"
+                      >
                         <div className="space-y-1">
                           <div className="font-medium">{inv.email}</div>
                           <div className="text-xs text-muted-foreground">Expires: {formatWhen(inv.expires_at)}</div>
@@ -594,7 +651,10 @@ export default function MembersPage() {
                 const canStatusToggle = canEditTarget;
 
                 return (
-                  <div key={m.id} className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between">
+                  <div
+                    key={m.id}
+                    className="rounded-2xl border bg-background/40 p-4 md:flex md:items-center md:justify-between"
+                  >
                     <div className="space-y-1">
                       <div className="font-medium">{m.email}</div>
                       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -668,6 +728,11 @@ export default function MembersPage() {
                       {!canActivateAnotherMember && status !== "active" ? (
                         <div className="text-xs text-muted-foreground">
                           Activation disabled: seat limit reached. Revoke invites or upgrade.
+                          <span className="ml-2">
+                            <Link className="underline" href="/app/billing">
+                              Billing
+                            </Link>
+                          </span>
                         </div>
                       ) : null}
                     </div>

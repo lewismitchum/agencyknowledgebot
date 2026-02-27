@@ -139,6 +139,29 @@ function bad(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 400 });
 }
 
+function seatLimitResponse(args: {
+  maxUsers: number | null;
+  used: number;
+  reserved?: number;
+  mode: "invite" | "activate";
+}) {
+  // Standardized error response so UI can reliably detect "upgrade required"
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "USER_LIMIT_EXCEEDED",
+      code: "USER_LIMIT_EXCEEDED",
+      mode: args.mode,
+      seats: {
+        used: args.used,
+        reserved: typeof args.reserved === "number" ? args.reserved : undefined,
+        limit: args.maxUsers,
+      },
+    },
+    { status: 403 }
+  );
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = (await requireOwnerOrAdmin(req)) as Ctx;
@@ -275,18 +298,12 @@ export async function POST(req: NextRequest) {
 
     const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
     if (!seatState.canCreateAnotherPipelineSeat) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "SEAT_LIMIT_REACHED",
-          seats: {
-            used: seatState.activeBillableMembers,
-            reserved: seatState.reserved,
-            limit: maxUsers,
-          },
-        },
-        { status: 403 }
-      );
+      return seatLimitResponse({
+        maxUsers,
+        used: seatState.activeBillableMembers,
+        reserved: seatState.reserved,
+        mode: "invite",
+      });
     }
 
     const existingInvite = (await db.get(
@@ -375,6 +392,7 @@ export async function PATCH(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
     await ensureRoleStatusColumns(db);
+    await ensureInviteTables();
 
     const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
@@ -418,17 +436,11 @@ export async function PATCH(req: NextRequest) {
     if (enteringBillableActiveSeat) {
       const seatState = await getSeatState(db, ctx.agencyId, maxUsers);
       if (!seatState.canActivateAnotherMember) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "SEAT_LIMIT_REACHED",
-            seats: {
-              used: seatState.activeBillableMembers,
-              limit: maxUsers,
-            },
-          },
-          { status: 403 }
-        );
+        return seatLimitResponse({
+          maxUsers,
+          used: seatState.activeBillableMembers,
+          mode: "activate",
+        });
       }
     }
 
