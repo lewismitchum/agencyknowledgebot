@@ -148,14 +148,10 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
 
   const hasAgencyOnly = has(cols, "agency_id") && !has(cols, "user_id");
 
-  // If it's some other weird shape, still rebuild into canonical.
-  // We'll attempt to pull timezone/week_starts_on from whatever exists.
   const tzExpr = has(cols, "timezone") ? `timezone` : `NULL`;
 
-  // Legacy week_starts_on could be INTEGER 0/1; canonical is TEXT 'mon'/'sun'
   let weekExpr = `'mon'`;
   if (has(cols, "week_starts_on")) {
-    // If it's already text, this CASE still works (sun/mon pass through; 1 => sun; else mon)
     weekExpr = `CASE
       WHEN CAST(week_starts_on AS TEXT) = 'sun' THEN 'sun'
       WHEN CAST(week_starts_on AS TEXT) = 'mon' THEN 'mon'
@@ -181,7 +177,6 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
   `);
 
   if (hasAgencyOnly) {
-    // Copy the single agency-level row to every user in that agency.
     await db.exec(`
       INSERT OR REPLACE INTO schedule_prefs_new (
         agency_id, user_id,
@@ -205,8 +200,6 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
         ON sp.agency_id = u.agency_id;
     `);
   } else {
-    // Best-effort migration from whatever rows exist.
-    // If user_id exists but other cols missing, we still get rows in.
     const userIdExpr = has(cols, "user_id") ? `user_id` : `''`;
 
     await db.exec(`
@@ -442,7 +435,7 @@ export async function ensureSchema(dbArg?: Db) {
   if (_schemaEnsured) return;
 
   const db: Db = dbArg ?? ((await getDb()) as unknown as Db);
-await db.run("ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT").catch(() => {});
+
   await ensureCoreTables(db);
   await ensureUsageDaily(db);
   await ensureSchedulePrefs(db);
