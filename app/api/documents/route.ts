@@ -4,6 +4,8 @@ import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
+import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
+import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
 
 export const runtime = "nodejs";
 
@@ -125,30 +127,6 @@ function pickFilesFromFormData(formData: FormData): File[] {
   return out;
 }
 
-async function ensureUsageRow(db: Db, agencyId: string, dateKey: string) {
-  await db.run(
-    `INSERT OR IGNORE INTO usage_daily (agency_id, date, messages_count, uploads_count)
-     VALUES (?, ?, 0, 0)`,
-    agencyId,
-    dateKey
-  );
-}
-
-async function getUploadsUsedToday(db: Db, agencyId: string, dateKey: string): Promise<number> {
-  await ensureUsageRow(db, agencyId, dateKey);
-  const row = (await db.get(
-    `SELECT uploads_count
-     FROM usage_daily
-     WHERE agency_id = ? AND date = ?
-     LIMIT 1`,
-    agencyId,
-    dateKey
-  )) as { uploads_count?: number } | undefined;
-
-  const n = Number(row?.uploads_count ?? 0);
-  return Number.isFinite(n) ? n : 0;
-}
-
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -208,16 +186,14 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db);
-
-    const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, ctx.agencyId)) as
-      | { plan?: string | null }
-      | undefined;
-
-    const plan = normalizePlan(planRow?.plan ?? ctx.plan ?? null);
-    const limits = getPlanLimits(plan);
+    await ensureUsageDailySchema(db);
 
     const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
     const dateKey = ymdInTz(agencyTz);
+
+    // Source of truth plan from DB
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const limits = getPlanLimits(plan);
 
     const allowMultimedia = hasFeature(plan, "multimedia");
     const allowImages = allowMultimedia;
@@ -225,10 +201,7 @@ export async function POST(req: NextRequest) {
     const allowOtherBinary = allowMultimedia;
     const maxBytes = maxBytesForPlan(plan);
 
-    // Compatibility shim:
-    // Older UI still POSTs /api/documents with multipart form-data.
-    // We must NOT redirect (redirects can drop the body).
-    // Instead, forward the FormData server-side to POST /api/upload.
+    // Compatibility shim: accept multipart FormData and forward to /api/upload server-side.
     const formData = await req.formData();
 
     // --- HARD UPLOAD ENFORCEMENT (server-side, before forwarding) ---
@@ -238,24 +211,16 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: false, error: "NO_FILE" }, { status: 400 });
     }
 
-    // daily uploads gating (from plans.ts)
-    if (limits.daily_uploads != null) {
-      const used = await getUploadsUsedToday(db, ctx.agencyId, dateKey);
-      if (used + files.length > Number(limits.daily_uploads)) {
-        return Response.json(
-          {
-            ok: false,
-            error: "DAILY_UPLOAD_LIMIT_EXCEEDED",
-            used,
-            attempted: files.length,
-            daily_limit: Number(limits.daily_uploads),
-            plan,
-            timezone: agencyTz,
-            date: dateKey,
-          },
-          { status: 429 }
-        );
-      }
+    // Daily uploads gating (centralized)
+    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, plan, files.length);
+    if (!uploadsGate.ok) {
+      return Response.json(
+        {
+          ...uploadsGate.body,
+          timezone: agencyTz,
+        },
+        { status: uploadsGate.status }
+      );
     }
 
     // mime + size gating (match /api/upload)
@@ -353,6 +318,11 @@ export async function POST(req: NextRequest) {
 
     const contentType = upstream.headers.get("content-type") || "application/json";
     const text = await upstream.text();
+
+    // ✅ Count uploads only if upstream succeeded (so failed uploads don't burn quota)
+    if (upstream.status >= 200 && upstream.status < 300) {
+      await incrementUsage(db, ctx.agencyId, dateKey, "uploads", files.length);
+    }
 
     return new Response(text, {
       status: upstream.status,

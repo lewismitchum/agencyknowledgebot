@@ -5,6 +5,8 @@ import { openai } from "@/lib/openai";
 import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
+import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
+import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
 
 export const runtime = "nodejs";
 
@@ -74,67 +76,6 @@ function classifyMime(mime: string): "doc" | "image" | "video" | "other" {
   return "other";
 }
 
-async function getDailyUsage(db: Db, agencyId: string, date: string) {
-  const row = (await db.get(
-    `SELECT messages_count, uploads_count
-     FROM usage_daily
-     WHERE agency_id = ? AND date = ?
-     LIMIT 1`,
-    agencyId,
-    date
-  )) as { messages_count?: number; uploads_count?: number } | undefined;
-
-  return {
-    messages_count: Number(row?.messages_count ?? 0),
-    uploads_count: Number(row?.uploads_count ?? 0),
-  };
-}
-
-async function incrementUploads(db: Db, agencyId: string, date: string, by: number) {
-  await db.run(
-    `INSERT INTO usage_daily (agency_id, date, messages_count, uploads_count)
-     VALUES (?, ?, 0, ?)
-     ON CONFLICT(agency_id, date)
-     DO UPDATE SET uploads_count = uploads_count + ?`,
-    agencyId,
-    date,
-    by,
-    by
-  );
-}
-
-async function enforceUploadLimit(db: Db, agencyId: string, planFromCtx: string | null, count: number, dateKey: string) {
-  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { plan?: string | null }
-    | undefined;
-
-  const plan = normalizePlan(planRow?.plan ?? planFromCtx ?? null);
-  const limits = getPlanLimits(plan);
-  const dailyLimit = limits.daily_uploads;
-
-  if (dailyLimit == null) {
-    return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
-  }
-
-  const usage = await getDailyUsage(db, agencyId, dateKey);
-
-  if (usage.uploads_count + count > Number(dailyLimit)) {
-    return {
-      ok: false as const,
-      used: usage.uploads_count,
-      dailyLimit: Number(dailyLimit),
-      plan,
-    };
-  }
-
-  return {
-    ok: true as const,
-    used: usage.uploads_count,
-    dailyLimit: Number(dailyLimit),
-    plan,
-  };
-}
-
 async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
   const agencyBot = (await db.get(
     `SELECT id
@@ -197,15 +138,13 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureUsageDailySchema(db);
 
     const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
     const dateKey = ymdInTz(agencyTz);
 
-    const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, ctx.agencyId)) as
-      | { plan?: string | null }
-      | undefined;
-
-    const plan = normalizePlan(planRow?.plan ?? ctx.plan ?? null);
+    // Source-of-truth plan from DB
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const limits = getPlanLimits(plan);
 
     const allowMultimedia = hasFeature(plan, "multimedia");
@@ -233,6 +172,18 @@ export async function POST(req: NextRequest) {
           received_fields: Array.from(new Set(keys)).slice(0, 50),
         },
         { status: 400 }
+      );
+    }
+
+    // Daily upload limit (plan-based, agency-local day key)
+    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, plan, files.length);
+    if (!uploadsGate.ok) {
+      return Response.json(
+        {
+          ...uploadsGate.body,
+          timezone: agencyTz,
+        },
+        { status: uploadsGate.status }
       );
     }
 
@@ -299,7 +250,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // docs-only plans: we reject "other" binaries; doc + pdf ok
+      // docs-only plans: reject "other" binaries
       if ((plan === "free" || plan === "starter") && kind === "other") {
         return Response.json(
           {
@@ -312,22 +263,6 @@ export async function POST(req: NextRequest) {
           { status: 403 }
         );
       }
-    }
-
-    // Daily upload limit (from plans.ts) — agency-local day key
-    const uploadGate = await enforceUploadLimit(db, ctx.agencyId, ctx.plan, files.length, dateKey);
-    if (!uploadGate.ok) {
-      return Response.json(
-        {
-          error: "DAILY_UPLOAD_LIMIT_EXCEEDED",
-          used: uploadGate.used,
-          daily_limit: uploadGate.dailyLimit,
-          plan: uploadGate.plan,
-          timezone: agencyTz,
-          date: dateKey,
-        },
-        { status: 429 }
-      );
     }
 
     let bot_id = String(form.get("bot_id") ?? "").trim();
@@ -419,7 +354,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    await incrementUploads(db, ctx.agencyId, dateKey, files.length);
+    // ✅ Upload quota should be counted here (source of truth), not in /api/documents forwarding route
+    await incrementUsage(db, ctx.agencyId, dateKey, "uploads", files.length);
+
+    // read latest usage
+    const usageRow = await (await import("@/lib/usage")).getUsageRow(db, ctx.agencyId, dateKey);
 
     return Response.json({
       ok: true,
@@ -428,7 +367,7 @@ export async function POST(req: NextRequest) {
       date: dateKey,
       timezone: agencyTz,
       usage: {
-        uploads_used: (await getDailyUsage(db, ctx.agencyId, dateKey)).uploads_count,
+        uploads_used: usageRow.uploads_count,
         daily_uploads_limit: limits.daily_uploads,
         plan,
       },

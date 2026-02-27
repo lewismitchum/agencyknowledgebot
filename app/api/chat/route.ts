@@ -2,9 +2,11 @@
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
-import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { normalizePlan } from "@/lib/plans";
 import { openai } from "@/lib/openai";
 import { ensureSchema } from "@/lib/schema";
+import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
+import { enforceDailyMessages, getAgencyPlan } from "@/lib/enforcement";
 
 export const runtime = "nodejs";
 
@@ -42,24 +44,24 @@ function looksLikeTimeQuestion(s: string) {
   return t === "what time is it" || t.includes("current time") || t.includes("time is it");
 }
 
-function chicagoTimeString() {
+function timeStringInTz(tz: string) {
   const dt = new Date();
   const time = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
+    timeZone: tz,
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
   }).format(dt);
 
   const date = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
+    timeZone: tz,
     weekday: "long",
     month: "long",
     day: "numeric",
     year: "numeric",
   }).format(dt);
 
-  return `It’s ${time} in Chicago (${date}).`;
+  return `It’s ${time} (${date}).`;
 }
 
 async function getAgencyTimezone(db: Db, agencyId: string) {
@@ -88,66 +90,6 @@ function ymdInTz(tz: string) {
       day: "2-digit",
     }).format(new Date());
   }
-}
-
-async function getDailyUsage(db: Db, agencyId: string, date: string) {
-  const row = (await db.get(
-    `SELECT messages_count, uploads_count
-     FROM usage_daily
-     WHERE agency_id = ? AND date = ?
-     LIMIT 1`,
-    agencyId,
-    date
-  )) as { messages_count?: number; uploads_count?: number } | undefined;
-
-  return {
-    messages_count: Number(row?.messages_count ?? 0),
-    uploads_count: Number(row?.uploads_count ?? 0),
-  };
-}
-
-async function ensureUsageRow(db: Db, agencyId: string, date: string) {
-  await db.run(
-    `INSERT OR IGNORE INTO usage_daily (agency_id, date, messages_count, uploads_count)
-     VALUES (?, ?, 0, 0)`,
-    agencyId,
-    date
-  );
-}
-
-async function incrementMessages(db: Db, agencyId: string, date: string) {
-  await ensureUsageRow(db, agencyId, date);
-  await db.run(
-    `UPDATE usage_daily
-     SET messages_count = messages_count + 1
-     WHERE agency_id = ? AND date = ?`,
-    agencyId,
-    date
-  );
-}
-
-async function enforceDailyLimit(db: Db, agencyId: string, planFromCtx: string | null, dateKey: string) {
-  const planRow = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { plan?: string | null }
-    | undefined;
-
-  const rawPlan = planRow?.plan ?? planFromCtx ?? null;
-  const plan = normalizePlan(rawPlan);
-
-  const limits = getPlanLimits(plan);
-  const dailyLimit = limits.daily_messages;
-
-  if (dailyLimit == null || Number(dailyLimit) <= 0) {
-    return { ok: true as const, used: 0, dailyLimit: null as number | null, plan };
-  }
-
-  const usage = await getDailyUsage(db, agencyId, dateKey);
-
-  if (usage.messages_count >= Number(dailyLimit)) {
-    return { ok: false as const, used: usage.messages_count, dailyLimit: Number(dailyLimit), plan };
-  }
-
-  return { ok: true as const, used: usage.messages_count, dailyLimit: Number(dailyLimit), plan };
 }
 
 async function getOrCreateConversation(db: Db, args: { agencyId: string; userId: string; botId: string }) {
@@ -246,6 +188,7 @@ export async function POST(req: NextRequest) {
     const ctx = await requireActiveMember(req);
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureUsageDailySchema(db);
 
     const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
     const dateKey = ymdInTz(agencyTz);
@@ -257,20 +200,11 @@ export async function POST(req: NextRequest) {
     if (!bot_id) return Response.json({ error: "Missing bot_id" }, { status: 400 });
     if (!message) return Response.json({ error: "Missing message" }, { status: 400 });
 
-    const usageGate = await enforceDailyLimit(db, ctx.agencyId, ctx.plan, dateKey);
-    if (!usageGate.ok) {
-      return Response.json(
-        {
-          error: "DAILY_LIMIT_EXCEEDED",
-          used: usageGate.used,
-          daily_limit: usageGate.dailyLimit,
-          plan: usageGate.plan,
-          timezone: agencyTz,
-          date: dateKey,
-        },
-        { status: 429 }
-      );
-    }
+    // Always read plan from DB as source of truth
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+
+    const gate = await enforceDailyMessages(db, ctx.agencyId, dateKey, plan);
+    if (!gate.ok) return Response.json(gate.body, { status: gate.status });
 
     const bot = (await db.get(
       `SELECT id, vector_store_id
@@ -306,7 +240,7 @@ export async function POST(req: NextRequest) {
     let answer: string;
 
     if (looksLikeTimeQuestion(message)) {
-      answer = chicagoTimeString();
+      answer = timeStringInTz(agencyTz);
     } else {
       const resp = await openai.responses.create({
         model: "gpt-4.1-mini",
@@ -333,14 +267,14 @@ Never fabricate internal details.
 
     await insertMessage(db, convo.id, "assistant", answer);
 
-    // Count 1 user message per call (what billing cares about)
-    await incrementMessages(db, ctx.agencyId, dateKey);
+    // ✅ Count 1 user message per call (billing)
+    const usageRow = await incrementUsage(db, ctx.agencyId, dateKey, "messages", 1);
 
     // auto-summarize + compact memory (plan-aware)
-    const plan = normalizePlan(usageGate.plan);
+    const planKey = normalizePlan(plan);
     const newCount = Number(convo.message_count ?? 0) + 2;
 
-    if (await shouldSummarize(plan, newCount)) {
+    if (await shouldSummarize(planKey, newCount)) {
       const summary = await summarizeConversation(openaiInput + `\nASSISTANT: ${answer}`);
 
       await db.run(
@@ -367,9 +301,9 @@ Never fabricate internal details.
       ok: true,
       answer,
       usage: {
-        used: usageGate.used + 1,
-        daily_limit: usageGate.dailyLimit,
-        plan: usageGate.plan,
+        used: usageRow.messages_count,
+        daily_limit: Number((await import("@/lib/plans")).getPlanLimits(planKey).daily_messages),
+        plan: planKey,
         timezone: agencyTz,
         date: dateKey,
       },
