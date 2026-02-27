@@ -2,6 +2,7 @@
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
+import { normalizePlan, requireFeature } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
@@ -10,26 +11,22 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function getAgencyPlan(db: Db, agencyId: string) {
+async function getAgencyPlan(db: Db, agencyId: string, fallback: unknown) {
   const row = (await db.get(
     `SELECT plan
      FROM agencies
      WHERE id = ?
      LIMIT 1`,
     agencyId
-  )) as { plan?: string } | undefined;
+  )) as { plan?: string | null } | undefined;
 
-  const plan = String(row?.plan || "free").toLowerCase().trim();
-  return plan || "free";
+  return normalizePlan(row?.plan ?? (fallback as any) ?? null);
 }
 
-function assertScheduleEnabled(plan: string) {
-  // Paid-only: anything except "free"
-  if (plan === "free") {
-    const err: any = new Error("SCHEDULE_NOT_ENABLED");
-    err.code = "SCHEDULE_NOT_ENABLED";
-    throw err;
-  }
+function requireScheduleOr403(plan: unknown) {
+  const gate = requireFeature(plan, "schedule");
+  if (gate.ok) return null;
+  return Response.json(gate.body, { status: gate.status });
 }
 
 async function getAgencyTimezone(db: Db, agencyId: string) {
@@ -90,8 +87,9 @@ export async function GET(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId);
-    assertScheduleEnabled(plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const gated = requireScheduleOr403(plan);
+    if (gated) return gated;
 
     const timezone = await getAgencyTimezone(db, ctx.agencyId);
 
@@ -120,12 +118,9 @@ export async function GET(req: NextRequest) {
 
     return Response.json({ ok: true, bot_id, timezone, tasks: tasks ?? [] });
   } catch (err: any) {
-    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
-      return Response.json(
-        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
-        { status: 403 }
-      );
-    }
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
 
     console.error("SCHEDULE_TASKS_GET_ERROR", err);
     return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
@@ -138,8 +133,9 @@ export async function POST(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId);
-    assertScheduleEnabled(plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const gated = requireScheduleOr403(plan);
+    if (gated) return gated;
 
     const body = (await req.json().catch(() => null)) as any;
     const title = String(body?.title ?? "").trim();
@@ -170,12 +166,9 @@ export async function POST(req: NextRequest) {
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
-      return Response.json(
-        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
-        { status: 403 }
-      );
-    }
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
 
     console.error("SCHEDULE_TASKS_POST_ERROR", err);
     return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
@@ -188,8 +181,9 @@ export async function PATCH(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId);
-    assertScheduleEnabled(plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const gated = requireScheduleOr403(plan);
+    if (gated) return gated;
 
     const body = (await req.json().catch(() => null)) as any;
     const id = String(body?.id ?? "").trim();
@@ -224,12 +218,9 @@ export async function PATCH(req: NextRequest) {
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
-      return Response.json(
-        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
-        { status: 403 }
-      );
-    }
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
 
     console.error("SCHEDULE_TASKS_PATCH_ERROR", err);
     return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
@@ -242,8 +233,9 @@ export async function DELETE(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId);
-    assertScheduleEnabled(plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const gated = requireScheduleOr403(plan);
+    if (gated) return gated;
 
     const url = new URL(req.url);
     let id = String(url.searchParams.get("id") || "").trim();
@@ -277,12 +269,9 @@ export async function DELETE(req: NextRequest) {
 
     return Response.json({ ok: true });
   } catch (err: any) {
-    if (err?.code === "SCHEDULE_NOT_ENABLED" || String(err?.message || "") === "SCHEDULE_NOT_ENABLED") {
-      return Response.json(
-        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
-        { status: 403 }
-      );
-    }
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
 
     console.error("SCHEDULE_TASKS_DELETE_ERROR", err);
     return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });

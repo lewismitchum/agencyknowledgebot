@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { openai } from "@/lib/openai";
 import { requireActiveMember } from "@/lib/authz";
-import { requireFeature } from "@/lib/plans";
+import { normalizePlan, requireFeature } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
@@ -29,6 +29,14 @@ function makeId(prefix: string) {
   return `${prefix}_${uuid}`;
 }
 
+async function getAgencyPlan(db: Db, agencyId: string, fallback: unknown) {
+  const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { plan?: string | null }
+    | undefined;
+
+  return normalizePlan(row?.plan ?? (fallback as any) ?? null);
+}
+
 function requireExtractionOr403(plan: unknown) {
   const gate = requireFeature(plan, "extraction");
   if (gate.ok) return null;
@@ -39,11 +47,13 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
-    const gated = requireExtractionOr403(ctx.plan);
-    if (gated) return gated;
-
     const db: Db = await getDb();
     await ensureSchema(db);
+
+    // Gate using DB plan (authoritative), fallback to ctx.plan
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const gated = requireExtractionOr403(plan);
+    if (gated) return gated;
 
     const body = (await req.json().catch(() => null)) as ExtractBody | null;
     const botIdFromBody = String(body?.bot_id ?? "").trim();
@@ -104,7 +114,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!bot.vector_store_id) {
-      return Response.json({ error: "Bot has no vector_store_id (billing or quota issue)" }, { status: 400 });
+      return Response.json({ error: "BOT_VECTOR_STORE_MISSING" }, { status: 409 });
     }
 
     const instructions = `
@@ -135,9 +145,6 @@ Rules:
 
     let resp: any;
     try {
-      // IMPORTANT: scope file_search to THIS document by referencing it explicitly in the query.
-      // We can’t hard-filter a single file in vector store via file_search, so we do the next best:
-      // request excerpts only about the doc title + include the exact file id in the prompt.
       resp = await openai.responses.create({
         model: "gpt-4.1-mini",
         instructions,
@@ -250,9 +257,9 @@ Rules:
       tasks_created,
     });
   } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Pending approval" }, { status: 403 });
 
     console.error("EXTRACT_ROUTE_ERROR", err);
     return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
