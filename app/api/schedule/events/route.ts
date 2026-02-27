@@ -47,9 +47,21 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
     args.bot_id
   )) as { id: string; agency_id: string; owner_user_id: string | null } | undefined;
 
-  if (!bot?.id) throw new Error("BOT_NOT_FOUND");
-  if (bot.agency_id !== args.agency_id) throw new Error("FORBIDDEN_BOT");
-  if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
+  if (!bot?.id) {
+    const e: any = new Error("BOT_NOT_FOUND");
+    e.code = "BOT_NOT_FOUND";
+    throw e;
+  }
+  if (bot.agency_id !== args.agency_id) {
+    const e: any = new Error("FORBIDDEN_BOT");
+    e.code = "FORBIDDEN_BOT";
+    throw e;
+  }
+  if (bot.owner_user_id && bot.owner_user_id !== args.user_id) {
+    const e: any = new Error("FORBIDDEN_BOT");
+    e.code = "FORBIDDEN_BOT";
+    throw e;
+  }
 }
 
 export async function OPTIONS() {
@@ -59,11 +71,11 @@ export async function OPTIONS() {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    // Gate using DB plan (authoritative), fallback to ctx.plan
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan);
     const gated = requireScheduleOr403(plan);
     if (gated) return gated;
 
@@ -89,28 +101,38 @@ export async function GET(req: NextRequest) {
     const msg = String(err?.code ?? err?.message ?? err);
 
     if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE")
+      return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+
+    // Pass through schedule gate errors cleanly
+    if (msg === "SCHEDULE_NOT_ENABLED") {
+      return Response.json(
+        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
+        { status: 403 }
+      );
+    }
 
     console.error("SCHEDULE_EVENTS_GET_ERROR", err);
-    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR", message: msg }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan);
     const gated = requireScheduleOr403(plan);
     if (gated) return gated;
 
     const body = (await req.json().catch(() => null)) as any;
+
     const title = String(body?.title ?? "").trim();
     const bot_id = String(body?.bot_id ?? "").trim();
     const start_at = String(body?.start_at ?? "").trim();
+
     const end_at = body?.end_at ?? null;
     const location = body?.location ?? null;
     const notes = body?.notes ?? null;
@@ -139,21 +161,28 @@ export async function POST(req: NextRequest) {
     const msg = String(err?.code ?? err?.message ?? err);
 
     if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE")
+      return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+
+    if (msg === "SCHEDULE_NOT_ENABLED") {
+      return Response.json(
+        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
+        { status: 403 }
+      );
+    }
 
     console.error("SCHEDULE_EVENTS_POST_ERROR", err);
-    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR", message: msg }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
-
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan);
     const gated = requireScheduleOr403(plan);
     if (gated) return gated;
 
@@ -192,9 +221,17 @@ export async function DELETE(req: NextRequest) {
     const msg = String(err?.code ?? err?.message ?? err);
 
     if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE")
+      return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+
+    if (msg === "SCHEDULE_NOT_ENABLED") {
+      return Response.json(
+        { ok: false, error: "SCHEDULE_NOT_ENABLED", message: "Schedule is a paid feature. Upgrade to enable it." },
+        { status: 403 }
+      );
+    }
 
     console.error("SCHEDULE_EVENTS_DELETE_ERROR", err);
-    return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
+    return Response.json({ ok: false, error: "SERVER_ERROR", message: msg }, { status: 500 });
   }
 }
