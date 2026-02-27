@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { UpgradeGate } from "@/components/upgrade-gate";
+import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 
 type DocRow = {
   id: string;
@@ -25,6 +27,10 @@ type MePayload = {
   uploads_remaining?: number | null;
   user?: { email?: string | null };
 };
+
+function isFetchJsonError(e: any): e is FetchJsonError {
+  return !!e && typeof e === "object" && ("status" in e || "code" in e);
+}
 
 function formatBytes(bytes: number | null | undefined) {
   if (bytes == null || Number.isNaN(bytes)) return "—";
@@ -68,6 +74,7 @@ export default function DocsPage() {
   // Extraction state
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [extractMsg, setExtractMsg] = useState<string>("");
+  const [extractGated, setExtractGated] = useState(false);
 
   // Plan / uploads
   const [plan, setPlan] = useState<string | null>(null);
@@ -96,38 +103,42 @@ export default function DocsPage() {
 
   const uploadsBlocked = uploadsRemaining !== null && uploadsRemaining <= 0;
 
+  function handleCommonErrors(e: any) {
+    if (!isFetchJsonError(e)) return false;
+
+    if (e.status === 401) {
+      window.location.href = "/login";
+      return true;
+    }
+
+    return false;
+  }
+
   async function refreshMe() {
     try {
-      const r = await fetch("/api/me", { credentials: "include", cache: "no-store" });
-      if (r.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-      if (!r.ok) return;
+      const j = await fetchJson<MePayload>("/api/me", {
+        credentials: "include",
+        cache: "no-store",
+      });
 
-      const j = (await r.json().catch(() => null)) as MePayload | null;
       setPlan(j?.plan ?? null);
       setUploadsUsed(Number(j?.uploads_used ?? 0));
       setUploadsLimit(j?.uploads_limit == null ? null : Number(j.uploads_limit));
       setUploadsRemaining(j?.uploads_remaining == null ? null : Number(j.uploads_remaining));
-    } catch {}
+    } catch (e: any) {
+      if (handleCommonErrors(e)) return;
+      // ignore
+    }
   }
 
   async function loadBots() {
     try {
-      const r = await fetch("/api/bots", { credentials: "include", cache: "no-store" });
-      const text = await r.text();
-      let j: any = null;
-      try {
-        j = text ? JSON.parse(text) : null;
-      } catch {}
+      const j = await fetchJson<{ bots?: any[] }>("/api/bots", {
+        credentials: "include",
+        cache: "no-store",
+      });
 
-      if (!r.ok) {
-        setBots([]);
-        return;
-      }
-
-      const nextBots: BotRow[] = Array.isArray(j?.bots) ? j.bots : [];
+      const nextBots: BotRow[] = Array.isArray(j?.bots) ? (j.bots as any) : [];
       setBots(nextBots);
 
       const fromStorage =
@@ -141,7 +152,8 @@ export default function DocsPage() {
       const chosen = def ?? initial;
 
       setSelectedBotId((prev) => prev || chosen);
-    } catch {
+    } catch (e: any) {
+      if (handleCommonErrors(e)) return;
       setBots([]);
     }
   }
@@ -155,25 +167,14 @@ export default function DocsPage() {
 
     setLoading(true);
     setError(null);
+
     try {
       const qs = `?bot_id=${encodeURIComponent(botId)}`;
-      const res = await fetch(`/api/documents${qs}`, {
+      const json = await fetchJson<any>(`/api/documents${qs}`, {
         method: "GET",
         credentials: "include",
         cache: "no-store",
       });
-
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-
-      if (!res.ok) {
-        setError(json?.error ?? json?.message ?? text ?? `Failed to load documents (${res.status})`);
-        setDocs([]);
-        return;
-      }
 
       const rows = Array.isArray(json?.documents)
         ? json.documents
@@ -192,6 +193,7 @@ export default function DocsPage() {
 
       setDocs(mapped.filter((d) => d.id));
     } catch (e: any) {
+      if (handleCommonErrors(e)) return;
       setError(e?.message ?? "Failed to load documents");
       setDocs([]);
     } finally {
@@ -206,9 +208,11 @@ export default function DocsPage() {
 
   useEffect(() => {
     if (!selectedBotId) return;
+
     try {
       window.localStorage.setItem(BOT_STORAGE_KEY, selectedBotId);
     } catch {}
+
     loadDocs(selectedBotId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBotId]);
@@ -223,24 +227,14 @@ export default function DocsPage() {
     setError(null);
 
     try {
-      const res = await fetch(`/api/documents/${encodeURIComponent(doc.id)}`, {
+      await fetchJson(`/api/documents/${encodeURIComponent(doc.id)}`, {
         method: "DELETE",
         credentials: "include",
       });
 
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-
-      if (!res.ok) {
-        setError(json?.error ?? text ?? `Delete failed (${res.status})`);
-        return;
-      }
-
       await loadDocs(selectedBotId);
     } catch (e: any) {
+      if (handleCommonErrors(e)) return;
       setError(e?.message ?? "Delete failed");
     } finally {
       setDeletingId(null);
@@ -256,28 +250,18 @@ export default function DocsPage() {
     setError(null);
 
     try {
-      const res = await fetch("/api/fix-vector-store", {
+      await fetchJson("/api/fix-vector-store", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ bot_id: selectedBotId }),
       });
 
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-
-      if (!res.ok) {
-        setError(json?.error ?? text ?? `Repair failed (${res.status})`);
-        return;
-      }
-
       await loadBots(); // refresh vector_store_id
       await loadDocs(selectedBotId);
       setUploadMsg("Vector store repaired. You can upload now.");
     } catch (e: any) {
+      if (handleCommonErrors(e)) return;
       setError(e?.message ?? "Repair failed");
     } finally {
       setRepairing(false);
@@ -285,6 +269,7 @@ export default function DocsPage() {
   }
 
   async function onExtract(doc: DocRow) {
+    setExtractGated(false);
     setExtractMsg("");
     setUploadMsg("");
     setError(null);
@@ -297,7 +282,7 @@ export default function DocsPage() {
     setExtractingId(doc.id);
 
     try {
-      const res = await fetch("/api/extract", {
+      const json = await fetchJson<any>("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -306,27 +291,6 @@ export default function DocsPage() {
           document_id: doc.id,
         }),
       });
-
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-
-      if (!res.ok) {
-        // Plan gating / auth
-        if (res.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        if (res.status === 403) {
-          setExtractMsg("Extraction is a paid feature. Upgrade to unlock schedule/to-do extraction.");
-          return;
-        }
-        const msg = json?.error ?? json?.message ?? text ?? `Extraction failed (${res.status})`;
-        setExtractMsg(msg);
-        return;
-      }
 
       const events = Array.isArray(json?.events) ? json.events.length : Number(json?.events_count ?? 0);
       const tasks = Array.isArray(json?.tasks) ? json.tasks.length : Number(json?.tasks_count ?? 0);
@@ -337,6 +301,16 @@ export default function DocsPage() {
           : "Extraction complete."
       );
     } catch (e: any) {
+      if (isFetchJsonError(e)) {
+        if (e.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (e.status === 403) {
+          setExtractGated(true);
+          return;
+        }
+      }
       setExtractMsg(e?.message ?? "Extraction failed");
     } finally {
       setExtractingId(null);
@@ -386,47 +360,53 @@ export default function DocsPage() {
       fd.append("file", file);
       fd.append("bot_id", selectedBotId);
 
-      const res = await fetch("/api/documents", {
+      await fetchJson<any>("/api/documents", {
         method: "POST",
         credentials: "include",
         body: fd,
       });
-
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-
-      if (!res.ok) {
-        if (res.status === 403 && json?.error === "DAILY_UPLOAD_LIMIT_EXCEEDED") {
-          await refreshMe();
-          setUploadMsg(
-            `Daily upload limit reached (${json?.used ?? "?"}/${json?.daily_limit ?? "?"}).`
-          );
-          return;
-        }
-
-        if (res.status === 409) {
-          setUploadMsg("This bot has no vector store yet. Click Repair Vector Store above.");
-          return;
-        }
-
-        if (res.status === 402) {
-          setUploadMsg("OpenAI quota/billing issue. Uploads are temporarily unavailable.");
-          return;
-        }
-
-        const msg = json?.error ?? json?.message ?? text ?? `Upload failed (${res.status})`;
-        setUploadMsg(msg);
-        return;
-      }
 
       if (fileRef.current) fileRef.current.value = "";
       setUploadMsg("Uploaded and indexed.");
       await loadDocs(selectedBotId);
       await refreshMe();
     } catch (e: any) {
+      if (isFetchJsonError(e)) {
+        // Upload limit
+        if (e.status === 403) {
+          const code = String(e.code || "").toUpperCase();
+          const bodyErr = String((e.body && (e.body.error || e.body.code)) || "").toUpperCase();
+
+          if (code === "DAILY_UPLOAD_LIMIT_EXCEEDED" || bodyErr === "DAILY_UPLOAD_LIMIT_EXCEEDED") {
+            await refreshMe();
+            const used = e.body?.used ?? "?";
+            const daily = e.body?.daily_limit ?? "?";
+            setUploadMsg(`Daily upload limit reached (${used}/${daily}).`);
+            setUploading(false);
+            return;
+          }
+        }
+
+        // vector_store missing on server
+        if (e.status === 409) {
+          setUploadMsg("This bot has no vector store yet. Click Repair Vector Store above.");
+          setUploading(false);
+          return;
+        }
+
+        // OpenAI billing/quota
+        if (e.status === 402) {
+          setUploadMsg("OpenAI quota/billing issue. Uploads are temporarily unavailable.");
+          setUploading(false);
+          return;
+        }
+
+        if (e.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+      }
+
       setUploadMsg(e?.message ?? "Upload failed");
     } finally {
       setUploading(false);
@@ -437,6 +417,17 @@ export default function DocsPage() {
     uploadsLimit == null
       ? `Uploads: ${uploadsUsed} used (unlimited)`
       : `Uploads: ${uploadsUsed}/${uploadsLimit} used • ${uploadsRemaining ?? 0} left today`;
+
+  if (extractGated) {
+    return (
+      <UpgradeGate
+        title="Extraction is a paid feature"
+        message="Upgrade your plan to unlock schedule/to-do extraction from documents."
+        ctaHref="/app/settings/billing"
+        ctaLabel="Upgrade Plan"
+      />
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6">

@@ -2,6 +2,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { UpgradeGate } from "@/components/upgrade-gate";
+import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 
 type BotLite = { id: string; name: string };
 
@@ -174,10 +176,8 @@ function formatDateTime(iso: string, tz: string) {
   }
 }
 
-function isScheduleGatedResponse(r: Response, j: any) {
-  if (r.status === 403) return true;
-  const code = String(j?.error || j?.code || "").toUpperCase();
-  return code === "SCHEDULE_NOT_ENABLED";
+function isFetchJsonError(e: any): e is FetchJsonError {
+  return !!e && typeof e === "object" && ("status" in e || "code" in e);
 }
 
 export default function SchedulePage() {
@@ -207,82 +207,99 @@ export default function SchedulePage() {
     return m;
   }, [bots]);
 
+  function handleCommonErrors(e: any) {
+    if (isFetchJsonError(e)) {
+      if (e.status === 401) {
+        window.location.href = "/login";
+        return true;
+      }
+      if (e.status === 403) {
+        setGated(true);
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function loadBots() {
-    const r = await fetch("/api/bots", { cache: "no-store", credentials: "include" });
-    const j = await r.json().catch(() => ({}));
-    const list = Array.isArray(j?.bots) ? j.bots : [];
-    const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
-    setBots(lite);
-    if (!botId && lite.length) setBotId(lite[0].id);
+    try {
+      const j = await fetchJson<{ bots?: any[] }>("/api/bots", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      const list = Array.isArray(j?.bots) ? j.bots : [];
+      const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
+      setBots(lite);
+      if (!botId && lite.length) setBotId(lite[0].id);
+    } catch (e: any) {
+      if (handleCommonErrors(e)) return;
+      console.error(e);
+    }
   }
 
   async function loadAgencyTimezone() {
-    const r = await fetch("/api/schedule/timezone", { cache: "no-store", credentials: "include" });
-    const j = await r.json().catch(() => ({}));
+    try {
+      const j = await fetchJson<{ ok?: boolean; timezone?: string; today?: string }>("/api/schedule/timezone", {
+        cache: "no-store",
+        credentials: "include",
+      });
 
-    if (isScheduleGatedResponse(r, j)) {
-      setGated(true);
-      return;
-    }
-
-    if (r.ok && j?.ok) {
-      const t = String(j?.timezone || "").trim();
-      const today = String(j?.today || "").trim();
-      if (t) setAgencyTimezone(t);
-      if (today) setAnchorDayKey(today);
+      if (j?.ok) {
+        const t = String(j?.timezone || "").trim();
+        const today = String(j?.today || "").trim();
+        if (t) setAgencyTimezone(t);
+        if (today) setAnchorDayKey(today);
+      }
+    } catch (e: any) {
+      if (handleCommonErrors(e)) return;
+      console.error(e);
     }
   }
 
   async function loadPrefs() {
-    const r = await fetch("/api/schedule/prefs", { cache: "no-store", credentials: "include" });
-    const j = await r.json().catch(() => ({}));
+    try {
+      const j = await fetchJson<{ ok?: boolean; prefs?: Partial<Prefs> }>("/api/schedule/prefs", {
+        cache: "no-store",
+        credentials: "include",
+      });
 
-    if (isScheduleGatedResponse(r, j)) {
-      setGated(true);
-      return;
-    }
-
-    if (r.ok && j?.ok) {
-      const p = j.prefs ? { ...DEFAULT_PREFS, ...j.prefs } : DEFAULT_PREFS;
-      setPrefs(p);
-      setView(p.default_view);
+      if (j?.ok) {
+        const p = j.prefs ? { ...DEFAULT_PREFS, ...j.prefs } : DEFAULT_PREFS;
+        setPrefs(p);
+        setView(p.default_view);
+      }
+    } catch (e: any) {
+      if (handleCommonErrors(e)) return;
+      console.error(e);
     }
   }
 
   async function savePrefs(next: Prefs) {
     setPrefs(next);
-    const r = await fetch("/api/schedule/prefs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(next),
-      credentials: "include",
-    }).catch(() => null);
-
-    if (r && r.status === 403) setGated(true);
+    try {
+      await fetchJson<{ ok?: boolean }>("/api/schedule/prefs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(next),
+        credentials: "include",
+      });
+    } catch (e: any) {
+      if (handleCommonErrors(e)) return;
+      console.error(e);
+    }
   }
 
   async function loadDataForOne(activeBotId: string) {
-    const [re, rt] = await Promise.all([
-      fetch(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, {
+    const [je, jt] = await Promise.all([
+      fetchJson<{ events?: any[] }>(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, {
         cache: "no-store",
         credentials: "include",
       }),
-      fetch(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, {
+      fetchJson<{ tasks?: any[] }>(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, {
         cache: "no-store",
         credentials: "include",
       }),
     ]);
-
-    const je = await re.json().catch(() => ({}));
-    const jt = await rt.json().catch(() => ({}));
-
-    if (isScheduleGatedResponse(re, je) || isScheduleGatedResponse(rt, jt)) {
-      setGated(true);
-      throw new Error("Schedule is a paid feature. Upgrade to enable it.");
-    }
-
-    if (!re.ok) throw new Error(je?.error || je?.message || `Failed to load events (${activeBotId})`);
-    if (!rt.ok) throw new Error(jt?.error || jt?.message || `Failed to load tasks (${activeBotId})`);
 
     const ev = Array.isArray(je?.events) ? (je.events as EventRow[]) : [];
     const tk = Array.isArray(jt?.tasks) ? (jt.tasks as TaskRow[]) : [];
@@ -314,6 +331,7 @@ export default function SchedulePage() {
     setLoading(true);
     setErr("");
     setGated(false);
+
     try {
       if (activeBotId === ALL_BOTS_ID) {
         const { ev, tk } = await loadDataAllBots();
@@ -325,6 +343,10 @@ export default function SchedulePage() {
         setTasks(tk);
       }
     } catch (e: any) {
+      if (handleCommonErrors(e)) {
+        setLoading(false);
+        return;
+      }
       setErr(e?.message || "Failed to load schedule");
     } finally {
       setLoading(false);
@@ -435,20 +457,19 @@ export default function SchedulePage() {
     setErr("");
     const nextStatus = status === "open" ? "done" : "open";
     setTasks((prev: any[]) => prev.map((t) => (t.id === id ? { ...t, status: nextStatus } : t)));
+
     try {
-      const r = await fetch("/api/schedule/tasks", {
+      await fetchJson<{ ok?: boolean }>("/api/schedule/tasks", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id, status: nextStatus }),
         credentials: "include",
       });
-      const j = await r.json().catch(() => ({}));
-      if (isScheduleGatedResponse(r, j)) {
-        setGated(true);
-        throw new Error("Schedule is a paid feature. Upgrade to enable it.");
-      }
-      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to update");
     } catch (e: any) {
+      if (handleCommonErrors(e)) {
+        setTasks((prev: any[]) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
+        return;
+      }
       setTasks((prev: any[]) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
       setErr(e?.message || "Failed to update task");
     }
@@ -463,19 +484,17 @@ export default function SchedulePage() {
     setTasks((cur: any[]) => cur.filter((t) => t.id !== id));
 
     try {
-      const r = await fetch("/api/schedule/tasks", {
+      await fetchJson<{ ok?: boolean }>("/api/schedule/tasks", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id }),
         credentials: "include",
       });
-      const j = await r.json().catch(() => ({}));
-      if (isScheduleGatedResponse(r, j)) {
-        setGated(true);
-        throw new Error("Schedule is a paid feature. Upgrade to enable it.");
-      }
-      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to delete task");
     } catch (e: any) {
+      if (handleCommonErrors(e)) {
+        setTasks(prev);
+        return;
+      }
       setTasks(prev);
       setErr(e?.message || "Failed to delete task");
     }
@@ -490,19 +509,17 @@ export default function SchedulePage() {
     setEvents((cur: any[]) => cur.filter((e) => e.id !== id));
 
     try {
-      const r = await fetch("/api/schedule/events", {
+      await fetchJson<{ ok?: boolean }>("/api/schedule/events", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id }),
         credentials: "include",
       });
-      const j = await r.json().catch(() => ({}));
-      if (isScheduleGatedResponse(r, j)) {
-        setGated(true);
-        throw new Error("Schedule is a paid feature. Upgrade to enable it.");
-      }
-      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.message || "Failed to delete event");
     } catch (e: any) {
+      if (handleCommonErrors(e)) {
+        setEvents(prev);
+        return;
+      }
       setEvents(prev);
       setErr(e?.message || "Failed to delete event");
     }
@@ -536,11 +553,22 @@ export default function SchedulePage() {
   const headerLabel = useMemo(() => {
     if (view === "day") return dayKey;
     if (view === "week") return `${weekDays[0]} → ${weekDays[6]}`;
-    return formatReadableDateKey(startOfMonthByTz(dayKey), tz).replace(/,\s*\d{4}$/, (m) => m); // keep stable label
+    return formatReadableDateKey(startOfMonthByTz(dayKey), tz).replace(/,\s*\d{4}$/, (m) => m);
   }, [view, dayKey, weekDays, tz]);
 
   const prevDelta = view === "day" ? -1 : view === "week" ? -7 : -28;
   const nextDelta = view === "day" ? 1 : view === "week" ? 7 : 28;
+
+  if (gated) {
+    return (
+      <UpgradeGate
+        title="Schedule is a paid feature"
+        message="Upgrade your plan to unlock tasks, events, and schedule views."
+        ctaHref="/billing"
+        ctaLabel="Upgrade Plan"
+      />
+    );
+  }
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -555,7 +583,6 @@ export default function SchedulePage() {
             value={botId}
             onChange={(e) => setBotId(e.target.value)}
             className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-64"
-            disabled={gated}
           >
             <option value={ALL_BOTS_ID}>All bots</option>
             {bots.map((b) => (
@@ -578,7 +605,6 @@ export default function SchedulePage() {
                   view === v ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 ].join(" ")}
                 type="button"
-                disabled={gated}
               >
                 {v.toUpperCase()}
               </button>
@@ -587,16 +613,7 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {gated ? (
-        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-          <div className="font-medium">Schedule is a paid feature.</div>
-          <div className="mt-1 text-xs text-amber-700">Upgrade your plan to enable tasks + events.</div>
-        </div>
-      ) : null}
-
-      {err && !gated ? (
-        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div>
-      ) : null}
+      {err ? <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div> : null}
 
       <div className="mt-6 grid gap-4 md:grid-cols-3">
         <div className="rounded-3xl border bg-card p-5 shadow-sm md:col-span-2">
@@ -606,7 +623,6 @@ export default function SchedulePage() {
                 className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
                 onClick={() => (view === "month" ? moveAnchorMonth(-1) : moveAnchor(prevDelta))}
                 type="button"
-                disabled={gated}
               >
                 ←
               </button>
@@ -614,7 +630,6 @@ export default function SchedulePage() {
                 className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
                 onClick={() => setAnchorDayKey(dayKeyInTz(new Date(), tz))}
                 type="button"
-                disabled={gated}
               >
                 Today
               </button>
@@ -622,7 +637,6 @@ export default function SchedulePage() {
                 className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
                 onClick={() => (view === "month" ? moveAnchorMonth(1) : moveAnchor(nextDelta))}
                 type="button"
-                disabled={gated}
               >
                 →
               </button>
@@ -634,15 +648,14 @@ export default function SchedulePage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search events and tasks…"
               className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-72"
-              disabled={gated}
             />
           </div>
 
           <div className="mt-4 rounded-2xl border bg-background/40 p-3">
             <div className="flex flex-wrap items-center gap-3 text-sm">
-              <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} disabled={gated} />
-              <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} disabled={gated} />
-              <Toggle label="Show done" checked={prefs.show_done_tasks} onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })} disabled={gated} />
+              <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
+              <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
+              <Toggle label="Show done" checked={prefs.show_done_tasks} onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })} />
 
               <div className="ml-auto flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Week starts</span>
@@ -650,7 +663,6 @@ export default function SchedulePage() {
                   value={prefs.week_starts_on}
                   onChange={(e) => savePrefs({ ...prefs, week_starts_on: e.target.value as any })}
                   className="rounded-xl border bg-background px-2 py-1.5 text-xs outline-none disabled:opacity-60"
-                  disabled={gated}
                 >
                   <option value="mon">Mon</option>
                   <option value="sun">Sun</option>
@@ -660,7 +672,6 @@ export default function SchedulePage() {
                   onClick={() => botId && loadData(botId)}
                   className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
                   type="button"
-                  disabled={gated}
                 >
                   Refresh
                 </button>
@@ -671,8 +682,6 @@ export default function SchedulePage() {
           <div className="mt-6">
             {loading ? (
               <div className="text-sm text-muted-foreground">Loading…</div>
-            ) : gated ? (
-              <div className="rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">Upgrade to unlock Schedule.</div>
             ) : view === "day" ? (
               <DayView
                 dayKey={dayKey}
@@ -727,15 +736,12 @@ export default function SchedulePage() {
                 className="shrink-0 rounded-xl border px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60"
                 type="button"
                 title="Open day view"
-                disabled={gated}
               >
                 Open day
               </button>
             </div>
 
-            {gated ? (
-              <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">Upgrade to unlock tasks.</div>
-            ) : !prefs.show_tasks ? (
+            {!prefs.show_tasks ? (
               <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">Tasks are hidden.</div>
             ) : (
               <>
@@ -837,7 +843,7 @@ export default function SchedulePage() {
             <div className="text-sm font-medium">Quick add</div>
             <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
 
-            <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} gated={gated} />
+            <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
           </div>
         </div>
       </div>
@@ -849,22 +855,19 @@ function Toggle({
   label,
   checked,
   onChange,
-  disabled,
 }: {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
-  disabled?: boolean;
 }) {
   return (
     <button
       onClick={() => onChange(!checked)}
       className={[
-        "rounded-xl border px-3 py-2 text-sm transition-colors disabled:opacity-60",
+        "rounded-xl border px-3 py-2 text-sm transition-colors",
         checked ? "bg-accent text-foreground" : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
       ].join(" ")}
       type="button"
-      disabled={disabled}
     >
       {label}
     </button>
@@ -1109,11 +1112,7 @@ function MonthView({
   const labels = weekdayLabels(weekStartsOn);
   const weeks = Math.ceil(monthDays.length / 7);
 
-  const todayKey = useMemo(() => {
-    // month view is informational; "today" highlight should still be in browser local? no: show in anchor timezone.
-    // Use noon UTC and local formatter is elsewhere; simplest: use system date in YYYY-MM-DD and let selection drive.
-    return new Date().toISOString().slice(0, 10);
-  }, []);
+  const todayKey = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   return (
     <div className="space-y-3">
@@ -1213,14 +1212,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function QuickAdd({ botId, onAdded, gated }: { botId: string; onAdded: () => void; gated: boolean }) {
+function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
   const [title, setTitle] = useState("");
   const [when, setWhen] = useState("");
   const [mode, setMode] = useState<"event" | "task">("event");
   const [loading, setLoading] = useState(false);
 
   async function submit() {
-    if (gated) return;
     if (!botId || botId === ALL_BOTS_ID) return;
     if (!title.trim()) return;
     if (mode === "event" && !when.trim()) return;
@@ -1228,14 +1226,14 @@ function QuickAdd({ botId, onAdded, gated }: { botId: string; onAdded: () => voi
     setLoading(true);
     try {
       if (mode === "event") {
-        await fetch("/api/schedule/events", {
+        await fetchJson("/api/schedule/events", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ bot_id: botId, title: title.trim(), start_at: when.trim() }),
           credentials: "include",
         });
       } else {
-        await fetch("/api/schedule/tasks", {
+        await fetchJson("/api/schedule/tasks", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ bot_id: botId, title: title.trim(), due_at: when.trim() ? when.trim() : null }),
@@ -1246,6 +1244,16 @@ function QuickAdd({ botId, onAdded, gated }: { botId: string; onAdded: () => voi
       setTitle("");
       setWhen("");
       onAdded();
+    } catch (e: any) {
+      if (isFetchJsonError(e) && e.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      if (isFetchJsonError(e) && e.status === 403) {
+        window.location.href = "/billing";
+        return;
+      }
+      console.error(e);
     } finally {
       setLoading(false);
     }
@@ -1263,7 +1271,7 @@ function QuickAdd({ botId, onAdded, gated }: { botId: string; onAdded: () => voi
               mode === m ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
             type="button"
-            disabled={gated}
+            disabled={loading}
           >
             {m === "event" ? "Event" : "Task"}
           </button>
@@ -1275,7 +1283,7 @@ function QuickAdd({ botId, onAdded, gated }: { botId: string; onAdded: () => voi
         onChange={(e) => setTitle(e.target.value)}
         placeholder={mode === "event" ? "Event title" : "Task title"}
         className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
-        disabled={gated}
+        disabled={loading}
       />
 
       <input
@@ -1283,16 +1291,16 @@ function QuickAdd({ botId, onAdded, gated }: { botId: string; onAdded: () => voi
         onChange={(e) => setWhen(e.target.value)}
         placeholder={mode === "event" ? "Start at (ISO string)" : "Due at (ISO or blank)"}
         className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
-        disabled={gated}
+        disabled={loading}
       />
 
       <button
         onClick={submit}
-        disabled={gated || loading || !botId || botId === ALL_BOTS_ID}
+        disabled={loading || !botId || botId === ALL_BOTS_ID}
         className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
         type="button"
       >
-        {gated ? "Upgrade to add" : botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}
+        {botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}
       </button>
 
       <div className="rounded-2xl border bg-muted p-3 text-xs text-muted-foreground">
