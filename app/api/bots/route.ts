@@ -50,7 +50,8 @@ function bad(msg: string) {
 }
 
 async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
-  await db.run("BEGIN");
+  // ✅ BEGIN IMMEDIATE prevents race conditions on cap enforcement
+  await db.run("BEGIN IMMEDIATE");
   try {
     const out = await fn();
     await db.run("COMMIT");
