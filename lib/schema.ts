@@ -416,6 +416,13 @@ async function ensureCoreTables(db: Db) {
       email_sent INTEGER NOT NULL DEFAULT 0,
       email_error TEXT
     );
+
+    -- Stripe webhook idempotency
+    CREATE TABLE IF NOT EXISTS stripe_events (
+      id TEXT PRIMARY KEY,
+      type TEXT,
+      created_at TEXT
+    );
   `);
 
   // Stripe/billing columns (idempotent)

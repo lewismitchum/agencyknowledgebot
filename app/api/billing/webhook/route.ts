@@ -19,18 +19,6 @@ function getWebhookSecret() {
   return secret;
 }
 
-async function ensureStripeEventTable(db: Db) {
-  await db
-    .run(`
-      CREATE TABLE IF NOT EXISTS stripe_events (
-        id TEXT PRIMARY KEY,
-        type TEXT,
-        created_at TEXT
-      )
-    `)
-    .catch(() => {});
-}
-
 function planFromPriceId(priceId: string | null | undefined): PlanKey {
   const starter = process.env.STRIPE_PRICE_STARTER || "";
   const pro = process.env.STRIPE_PRICE_PRO || "";
@@ -159,7 +147,7 @@ async function recordStripeEventOnce(db: Db, event: Stripe.Event): Promise<boole
     );
     return true;
   } catch {
-    return false; // already processed
+    return false;
   }
 }
 
@@ -197,7 +185,6 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db);
-    await ensureStripeEventTable(db);
 
     const firstTime = await recordStripeEventOnce(db, event);
     if (!firstTime) {
