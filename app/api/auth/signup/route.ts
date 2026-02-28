@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { makeToken, hashToken, isoFromNowMinutes, nowIso } from "@/lib/tokens";
-import { getAppUrl, sendEmail } from "@/lib/email";
+import { getAppUrl, sendEmail, sendWelcomeEmailSafe } from "@/lib/email";
 import { setSessionCookie } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -194,6 +194,11 @@ export async function POST(req: NextRequest) {
       } catch (e) {
         console.error("SIGNUP_EMAIL_SEND_FAILED", e);
       }
+    }
+
+    // If email verification is NOT required, send welcome immediately (never blocks signup).
+    if (emailVerified) {
+      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName: name.trim() });
     }
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
