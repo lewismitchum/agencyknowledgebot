@@ -102,6 +102,69 @@ export async function sendSupportEmail(input: {
   });
 }
 
+/**
+ * Welcome email (throws on missing env, consistent with sendEmail/sendSupportEmail).
+ * Use sendWelcomeEmailSafe inside auth flows to avoid breaking signup/login.
+ */
+export async function sendWelcomeEmail(input: {
+  to: string;
+  agencyName?: string | null;
+}) {
+  const to = String(input.to || "").trim();
+  if (!to) throw new Error("sendWelcomeEmail: missing to");
+
+  const agencyName = String(input.agencyName || "your agency").trim();
+  const appUrl = getAppUrl();
+
+  const subject = "Welcome to Louis.Ai";
+
+  const html = `
+    <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; line-height: 1.5; color: #111;">
+      <h2 style="margin: 0 0 12px;">Welcome to Louis.Ai</h2>
+
+      <p style="margin: 0 0 10px;">
+        You're set up for <strong>${escapeHtml(agencyName)}</strong>.
+      </p>
+
+      <p style="margin: 0 0 16px;">
+        Start here:
+        <a href="${appUrl}/app" style="color: #111; font-weight: 600;">Open Louis.Ai</a>
+      </p>
+
+      <div style="border: 1px solid #eee; border-radius: 12px; padding: 14px; background: #fafafa;">
+        <div style="font-weight: 600; margin-bottom: 8px;">Fast path:</div>
+        <ol style="margin: 0; padding-left: 18px;">
+          <li>Pick your bot</li>
+          <li>Upload a document</li>
+          <li>Click <strong>Extract</strong> to generate schedule + tasks</li>
+        </ol>
+      </div>
+
+      <p style="margin: 16px 0 0; font-size: 12px; color: #666;">
+        If you didn't request this, you can ignore this email.
+      </p>
+    </div>
+  `;
+
+  return await sendEmail({ to, subject, html });
+}
+
+/**
+ * Fire-and-forget wrapper. Never throws. Never blocks auth.
+ */
+export async function sendWelcomeEmailSafe(input: {
+  to: string;
+  agencyName?: string | null;
+}) {
+  try {
+    await sendWelcomeEmail(input);
+    return { ok: true as const };
+  } catch (err) {
+    console.warn("WELCOME_EMAIL_FAILED", err);
+    return { ok: false as const };
+  }
+}
+
 function escapeHtml(s: string) {
   return s
     .replaceAll("&", "&amp;")
