@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { hashToken } from "@/lib/tokens";
+import { sendWelcomeEmailSafe } from "@/lib/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,7 @@ export async function POST(req: NextRequest) {
   const tokenHash = hashToken(t);
 
   const agency = (await db.get(
-    `SELECT id, email, email_verify_expires_at, email_verified
+    `SELECT id, name, email, email_verify_expires_at, email_verified
      FROM agencies
      WHERE email_verify_token_hash = ?
      LIMIT 1`,
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
   )) as
     | {
         id: string;
+        name: string;
         email: string;
         email_verify_expires_at: string | null;
         email_verified: number;
@@ -53,6 +55,8 @@ export async function POST(req: NextRequest) {
     ? new Date(agency.email_verify_expires_at).getTime()
     : 0;
 
+  let justVerified = false;
+
   if (!agency.email_verified) {
     if (!exp || Date.now() > exp) {
       return NextResponse.json({ error: "Invalid or expired link" }, { status: 400 });
@@ -66,6 +70,8 @@ export async function POST(req: NextRequest) {
        WHERE id = ?`,
       agency.id
     );
+
+    justVerified = true;
   }
 
   // Always ensure owner identity is active (idempotent)
@@ -78,6 +84,14 @@ export async function POST(req: NextRequest) {
     agency.id,
     agency.email
   );
+
+  // Send welcome email only when verification actually happens
+  if (justVerified) {
+    void sendWelcomeEmailSafe({
+      to: agency.email,
+      agencyName: agency.name,
+    });
+  }
 
   return NextResponse.json({ ok: true });
 }
