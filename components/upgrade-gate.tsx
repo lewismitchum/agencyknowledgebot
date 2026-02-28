@@ -6,8 +6,15 @@ import React from "react";
 type Props = {
   title?: string;
   message?: string;
+
+  // New names (preferred)
   href?: string;
   cta?: string;
+
+  // Back-compat names (your pages currently use these)
+  ctaHref?: string;
+  ctaLabel?: string;
+
   children?: React.ReactNode;
 };
 
@@ -15,8 +22,9 @@ export function UpgradeGate(props: Props) {
   const title = props.title ?? "Upgrade required";
   const message =
     props.message ?? "This feature is available on a paid plan. Upgrade to unlock it.";
-  const href = props.href ?? "/app/settings/billing";
-  const cta = props.cta ?? "Upgrade";
+
+  const href = props.href ?? props.ctaHref ?? "/app/settings/billing";
+  const cta = props.cta ?? props.ctaLabel ?? "Upgrade";
 
   return (
     <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-900">
