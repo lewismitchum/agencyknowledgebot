@@ -11,41 +11,58 @@ type Body = {
   plan?: string;
 };
 
-// Allowed plan keys you support
 const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
 
-function isProdEnvironment() {
-  // On Vercel, NODE_ENV is "production" for BOTH preview + production.
-  // VERCEL_ENV distinguishes: "development" | "preview" | "production"
-  const ve = String(process.env.VERCEL_ENV || "").trim().toLowerCase();
-  return ve === "production";
+function getCtxUserId(ctx: any): string {
+  return String(
+    ctx?.userId ??
+      ctx?.user_id ??
+      ctx?.user?.id ??
+      ctx?.user?.userId ??
+      ctx?.id ??
+      ""
+  ).trim();
 }
 
-function isAllowedUser(ctx: any) {
-  // Support either env var name (UI vs server)
-  const allowUserId = String(
+function getAllowedUserId(): string {
+  return String(
     process.env.TIER_SWITCHER_USER_ID ||
       process.env.NEXT_PUBLIC_TIER_SWITCHER_USER_ID ||
       ""
   ).trim();
+}
 
-  if (!allowUserId) return false;
-  return String(ctx?.userId || "").trim() === allowUserId;
+function isProdVercel() {
+  const ve = String(process.env.VERCEL_ENV || "").trim().toLowerCase();
+  return ve === "production";
+}
+
+function allowInProdBypass(): boolean {
+  // Explicit, opt-in bypass for production only (still locked to allowed user).
+  // Set this in Vercel ONLY if you want dev-set-plan on production.
+  return String(process.env.ALLOW_DEV_SET_PLAN_IN_PROD || "").trim() === "1";
+}
+
+function notFound() {
+  return new Response("Not Found", { status: 404 });
 }
 
 export async function POST(req: NextRequest) {
-  // 🔒 Hard lock: dev-only route must not exist in real production.
-  // Return 404 (not 403) to avoid advertising the endpoint.
-  if (isProdEnvironment()) {
-    return new Response("Not Found", { status: 404 });
+  // 🔒 Default: dev-only route must not exist in real production.
+  // But allow an explicit bypass env var if you want it.
+  if (isProdVercel() && !allowInProdBypass()) {
+    return notFound();
   }
 
   try {
     const ctx = await requireOwner(req);
 
-    // 🔒 You-only lock (even in preview/dev)
-    if (!isAllowedUser(ctx)) {
-      return new Response("Not Found", { status: 404 });
+    const ctxUserId = getCtxUserId(ctx);
+    const allowedUserId = getAllowedUserId();
+
+    // 🔒 You-only lock (stealth)
+    if (!allowedUserId || !ctxUserId || ctxUserId !== allowedUserId) {
+      return notFound();
     }
 
     const db: Db = await getDb();
@@ -67,17 +84,19 @@ export async function POST(req: NextRequest) {
       ok: true,
       agency_id: ctx.agencyId,
       plan: desired,
-      vercel_env: process.env.VERCEL_ENV ?? null,
+      debug: {
+        vercel_env: process.env.VERCEL_ENV ?? null,
+        node_env: process.env.NODE_ENV ?? null,
+        prod_bypass: allowInProdBypass(),
+        allowed_user_id_set: Boolean(allowedUserId),
+        ctx_user_id_present: Boolean(ctxUserId),
+      },
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    if (code === "FORBIDDEN_NOT_OWNER") {
-      return NextResponse.json({ error: "Owner only" }, { status: 403 });
-    }
+    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
 
     console.error("DEV_SET_PLAN_ERROR", err);
     return NextResponse.json(
