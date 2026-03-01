@@ -2,12 +2,21 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 export default function CheckEmailPage() {
+  const sp = useSearchParams();
+
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fromQuery = String(sp.get("email") || "").trim();
+    if (fromQuery && fromQuery.includes("@")) setEmail(fromQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const canSend = useMemo(() => {
     const v = email.trim();
@@ -75,9 +84,7 @@ export default function CheckEmailPage() {
           </button>
 
           {status === "sent" && (
-            <p className="text-sm text-green-600">
-              If that email exists, a verification link was sent.
-            </p>
+            <p className="text-sm text-green-600">If that email exists, a verification link was sent.</p>
           )}
           {status === "error" && <p className="text-sm text-red-600">{error}</p>}
         </form>

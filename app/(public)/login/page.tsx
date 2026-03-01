@@ -1,3 +1,4 @@
+// app/(public)/login/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -24,7 +25,12 @@ declare global {
 
 function looksLikeNotVerified(msg: string) {
   const s = (msg || "").toLowerCase();
-  return s.includes("not verified") || s.includes("email_not_verified") || s.includes("verify your email");
+  return (
+    s.includes("not verified") ||
+    s.includes("email_not_verified") ||
+    s.includes("verify your email") ||
+    s.includes("email verification")
+  );
 }
 
 function looksLikePending(msg: string) {
@@ -48,10 +54,8 @@ export default function LoginPage() {
 
   const [tsToken, setTsToken] = useState<string>("");
 
-  // remember email user tried (for resend)
   const [lastEmail, setLastEmail] = useState<string>("");
 
-  // when script loads AFTER first render, we trigger another render attempt
   const [scriptReady, setScriptReady] = useState(false);
 
   const widgetRef = useRef<HTMLDivElement | null>(null);
@@ -174,6 +178,14 @@ export default function LoginPage() {
         const msg = String(j?.message || j?.error || raw || "Login failed").trim();
         const redirectTo = String(j?.redirectTo || j?.redirect_to || "").trim();
 
+        // ✅ NOT VERIFIED → send them to check-email (prefill email)
+        if (looksLikeNotVerified(code) || looksLikeNotVerified(msg)) {
+          const q = encodeURIComponent(email.trim().toLowerCase());
+          window.location.href = `/check-email?email=${q}`;
+          return;
+        }
+
+        // pending / blocked
         if (
           r.status === 403 &&
           (code === "PENDING_APPROVAL" ||
