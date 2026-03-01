@@ -1,3 +1,4 @@
+// app/api/conversations/messages/route.ts
 import { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -33,34 +34,93 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
 }
 
+/**
+ * Schema drift fix:
+ * Some prod DBs may not have conversations.user_id (older schema used owner_user_id).
+ * We self-heal here to avoid runtime failures.
+ */
+async function ensureConversationsUserId(db: Db) {
+  try {
+    await db.exec(`ALTER TABLE conversations ADD COLUMN user_id TEXT;`);
+  } catch {
+    // ignore (already exists or SQLite variant rejects)
+  }
+  try {
+    await db.exec(`ALTER TABLE conversations ADD COLUMN owner_user_id TEXT;`);
+  } catch {
+    // ignore
+  }
+}
+
 async function getOrCreateConversation(db: Db, args: { agencyId: string; userId: string; botId: string }) {
-  const existing = (await db.get(
-    `SELECT id
-     FROM conversations
-     WHERE agency_id = ? AND user_id = ? AND bot_id = ?
-     LIMIT 1`,
-    args.agencyId,
-    args.userId,
-    args.botId
-  )) as { id: string } | undefined;
+  // Ensure columns exist BEFORE running queries that reference them
+  await ensureConversationsUserId(db);
 
-  if (existing?.id) return existing.id;
+  // Prefer new column: user_id
+  try {
+    const existing = (await db.get(
+      `SELECT id
+       FROM conversations
+       WHERE agency_id = ? AND user_id = ? AND bot_id = ?
+       LIMIT 1`,
+      args.agencyId,
+      args.userId,
+      args.botId
+    )) as { id: string } | undefined;
 
-  const id = makeId("convo");
-  await db.run(
-    `INSERT INTO conversations (id, agency_id, user_id, bot_id, summary, message_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    id,
-    args.agencyId,
-    args.userId,
-    args.botId,
-    null,
-    0,
-    nowIso(),
-    nowIso()
-  );
+    if (existing?.id) return existing.id;
 
-  return id;
+    const id = makeId("convo");
+    await db.run(
+      `INSERT INTO conversations (id, agency_id, user_id, bot_id, summary, message_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      args.agencyId,
+      args.userId,
+      args.botId,
+      null,
+      0,
+      nowIso(),
+      nowIso()
+    );
+
+    return id;
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+
+    // Fallback for older schema that uses owner_user_id instead of user_id
+    if (msg.includes("no such column: user_id")) {
+      const existing = (await db.get(
+        `SELECT id
+         FROM conversations
+         WHERE agency_id = ? AND owner_user_id = ? AND bot_id = ?
+         LIMIT 1`,
+        args.agencyId,
+        args.userId,
+        args.botId
+      )) as { id: string } | undefined;
+
+      if (existing?.id) return existing.id;
+
+      const id = makeId("convo");
+      await db.run(
+        `INSERT INTO conversations (id, agency_id, owner_user_id, bot_id, summary, message_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        args.agencyId,
+        args.userId,
+        args.botId,
+        null,
+        0,
+        nowIso(),
+        nowIso()
+      );
+
+      return id;
+    }
+
+    throw e;
+  }
 }
 
 export async function GET(req: NextRequest) {
