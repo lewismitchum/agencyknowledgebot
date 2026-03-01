@@ -13,16 +13,24 @@ type Body = {
 
 const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
 
-export async function POST(req: NextRequest) {
-  // 🔒 Not advertised + locked: only the specific user can use it.
+function isAllowedUser(ctx: any) {
   const allowUserId = String(process.env.TIER_SWITCHER_USER_ID || "").trim();
-  if (!allowUserId) return new Response("Not Found", { status: 404 });
+  if (!allowUserId) return false;
+  return String(ctx?.userId || "").trim() === allowUserId;
+}
+
+export async function POST(req: NextRequest) {
+  // 🔒 Hard lock: dev-only route must not exist in production.
+  // Return 404 (not 403) to avoid advertising the endpoint.
+  if (process.env.NODE_ENV === "production") {
+    return new Response("Not Found", { status: 404 });
+  }
 
   try {
     const ctx = await requireOwner(req);
 
-    // Only your account
-    if (String(ctx.userId) !== allowUserId) {
+    // 🔒 You-only lock (even in dev)
+    if (!isAllowedUser(ctx)) {
       return new Response("Not Found", { status: 404 });
     }
 
