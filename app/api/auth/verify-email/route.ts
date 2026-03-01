@@ -12,6 +12,10 @@ async function ensureUserRoleColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
 }
 
 async function verifyTokenAndActivate(db: Db, token: string) {
@@ -29,10 +33,10 @@ async function verifyTokenAndActivate(db: Db, token: string) {
   )) as
     | {
         id: string;
-        name: string;
+        name: string | null;
         email: string;
         email_verify_expires_at: string | null;
-        email_verified: number;
+        email_verified: number | null;
       }
     | undefined;
 
@@ -44,7 +48,7 @@ async function verifyTokenAndActivate(db: Db, token: string) {
 
   let justVerified = false;
 
-  if (!agency.email_verified) {
+  if (!Number(agency.email_verified ?? 0)) {
     if (!exp || Date.now() > exp) {
       return { ok: false as const, status: 400, error: "Invalid or expired link" };
     }
@@ -66,16 +70,18 @@ async function verifyTokenAndActivate(db: Db, token: string) {
     `UPDATE users
      SET email_verified = 1,
          role = coalesce(role, 'owner'),
-         status = 'active'
+         status = 'active',
+         updated_at = COALESCE(updated_at, datetime('now'))
      WHERE agency_id = ? AND lower(email) = lower(?)`,
     agency.id,
     agency.email
   );
 
+  // ✅ Send welcome email exactly once: only when the agency transitions to verified.
   if (justVerified) {
     void sendWelcomeEmailSafe({
       to: agency.email,
-      agencyName: agency.name,
+      agencyName: agency.name ?? null,
     });
   }
 

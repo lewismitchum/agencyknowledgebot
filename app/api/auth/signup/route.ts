@@ -101,6 +101,7 @@ export async function POST(req: NextRequest) {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const agencyName = name.trim();
 
     // IMPORTANT: "signup" here is for creating a NEW agency/owner.
     // If the email already exists as an AGENCY login, block.
@@ -149,7 +150,7 @@ export async function POST(req: NextRequest) {
         email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agencyId,
-      name.trim(),
+      agencyName,
       normalizedEmail,
       password_hash,
       null,
@@ -198,9 +199,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // If email verification is NOT required, send welcome immediately (never blocks signup).
+    // ✅ Welcome email:
+    // - If verification is NOT required: send immediately.
+    // - If verification IS required: send AFTER they verify (see /api/auth/verify-email below).
     if (emailVerified) {
-      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName: name.trim() });
+      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName });
     }
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
