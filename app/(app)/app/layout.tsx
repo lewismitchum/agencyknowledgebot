@@ -22,8 +22,22 @@ type MeResponse = {
     id: string;
     name: string | null;
     plan?: string | null;
+    trial_used?: number;
+    trial_days_left?: number | null;
+    stripe_current_period_end?: string | null;
   };
+  plan?: string | null;
+  limits?: any;
+  tier_switcher_enabled?: boolean;
+  documents_count?: number;
+  daily_remaining?: number | null;
+  daily_resets_in_seconds?: number;
 };
+
+function normPlan(p: any): string {
+  const v = String(p ?? "").toLowerCase().trim();
+  return v || "free";
+}
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -42,6 +56,26 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       pathname.startsWith("/app/logout")
     );
   }, [pathname]);
+
+  const plan = useMemo(() => {
+    const p = me?.plan ?? me?.agency?.plan ?? "free";
+    return normPlan(p);
+  }, [me]);
+
+  const trialDaysLeft = useMemo(() => {
+    const n = me?.agency?.trial_days_left;
+    if (n == null) return null;
+    const x = Number(n);
+    if (!Number.isFinite(x)) return null;
+    return Math.max(0, Math.floor(x));
+  }, [me]);
+
+  const showTrialBadge = useMemo(() => {
+    if (!trialDaysLeft) return false;
+    // only show when trial is active and user is on free plan
+    if (plan !== "free") return false;
+    return trialDaysLeft > 0;
+  }, [trialDaysLeft, plan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -251,6 +285,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <div className="text-sm text-muted-foreground">Private workspace</div>
 
               <div className="flex items-center gap-2">
+                {showTrialBadge ? (
+                  <Link
+                    href="/app/billing"
+                    className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 shadow-sm hover:opacity-90"
+                    title="Your trial is active — upgrade before it ends"
+                  >
+                    Trial: {trialDaysLeft} day{trialDaysLeft === 1 ? "" : "s"} left
+                  </Link>
+                ) : null}
+
                 <Link
                   href="/app/support"
                   className="rounded-full border border-white/10 bg-background/60 px-4 py-2 text-sm shadow-sm hover:bg-accent"
