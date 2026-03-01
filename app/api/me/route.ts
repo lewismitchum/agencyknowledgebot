@@ -128,7 +128,7 @@ export async function GET(req: NextRequest) {
         }
       | undefined;
 
-    const rawPlan = agency?.plan ?? ctx.plan ?? "free";
+    const rawPlan = agency?.plan ?? (ctx as any)?.plan ?? "free";
     const plan = normalizePlan(rawPlan);
     const limits = getPlanLimits(plan);
 
@@ -150,18 +150,16 @@ export async function GET(req: NextRequest) {
     const status = normalizeUserStatus((user as any)?.status ?? (ctx as any)?.status);
 
     const trial_used = Number((agency as any)?.trial_used ?? 0) === 1 ? 1 : 0;
-
-    // Best-effort: during trial, Stripe period end is also the trial end / current period end.
-    // If they’re not in trial, this still returns days-to-renew (UI can ignore if desired).
     const trial_days_left = daysLeftFromPeriodEnd(agency?.stripe_current_period_end);
 
     return NextResponse.json({
       ok: true,
+
       agency: {
         id: agency?.id ?? ctx.agencyId,
         name: agency?.name ?? null,
         email: agency?.email ?? (ctx as any)?.agencyEmail ?? null,
-        plan: agency?.plan ?? (ctx.plan ?? "free"),
+        plan: agency?.plan ?? ((ctx as any)?.plan ?? "free"),
         stripe_customer_id: agency?.stripe_customer_id ?? null,
         stripe_subscription_id: agency?.stripe_subscription_id ?? null,
         stripe_price_id: agency?.stripe_price_id ?? null,
@@ -169,6 +167,7 @@ export async function GET(req: NextRequest) {
         trial_used,
         trial_days_left,
       },
+
       user: {
         id: user?.id ?? ctx.userId,
         email: user?.email ?? (ctx as any)?.userEmail ?? (ctx as any)?.agencyEmail ?? "",
@@ -176,8 +175,14 @@ export async function GET(req: NextRequest) {
         role,
         status,
       },
+
+      // ✅ Bots page reads these (optional fields but makes UI accurate)
+      plan,
+      limits,
+
       documents_count: Number(docsRow?.c ?? 0),
 
+      // Chat page expects these
       daily_remaining, // null => unlimited
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
     });
