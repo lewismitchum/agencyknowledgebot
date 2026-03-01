@@ -8,12 +8,17 @@ import { ensureSchema } from "@/lib/schema";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function resendConfigured() {
+  return Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM);
+}
+
 export async function POST(req: NextRequest) {
   const { email } = await req.json().catch(() => ({}));
 
   // Always return OK (avoid user enumeration)
   const ok = NextResponse.json({ ok: true });
 
+  if (!resendConfigured()) return ok;
   if (!email?.trim()) return ok;
 
   const db = await getDb();
@@ -21,15 +26,23 @@ export async function POST(req: NextRequest) {
 
   const normalizedEmail = email.trim().toLowerCase();
 
-  const agency = await db.get(
+  const agency = (await db.get(
     `SELECT id, email, email_verified, email_verify_last_sent_at
      FROM agencies
-     WHERE email = ?`,
+     WHERE lower(email) = lower(?)
+     LIMIT 1`,
     normalizedEmail
-  );
+  )) as
+    | {
+        id: string;
+        email: string;
+        email_verified: number | null;
+        email_verify_last_sent_at: string | null;
+      }
+    | undefined;
 
   if (!agency) return ok;
-  if (agency.email_verified === 1) return ok;
+  if (Number(agency.email_verified ?? 0) === 1) return ok;
 
   // throttle: 1 email per 2 minutes
   if (agency.email_verify_last_sent_at) {
