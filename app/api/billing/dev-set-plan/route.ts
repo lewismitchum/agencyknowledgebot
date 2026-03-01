@@ -14,14 +14,16 @@ type Body = {
 
 const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
 
-function isOverrideEnabled() {
+// ✅ Default: OFF everywhere.
+// Turn on explicitly by setting BILLING_DEV_OVERRIDE_ENABLED=1 in the environment you want.
+function devOverrideEnabled() {
   return String(process.env.BILLING_DEV_OVERRIDE_ENABLED || "").trim() === "1";
 }
 
 export async function POST(req: NextRequest) {
-  // 🔒 In production: only allow if explicitly enabled by env var.
-  // Otherwise return 404 (do not advertise this endpoint).
-  if (process.env.NODE_ENV === "production" && !isOverrideEnabled()) {
+  // 🔒 Hard lock: return 404 unless explicitly enabled.
+  // 404 (not 403) avoids advertising the endpoint.
+  if (!devOverrideEnabled()) {
     return new Response("Not Found", { status: 404 });
   }
 
