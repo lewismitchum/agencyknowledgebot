@@ -1,31 +1,44 @@
 // lib/resend.ts
-import { Resend } from "resend";
+type SendEmailArgs = {
+  to: string;
+  from: string;
+  subject: string;
+  html: string;
+  reply_to?: string;
+};
 
-export function getResendClient() {
-  const key = process.env.RESEND_API_KEY;
-  if (!key) {
-    throw new Error("RESEND_API_KEY_MISSING");
+export async function resendSendEmail(args: SendEmailArgs) {
+  const apiKey = String(process.env.RESEND_API_KEY || "").trim();
+  if (!apiKey) throw new Error("RESEND_API_KEY_MISSING");
+
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: args.from,
+      to: args.to,
+      subject: args.subject,
+      html: args.html,
+      reply_to: args.reply_to,
+    }),
+  });
+
+  const text = await res.text();
+  const json = (() => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  })();
+
+  if (!res.ok) {
+    const msg = (json && (json.message || json.error)) || text || "Resend error";
+    throw new Error(`RESEND_SEND_FAILED: ${res.status} ${msg}`);
   }
-  return new Resend(key);
-}
 
-export function getEmailFrom() {
-  // Example: "Louis.Ai <support@louis.ai>"
-  const from = process.env.RESEND_FROM;
-  if (!from) {
-    throw new Error("RESEND_FROM_MISSING");
-  }
-  return from;
-}
-
-export function getAppBaseUrl() {
-  // Prefer explicit URL (custom domain), otherwise Vercel URL
-  const explicit = process.env.NEXT_PUBLIC_APP_URL;
-  if (explicit) return explicit.replace(/\/+$/, "");
-
-  const vercel = process.env.VERCEL_URL;
-  if (vercel) return `https://${vercel}`.replace(/\/+$/, "");
-
-  // Local fallback
-  return "http://localhost:3000";
+  return json;
 }

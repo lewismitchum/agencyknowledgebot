@@ -9,6 +9,7 @@ import { setSessionCookie } from "@/lib/session";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { rateLimit } from "@/lib/rate-limit";
+import { sendWelcomeEmailSafe } from "@/lib/email";
 
 export const runtime = "nodejs";
 
@@ -89,6 +90,9 @@ export async function POST(req: NextRequest) {
 
     await db.run("BEGIN IMMEDIATE TRANSACTION");
 
+    let welcomeTo: string | null = null;
+    let welcomeAgencyName: string | null = null;
+
     try {
       const invite = (await db.get(
         `SELECT id, agency_id, email, expires_at, accepted_at, revoked_at
@@ -119,12 +123,12 @@ export async function POST(req: NextRequest) {
       }
 
       const agency = (await db.get(
-        `SELECT id, email, plan
+        `SELECT id, email, name, plan
          FROM agencies
          WHERE id = ?
          LIMIT 1`,
         invite.agency_id
-      )) as { id: string; email: string; plan: string | null } | undefined;
+      )) as { id: string; email: string; name: string | null; plan: string | null } | undefined;
 
       if (!agency?.id) {
         await db.run("ROLLBACK");
@@ -193,6 +197,13 @@ export async function POST(req: NextRequest) {
       await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
 
       await db.run("COMMIT");
+
+      // ✅ After commit: fire-and-forget welcome email (never blocks invite acceptance)
+      welcomeTo = emailLower;
+      welcomeAgencyName = String(agency.name ?? "").trim() || null;
+      if (welcomeTo && welcomeAgencyName) {
+        void sendWelcomeEmailSafe({ to: welcomeTo, agencyName: welcomeAgencyName });
+      }
 
       const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
 
