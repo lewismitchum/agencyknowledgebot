@@ -20,6 +20,7 @@ async function ensureUserAuthColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
 }
 
 function pickMaxUsersFromLimits(limits: any): number | null {
@@ -181,14 +182,15 @@ export async function POST(req: NextRequest) {
       const ts = nowIso();
 
       await db.run(
-        `INSERT INTO users (id, agency_id, email, email_verified, role, status, password_hash, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, password_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         userId,
         invite.agency_id,
         emailLower,
         1,
         "member",
         "active",
+        0,
         password_hash,
         ts,
         ts
@@ -196,12 +198,14 @@ export async function POST(req: NextRequest) {
 
       await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
 
+      // capture for after-commit work
+      welcomeTo = emailLower;
+      welcomeAgencyName = agency.name;
+
       await db.run("COMMIT");
 
       // ✅ After commit: fire-and-forget welcome email (never blocks invite acceptance)
-      welcomeTo = emailLower;
-      welcomeAgencyName = String(agency.name ?? "").trim() || null;
-      if (welcomeTo && welcomeAgencyName) {
+      if (welcomeTo) {
         void sendWelcomeEmailSafe({ to: welcomeTo, agencyName: welcomeAgencyName });
       }
 
