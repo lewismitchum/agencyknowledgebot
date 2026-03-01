@@ -33,6 +33,7 @@ type MeResponse =
         status: string;
         email_verified: number;
       };
+      tier_switcher_enabled?: boolean;
     }
   | { ok?: false; error?: string; message?: string };
 
@@ -98,8 +99,11 @@ function BillingContent() {
   const [devPlan, setDevPlan] = useState<PlanKey>("free");
   const [devSaving, setDevSaving] = useState(false);
 
+  // ✅ server-driven permission (only YOUR account/agency should get this)
+  const [tierSwitcherEnabled, setTierSwitcherEnabled] = useState(false);
+
   const isProd = process.env.NODE_ENV === "production";
-  const showDevSwitcher = !isProd; // dev-only UI (route itself is also locked server-side)
+  const showDevSwitcher = !isProd && tierSwitcherEnabled; // UI locked to your user id + non-prod
 
   const successParam = sp.get("success");
   const statusParam = sp.get("status");
@@ -137,6 +141,9 @@ function BillingContent() {
       }
 
       setIsOwner(String(u?.role || "") === "owner");
+
+      // ✅ only you get this flag from /api/me
+      setTierSwitcherEnabled(Boolean((data as any)?.tier_switcher_enabled));
     }
 
     return data;
@@ -473,7 +480,11 @@ function BillingContent() {
 
                 <div className="pt-2 flex items-center gap-2">
                   {isPaidCheckout ? (
-                    <Button variant={(p as any).cta.variant} onClick={(p as any).onClick} disabled={isCurrent || loadingPlan === p.key}>
+                    <Button
+                      variant={(p as any).cta.variant}
+                      onClick={(p as any).onClick}
+                      disabled={isCurrent || loadingPlan === p.key}
+                    >
                       {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : (p as any).cta.label}
                     </Button>
                   ) : (
@@ -487,7 +498,9 @@ function BillingContent() {
                   </Button>
                 </div>
 
-                <p className="text-xs text-muted-foreground">Note: checkout + webhook wiring updates <code>agencies.plan</code>.</p>
+                <p className="text-xs text-muted-foreground">
+                  Note: checkout + webhook wiring updates <code>agencies.plan</code>.
+                </p>
               </CardContent>
             </Card>
           );

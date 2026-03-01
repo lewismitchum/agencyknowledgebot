@@ -6,7 +6,6 @@ import { requireOwner } from "@/lib/authz";
 import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 type Body = {
   plan?: string;
@@ -14,21 +13,26 @@ type Body = {
 
 const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
 
-// ✅ Default: OFF everywhere.
-// Turn on explicitly by setting BILLING_DEV_OVERRIDE_ENABLED=1 in the environment you want.
-function devOverrideEnabled() {
-  return String(process.env.BILLING_DEV_OVERRIDE_ENABLED || "").trim() === "1";
+function tierSwitcherAllowedForUser(userId: string) {
+  const allowUser = String(process.env.TIER_SWITCHER_USER_ID || "").trim();
+  if (!allowUser) return false;
+  return String(userId) === allowUser;
 }
 
 export async function POST(req: NextRequest) {
-  // 🔒 Hard lock: return 404 unless explicitly enabled.
-  // 404 (not 403) avoids advertising the endpoint.
-  if (!devOverrideEnabled()) {
+  // 🔒 Hard lock: dev-only route must not exist in production.
+  // Return 404 (not 403) to avoid advertising the endpoint.
+  if (process.env.NODE_ENV === "production") {
     return new Response("Not Found", { status: 404 });
   }
 
   try {
     const ctx = await requireOwner(req);
+
+    // 🔒 Only *your* user id can use this route
+    if (!tierSwitcherAllowedForUser(ctx.userId)) {
+      return new Response("Not Found", { status: 404 });
+    }
 
     const db: Db = await getDb();
     await ensureSchema(db);

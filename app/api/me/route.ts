@@ -78,6 +78,22 @@ function daysLeftFromPeriodEnd(iso: string | null | undefined) {
   return Math.max(0, days);
 }
 
+function isTierSwitcherEnabledFor(ctx: { userId: string; agencyId: string }) {
+  // 🔒 Only show tier switcher for YOUR account/agency in non-prod.
+  // Set one (or both) of these:
+  // - TIER_SWITCHER_USER_ID=...
+  // - TIER_SWITCHER_AGENCY_ID=...
+  if (process.env.NODE_ENV === "production") return false;
+
+  const allowUser = String(process.env.TIER_SWITCHER_USER_ID ?? "").trim();
+  const allowAgency = String(process.env.TIER_SWITCHER_AGENCY_ID ?? "").trim();
+
+  if (allowUser && ctx.userId === allowUser) return true;
+  if (allowAgency && ctx.agencyId === allowAgency) return true;
+
+  return false;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -179,6 +195,9 @@ export async function GET(req: NextRequest) {
       // ✅ Bots page reads these (optional fields but makes UI accurate)
       plan,
       limits,
+
+      // ✅ Billing page uses this to show dev tier switcher ONLY for you
+      tier_switcher_enabled: isTierSwitcherEnabledFor({ userId: ctx.userId, agencyId: ctx.agencyId }),
 
       documents_count: Number(docsRow?.c ?? 0),
 
