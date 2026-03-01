@@ -2,10 +2,11 @@
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
-import { getResendClient, getEmailFrom, getAppBaseUrl } from "@/lib/resend";
+import { getAppUrl, sendEmail } from "@/lib/email";
 import jwt from "jsonwebtoken";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type Body = {
   email?: string;
@@ -20,11 +21,9 @@ function signResetToken(payload: { kind: "agency" | "user"; email: string }) {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET_MISSING");
 
-  return jwt.sign(
-    { typ: "password_reset", kind: payload.kind, email: payload.email },
-    secret,
-    { expiresIn: "60m" }
-  );
+  return jwt.sign({ typ: "password_reset", kind: payload.kind, email: payload.email }, secret, {
+    expiresIn: "60m",
+  });
 }
 
 async function findAccountByEmail(db: Db, email: string) {
@@ -47,15 +46,15 @@ async function findAccountByEmail(db: Db, email: string) {
 
 function buildEmailHtml(resetUrl: string) {
   return `
-  <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
+  <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; line-height:1.5;">
     <h2 style="margin:0 0 12px 0;">Reset your password</h2>
     <p style="margin:0 0 16px 0;">Click the button below to set a new password. This link expires in 60 minutes.</p>
     <p style="margin:0 0 20px 0;">
-      <a href="${resetUrl}" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px;">
+      <a href="${resetUrl}" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:10px;">
         Reset password
       </a>
     </p>
-    <p style="margin:0 0 8px 0;color:#6b7280;font-size:12px;">If you didn’t request this, you can ignore this email.</p>
+    <p style="margin:0;color:#6b7280;font-size:12px;">If you didn’t request this, you can ignore this email.</p>
   </div>
   `.trim();
 }
@@ -106,12 +105,10 @@ export async function POST(req: NextRequest) {
     if (!acct) return Response.json({ ok: true });
 
     const token = signResetToken(acct);
-    const baseUrl = getAppBaseUrl();
+    const baseUrl = getAppUrl();
     const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
 
-    const resend = getResendClient();
-    await resend.emails.send({
-      from: getEmailFrom(),
+    await sendEmail({
       to: acct.email,
       subject: "Reset your Louis.Ai password",
       html: buildEmailHtml(resetUrl),
@@ -122,11 +119,7 @@ export async function POST(req: NextRequest) {
     const msg = String(err?.code ?? err?.message ?? err);
     console.error("REQUEST_PASSWORD_RESET_ERROR", msg, err);
 
-    if (
-      msg.includes("RESEND_API_KEY") ||
-      msg.includes("RESEND_FROM") ||
-      msg.includes("JWT_SECRET")
-    ) {
+    if (msg.includes("RESEND_API_KEY") || msg.includes("RESEND_FROM") || msg.includes("JWT_SECRET")) {
       return Response.json({ error: msg }, { status: 500 });
     }
 
