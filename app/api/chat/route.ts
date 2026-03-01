@@ -172,11 +172,99 @@ async function summarizeConversation(openaiInput: string) {
   });
 
   const text =
-    typeof resp.output_text === "string" && resp.output_text.trim().length > 0
-      ? resp.output_text.trim()
-      : "";
+    typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
   return text.slice(0, 4000);
+}
+
+function looksInternalBusinessQuestion(message: string) {
+  const t = message.trim().toLowerCase();
+
+  // fast allow-list for clearly general questions
+  const generalStarters = [
+    "what time",
+    "what day",
+    "what date",
+    "define ",
+    "explain ",
+    "summarize ",
+    "translate ",
+    "rewrite ",
+    "draft ",
+    "brainstorm ",
+    "give me ideas",
+    "help me",
+    "how do i",
+    "how to",
+    "calculate",
+    "solve ",
+  ];
+  if (generalStarters.some((s) => t.startsWith(s) || t.includes(s))) return false;
+
+  // internal/business signals
+  const internalHints = [
+    "our ",
+    "we ",
+    "us ",
+    "my agency",
+    "company",
+    "client",
+    "customer",
+    "pricing",
+    "offer",
+    "proposal",
+    "contract",
+    "invoice",
+    "onboarding",
+    "sop",
+    "process",
+    "policy",
+    "playbook",
+    "brand",
+    "messaging",
+    "meeting",
+    "schedule",
+    "deliverable",
+    "scope",
+    "kpi",
+    "dashboard",
+    "workspace",
+    "member",
+    "bot",
+    "doc",
+    "document",
+  ];
+
+  return internalHints.some((h) => t.includes(h));
+}
+
+function responseHasFileSearchEvidence(resp: any) {
+  // OpenAI Responses API can return tool results in output[]; structure varies.
+  // We treat "any file_search tool call produced results" as evidence.
+  try {
+    const outputs = Array.isArray(resp?.output) ? resp.output : [];
+    for (const item of outputs) {
+      // tool outputs often look like: { type: "tool_call", tool_name: "file_search", ... }
+      // or { type: "file_search_call", results: [...] } depending on SDK shape.
+      const toolName = (item?.tool_name || item?.name || item?.tool)?.toString?.() ?? "";
+      const type = (item?.type || "").toString();
+
+      if (toolName === "file_search" || type.includes("file_search")) {
+        const results = item?.results ?? item?.output?.results ?? item?.result ?? item?.output;
+        if (Array.isArray(results) && results.length > 0) return true;
+
+        // sometimes results are nested as { data: [...] }
+        if (results?.data && Array.isArray(results.data) && results.data.length > 0) return true;
+
+        // if there's a "citations" array or similar
+        const citations = item?.citations ?? item?.output?.citations;
+        if (Array.isArray(citations) && citations.length > 0) return true;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false;
 }
 
 export async function GET() {
@@ -242,27 +330,39 @@ export async function POST(req: NextRequest) {
     if (looksLikeTimeQuestion(message)) {
       answer = timeStringInTz(agencyTz);
     } else {
+      const internal = looksInternalBusinessQuestion(message);
+
+      // Always attempt file_search when available; we use evidence deterministically.
       const resp = await openai.responses.create({
         model: "gpt-4.1-mini",
         instructions: `
 You are Louis.Ai.
 
-Rules:
-- Docs are prioritized, not exclusive.
-- Always answer general questions normally.
-- For internal agency questions, consult file_search.
-- If no relevant evidence is found for internal business questions, reply exactly:
+Behavior:
+- Docs-first: for internal/business questions, prioritize the user's uploaded docs via file_search.
+- General questions (non-internal): answer normally using general knowledge/reasoning.
+- Never fabricate internal/company-specific details.
+- If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
-Never fabricate internal details.
+Do not add extra words before or after the fallback.
 `.trim(),
         input: openaiInput,
         tools,
       });
 
-      answer =
-        typeof resp.output_text === "string" && resp.output_text.trim().length > 0
-          ? resp.output_text.trim()
-          : FALLBACK;
+      const modelText =
+        typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
+
+      const hasEvidence = responseHasFileSearchEvidence(resp);
+
+      if (internal && tools.length > 0 && !hasEvidence) {
+        answer = FALLBACK;
+      } else if (internal && tools.length === 0) {
+        // No vector store attached; safest is fallback for internal questions.
+        answer = FALLBACK;
+      } else {
+        answer = modelText || (internal ? FALLBACK : "Sorry — I couldn’t generate a response.");
+      }
     }
 
     await insertMessage(db, convo.id, "assistant", answer);
