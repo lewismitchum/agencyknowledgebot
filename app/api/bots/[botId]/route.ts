@@ -10,7 +10,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function ensureBotColumns(db: Db) {
-  // drift hardening
   await db.run(`ALTER TABLE bots ADD COLUMN name TEXT`).catch(() => {});
   await db.run(`ALTER TABLE bots ADD COLUMN owner_user_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE bots ADD COLUMN vector_store_id TEXT`).catch(() => {});
@@ -41,31 +40,30 @@ async function bestEffortDeleteVectorStore(vectorStoreId: string) {
 }
 
 async function deleteBotData(db: Db, agencyId: string, botId: string) {
-  // docs
   await db.run(`DELETE FROM documents WHERE agency_id = ? AND bot_id = ?`, agencyId, botId).catch(() => {});
-
-  // schedule/extractions (best effort; schema may vary)
   await db.run(`DELETE FROM schedule_events WHERE agency_id = ? AND bot_id = ?`, agencyId, botId).catch(() => {});
   await db.run(`DELETE FROM schedule_tasks WHERE agency_id = ? AND bot_id = ?`, agencyId, botId).catch(() => {});
   await db.run(`DELETE FROM extractions WHERE agency_id = ? AND bot_id = ?`, agencyId, botId).catch(() => {});
 
-  // conversations + messages
-  await db.run(
-    `DELETE FROM conversation_messages
-     WHERE conversation_id IN (
-       SELECT id FROM conversations WHERE agency_id = ? AND bot_id = ?
-     )`,
-    agencyId,
-    botId
-  ).catch(() => {});
+  await db
+    .run(
+      `DELETE FROM conversation_messages
+       WHERE conversation_id IN (
+         SELECT id FROM conversations WHERE agency_id = ? AND bot_id = ?
+       )`,
+      agencyId,
+      botId
+    )
+    .catch(() => {});
   await db.run(`DELETE FROM conversations WHERE agency_id = ? AND bot_id = ?`, agencyId, botId).catch(() => {});
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: { botId: string } }) {
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ botId: string }> }) {
   try {
     const member = await requireActiveMember(req);
 
-    const id = String(params?.botId ?? "").trim();
+    const { botId } = await ctx.params;
+    const id = String(botId ?? "").trim();
     if (!id) return NextResponse.json({ ok: false, error: "MISSING_BOT_ID" }, { status: 400 });
 
     const body = await req.json().catch(() => ({}));
@@ -121,11 +119,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { botId: str
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: { botId: string } }) {
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ botId: string }> }) {
   try {
     const member = await requireActiveMember(req);
 
-    const id = String(params?.botId ?? "").trim();
+    const { botId } = await ctx.params;
+    const id = String(botId ?? "").trim();
     if (!id) return NextResponse.json({ ok: false, error: "MISSING_BOT_ID" }, { status: 400 });
 
     const db: Db = await getDb();
@@ -155,10 +154,8 @@ export async function DELETE(req: NextRequest, { params }: { params: { botId: st
       await requireOwnerOrAdmin(req);
     }
 
-    // Best-effort OpenAI cleanup (don’t block)
     await bestEffortDeleteVectorStore(String(bot.vector_store_id ?? ""));
 
-    // DB cleanup
     await deleteBotData(db, member.agencyId, id);
 
     await db.run(`DELETE FROM bots WHERE agency_id = ? AND id = ?`, member.agencyId, id);
