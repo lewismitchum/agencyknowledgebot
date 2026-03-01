@@ -23,6 +23,9 @@ type Extraction = {
 };
 
 type NotificationsPayload = {
+  ok?: boolean;
+  plan?: string;
+  upsell?: { code?: string; message?: string } | null;
   events: Event[];
   tasks: Task[];
   extractions: Extraction[];
@@ -52,7 +55,13 @@ export default function NotificationsPage() {
           cache: "no-store",
         });
 
+        // New API behavior:
+        // - always 200 for free, with upsell + empty arrays
+        // - ok + plan included
         const payload: NotificationsPayload = {
+          ok: Boolean(j?.ok ?? true),
+          plan: typeof j?.plan === "string" ? j.plan : undefined,
+          upsell: j?.upsell ?? null,
           events: Array.isArray(j?.events) ? j.events : [],
           tasks: Array.isArray(j?.tasks) ? j.tasks : [],
           extractions: Array.isArray(j?.extractions) ? j.extractions : [],
@@ -67,6 +76,7 @@ export default function NotificationsPage() {
             window.location.href = "/login";
             return;
           }
+          // Back-compat: if old API still returns 403 for free, show upgrade gate
           if (e.status === 403) {
             setGated(true);
             setLoading(false);
@@ -86,6 +96,8 @@ export default function NotificationsPage() {
     };
   }, []);
 
+  const upsell = data?.upsell ?? null;
+
   if (gated) {
     return (
       <UpgradeGate
@@ -97,6 +109,9 @@ export default function NotificationsPage() {
     );
   }
 
+  // New behavior: not gated by 403; show upsell banner instead
+  const shouldUpsell = Boolean(upsell?.code);
+
   if (loading) return <div className="p-6">Loading...</div>;
 
   if (error) {
@@ -105,6 +120,17 @@ export default function NotificationsPage() {
         <h1 className="text-2xl font-semibold mb-4">Notifications</h1>
         <div className="border rounded-lg p-4 bg-red-50 text-red-700 text-sm">{error}</div>
       </div>
+    );
+  }
+
+  if (shouldUpsell) {
+    return (
+      <UpgradeGate
+        title="Notifications are available on paid plans"
+        message={upsell?.message || "Upgrade your plan to unlock schedule and task notifications."}
+        ctaHref="/app/settings/billing"
+        ctaLabel="Upgrade Plan"
+      />
     );
   }
 
@@ -125,9 +151,7 @@ export default function NotificationsPage() {
             {events.map((e) => (
               <li key={e.id} className="border rounded p-3">
                 <div className="font-medium">{e.title}</div>
-                <div className="text-sm text-muted-foreground">
-                  {new Date(e.start_time).toLocaleString()}
-                </div>
+                <div className="text-sm text-muted-foreground">{new Date(e.start_time).toLocaleString()}</div>
               </li>
             ))}
           </ul>
@@ -144,9 +168,7 @@ export default function NotificationsPage() {
               <li key={t.id} className="border rounded p-3">
                 <div className="font-medium">{t.title}</div>
                 {t.due_date ? (
-                  <div className="text-sm text-muted-foreground">
-                    Due {new Date(t.due_date).toLocaleDateString()}
-                  </div>
+                  <div className="text-sm text-muted-foreground">Due {new Date(t.due_date).toLocaleDateString()}</div>
                 ) : null}
               </li>
             ))}
@@ -163,9 +185,7 @@ export default function NotificationsPage() {
             {extractions.map((x) => (
               <li key={x.id} className="border rounded p-3">
                 <div className="text-sm">Extraction from document {x.document_id}</div>
-                <div className="text-xs text-muted-foreground">
-                  {new Date(x.created_at).toLocaleString()}
-                </div>
+                <div className="text-xs text-muted-foreground">{new Date(x.created_at).toLocaleString()}</div>
               </li>
             ))}
           </ul>

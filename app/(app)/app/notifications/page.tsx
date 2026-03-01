@@ -22,7 +22,15 @@ type Extraction = {
   created_at: string;
 };
 
+type Upsell = {
+  code?: string;
+  message?: string;
+};
+
 type NotificationsPayload = {
+  ok?: boolean;
+  plan?: string;
+  upsell?: Upsell | null;
   events: Event[];
   tasks: Task[];
   extractions: Extraction[];
@@ -53,6 +61,9 @@ export default function NotificationsPage() {
         });
 
         const payload: NotificationsPayload = {
+          ok: Boolean(j?.ok ?? true),
+          plan: typeof j?.plan === "string" ? j.plan : undefined,
+          upsell: j?.upsell ?? null,
           events: Array.isArray(j?.events) ? j.events : [],
           tasks: Array.isArray(j?.tasks) ? j.tasks : [],
           extractions: Array.isArray(j?.extractions) ? j.extractions : [],
@@ -67,6 +78,7 @@ export default function NotificationsPage() {
             window.location.href = "/login";
             return;
           }
+          // Back-compat: old API returned 403 for free
           if (e.status === 403) {
             setGated(true);
             setLoading(false);
@@ -86,12 +98,15 @@ export default function NotificationsPage() {
     };
   }, []);
 
-  if (gated) {
+  const upsell = data?.upsell ?? null;
+  const shouldUpsell = Boolean(upsell?.code);
+
+  if (gated || shouldUpsell) {
     return (
       <div className="mx-auto max-w-4xl p-6">
         <UpgradeGate
-          title="Notifications are a paid feature"
-          message="Upgrade your plan to unlock schedule and task notifications."
+          title="Notifications are available on paid plans"
+          message={upsell?.message || "Upgrade your plan to unlock schedule and task notifications."}
           ctaHref="/app/billing"
           ctaLabel="Upgrade Plan"
         />
