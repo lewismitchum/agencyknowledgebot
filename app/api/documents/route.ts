@@ -4,7 +4,7 @@ import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
-import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
+import { ensureUsageDailySchema } from "@/lib/usage";
 import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
 
 export const runtime = "nodejs";
@@ -319,10 +319,9 @@ export async function POST(req: NextRequest) {
     const contentType = upstream.headers.get("content-type") || "application/json";
     const text = await upstream.text();
 
-    // ✅ Count uploads only if upstream succeeded (so failed uploads don't burn quota)
-    if (upstream.status >= 200 && upstream.status < 300) {
-      await incrementUsage(db, ctx.agencyId, dateKey, "uploads", files.length);
-    }
+    // ✅ SINGLE SOURCE OF TRUTH:
+    // /api/upload is responsible for incrementing uploads usage.
+    // Do NOT increment here, or you'll double-count and break limits.
 
     return new Response(text, {
       status: upstream.status,

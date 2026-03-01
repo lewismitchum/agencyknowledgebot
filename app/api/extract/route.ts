@@ -43,6 +43,16 @@ function requireExtractionOr403(plan: unknown) {
   return Response.json(gate.body, { status: gate.status });
 }
 
+function requireScheduleOr403(plan: unknown) {
+  const gate = requireFeature(plan, "schedule");
+  if (gate.ok) return null;
+  return Response.json(gate.body, { status: gate.status });
+}
+
+function asString(v: any) {
+  return typeof v === "string" ? v : String(v ?? "");
+}
+
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -52,12 +62,17 @@ export async function POST(req: NextRequest) {
 
     // Gate using DB plan (authoritative), fallback to ctx.plan
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
-    const gated = requireExtractionOr403(plan);
-    if (gated) return gated;
+
+    // ✅ Extraction is paid-only and implies schedule writes. Gate BOTH.
+    const gatedExtraction = requireExtractionOr403(plan);
+    if (gatedExtraction) return gatedExtraction;
+
+    const gatedSchedule = requireScheduleOr403(plan);
+    if (gatedSchedule) return gatedSchedule;
 
     const body = (await req.json().catch(() => null)) as ExtractBody | null;
-    const botIdFromBody = String(body?.bot_id ?? "").trim();
-    const documentId = String(body?.document_id ?? "").trim();
+    const botIdFromBody = asString(body?.bot_id).trim();
+    const documentId = asString(body?.document_id).trim();
 
     if (!documentId) return Response.json({ error: "Missing document_id" }, { status: 400 });
     if (!botIdFromBody) return Response.json({ error: "Missing bot_id" }, { status: 400 });
@@ -98,6 +113,7 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "Document missing openai_file_id" }, { status: 400 });
     }
 
+    // ✅ bot access: agency bot or caller owns private bot
     const bot = (await db.get(
       `SELECT id, vector_store_id
        FROM bots
@@ -178,28 +194,31 @@ Rules:
       });
     }
 
-    const text = String(resp?.output_text ?? "").trim();
+    const text = asString(resp?.output_text).trim();
     const parsed = safeJsonParse(text);
-    const items: any[] = Array.isArray(parsed?.items) ? parsed.items : [];
+    const items: any[] = Array.isArray((parsed as any)?.items) ? (parsed as any).items : [];
 
     const now = new Date().toISOString();
     let events_created = 0;
     let tasks_created = 0;
 
+    // Optional: clear previous extraction results for this doc to avoid duplicates.
+    // We keep it conservative for now (no deletes) to avoid surprise data loss.
+
     for (const it of items) {
       const type = it?.type === "event" ? "event" : it?.type === "task" ? "task" : null;
-      const title = String(it?.title ?? "").trim();
+      const title = asString(it?.title).trim();
       if (!type || !title) continue;
 
       const confidenceRaw = Number(it?.confidence ?? 0);
       const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0;
 
-      const notes = it?.source_excerpt
-        ? `${String(it.source_excerpt).slice(0, 400)}\n\nconfidence: ${confidence}`
-        : null;
+      const excerpt = it?.source_excerpt ? asString(it.source_excerpt).slice(0, 400) : "";
+      const notes = excerpt ? `${excerpt}\n\nconfidence: ${confidence}` : null;
 
       if (type === "event") {
-        if (!it?.start_at) continue;
+        const startAt = it?.start_at ? asString(it.start_at) : "";
+        if (!startAt) continue;
 
         await db.run(
           `INSERT INTO schedule_events
@@ -210,8 +229,8 @@ Rules:
           doc.bot_id,
           doc.id,
           title,
-          String(it.start_at),
-          it.end_at ? String(it.end_at) : null,
+          startAt,
+          it?.end_at ? asString(it.end_at) : null,
           notes,
           confidence,
           now
@@ -228,7 +247,7 @@ Rules:
           doc.bot_id,
           doc.id,
           title,
-          it?.due_at ? String(it.due_at) : null,
+          it?.due_at ? asString(it.due_at) : null,
           notes,
           confidence,
           now
