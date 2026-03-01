@@ -24,12 +24,6 @@ function secondsUntilUtcMidnight() {
   return Math.max(0, Math.floor((next.getTime() - now.getTime()) / 1000));
 }
 
-function defaultDailyMessagesForPlan(plan: string) {
-  if (plan === "free") return 20;
-  if (plan === "starter") return 500;
-  return null; // Pro+ unlimited
-}
-
 async function ensureAgencyBillingColumns(db: Db) {
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
@@ -38,14 +32,12 @@ async function ensureAgencyBillingColumns(db: Db) {
 }
 
 async function ensureUserColumns(db: Db) {
-  // Drift repair (older DBs may not have these)
   await db.run(`ALTER TABLE users ADD COLUMN role TEXT`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN status TEXT`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN email_verified INTEGER`).catch(() => {});
 }
 
 async function ensureUsageDailyColumns(db: Db) {
-  // Some older DBs used messages_count/uploads_count drift issues
   await db.run(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN uploads_count INTEGER`).catch(() => {});
 }
@@ -66,6 +58,15 @@ async function getDailyUsage(db: Db, agencyId: string, date: string) {
   };
 }
 
+function toUiDailyLimit(raw: unknown): number | null {
+  // Canonical: unlimited must be NULL (never 99999 / huge sentinel).
+  const n = typeof raw === "number" ? raw : raw == null ? null : Number(raw);
+  if (n == null || !Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  if (n >= 90000) return null;
+  return Math.floor(n);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -73,7 +74,6 @@ export async function GET(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    // ✅ harden: prevent SQL_INPUT_ERROR on older schemas
     await ensureAgencyBillingColumns(db);
     await ensureUserColumns(db);
     await ensureUsageDailyColumns(db);
@@ -115,27 +115,19 @@ export async function GET(req: NextRequest) {
         }
       | undefined;
 
-    // Plan + limits
     const rawPlan = agency?.plan ?? ctx.plan ?? "free";
     const plan = normalizePlan(rawPlan);
     const limits = getPlanLimits(plan);
 
-    let dailyLimit: number | null = (limits as any)?.daily_messages ?? null;
-    if (dailyLimit != null && Number(dailyLimit) <= 0) dailyLimit = null;
+    // ✅ Source of truth: plans.ts
+    const dailyLimit = toUiDailyLimit((limits as any)?.daily_messages);
 
-    if (dailyLimit == null) {
-      const fallback = defaultDailyMessagesForPlan(plan);
-      if (fallback != null) dailyLimit = fallback;
-    }
-
-    // Usage
     const date = todayYmd();
     const usage = await getDailyUsage(db, ctx.agencyId, date);
 
-    const daily_remaining =
-      dailyLimit == null ? null : Math.max(0, Number(dailyLimit) - Number(usage.messages_count));
+    // ✅ null => unlimited. Never return sentinel.
+    const daily_remaining = dailyLimit == null ? null : Math.max(0, dailyLimit - Number(usage.messages_count));
 
-    // Documents count (agency-scoped)
     const docsRow = (await db.get(
       `SELECT COUNT(1) as c
        FROM documents

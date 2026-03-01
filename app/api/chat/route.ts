@@ -2,7 +2,7 @@
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
-import { normalizePlan } from "@/lib/plans";
+import { normalizePlan, getPlanLimits } from "@/lib/plans";
 import { openai } from "@/lib/openai";
 import { ensureSchema } from "@/lib/schema";
 import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
@@ -267,6 +267,15 @@ function responseHasFileSearchEvidence(resp: any) {
   return false;
 }
 
+function toUiDailyLimit(raw: unknown): number | null {
+  // Canonical: unlimited must be NULL to the client (never 99999 / huge sentinel).
+  const n = typeof raw === "number" ? raw : raw == null ? null : Number(raw);
+  if (n == null || !Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  if (n >= 90000) return null; // treat sentinel-style "unlimited" as null
+  return Math.floor(n);
+}
+
 export async function GET() {
   return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
@@ -397,12 +406,15 @@ Do not add extra words before or after the fallback.
       );
     }
 
+    const limits = getPlanLimits(planKey);
+    const dailyLimitUi = toUiDailyLimit((limits as any)?.daily_messages);
+
     return Response.json({
       ok: true,
       answer,
       usage: {
         used: usageRow.messages_count,
-        daily_limit: Number((await import("@/lib/plans")).getPlanLimits(planKey).daily_messages),
+        daily_limit: dailyLimitUi, // ✅ null means unlimited (never 99999)
         plan: planKey,
         timezone: agencyTz,
         date: dateKey,

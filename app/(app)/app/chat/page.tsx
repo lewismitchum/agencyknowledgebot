@@ -3,13 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
@@ -51,6 +45,22 @@ async function safeJson(r: Response) {
   });
 }
 
+function normalizeDailyRemaining(v: unknown): number | null {
+  // Canonical: unlimited must be NULL (never 99999 / huge sentinel).
+  if (v === null) return null;
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) return 0;
+    if (v >= 90000) return null;
+    if (v < 0) return 0;
+    return Math.floor(v);
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  if (n >= 90000) return null;
+  if (n < 0) return 0;
+  return Math.floor(n);
+}
+
 /**
  * Minimal markdown renderer for assistant output.
  * Supports:
@@ -88,7 +98,6 @@ function AssistantMarkdown({ text }: { text: string }) {
   const lines = src.split("\n");
 
   const blocks: React.ReactNode[] = [];
-
   let i = 0;
 
   function flushParagraph(par: string[]) {
@@ -179,11 +188,7 @@ function AssistantMarkdown({ text }: { text: string }) {
       const level = h[1].length;
       const content = h[2].trim();
       const cls =
-        level === 1
-          ? "text-base font-semibold"
-          : level === 2
-          ? "text-sm font-semibold"
-          : "text-sm font-medium";
+        level === 1 ? "text-base font-semibold" : level === 2 ? "text-sm font-semibold" : "text-sm font-medium";
       const Tag: any = level === 1 ? "h3" : "h4";
       blocks.push(
         <Tag key={`h-${blocks.length}`} className={cls}>
@@ -197,7 +202,6 @@ function AssistantMarkdown({ text }: { text: string }) {
     // unordered list
     const ul = trimmed.match(/^[-*]\s+(.*)$/);
     if (ul) {
-      // switch into UL mode
       if (listKind && listKind !== "ul") {
         flushList(listKind, listItems);
         listItems = [];
@@ -227,7 +231,6 @@ function AssistantMarkdown({ text }: { text: string }) {
 
     // normal text line (part of paragraph)
     if (listKind) {
-      // if we were in a list but now we're not matching list item, end list
       flushList(listKind, listItems);
       listKind = null;
       listItems = [];
@@ -335,15 +338,8 @@ export default function ChatPage() {
 
         setDocumentsCount(Number(j?.documents_count ?? 0));
 
-        // ✅ IMPORTANT: daily_remaining can be null for unlimited (Pro+).
-        if (j?.daily_remaining === null) {
-          setDailyRemaining(null);
-        } else if (typeof j?.daily_remaining === "number") {
-          setDailyRemaining(Number(j.daily_remaining));
-        } else {
-          // unknown => treat as 0 but "Usage unavailable" badge handles it
-          setDailyRemaining(0);
-        }
+        // ✅ daily_remaining null => unlimited. Also protect against legacy sentinel (99999).
+        setDailyRemaining(normalizeDailyRemaining(j?.daily_remaining));
 
         const reset = Number(j?.daily_resets_in_seconds ?? 0);
         setDailyResetsInSeconds(reset);
@@ -468,7 +464,6 @@ export default function ChatPage() {
     if (!input.trim() || loading) return;
     if (accessBlocked) return;
 
-    // If limited plan and remaining is 0, block sending.
     if (dailyRemaining !== null && dailyRemaining === 0 && dailyResetsInSeconds > 0) return;
 
     const userMsg = input.trim();
@@ -525,19 +520,17 @@ export default function ChatPage() {
 
       setUsageLoaded(true);
 
-      // ✅ IMPORTANT: daily_remaining can be null for unlimited (Pro+).
-      if (j?.daily_remaining === null) {
-        setDailyRemaining(null);
-      } else if (typeof j?.daily_remaining === "number") {
-        setDailyRemaining(Number(j.daily_remaining));
-      } else if (j?.usage && typeof j.usage === "object") {
+      // Prefer usage block (new). Fall back to daily_remaining (legacy).
+      if (j?.usage && typeof j.usage === "object") {
         const used = Number(j.usage.used ?? 0);
         const limit = j.usage.daily_limit == null ? null : Number(j.usage.daily_limit);
-        if (limit == null) {
+        if (limit == null || !Number.isFinite(limit) || limit >= 90000) {
           setDailyRemaining(null);
         } else if (limit >= 0) {
-          setDailyRemaining(Math.max(0, limit - used));
+          setDailyRemaining(Math.max(0, Math.floor(limit) - Math.max(0, Math.floor(used))));
         }
+      } else {
+        setDailyRemaining(normalizeDailyRemaining(j?.daily_remaining));
       }
     } catch (e: any) {
       setMessages((m: Msg[]) => [...m, { role: "assistant", text: `Network error: ${String(e?.message ?? e)}` }]);
@@ -570,8 +563,7 @@ export default function ChatPage() {
   const dailyKnown = usageLoaded;
   const dailyBlocked = dailyRemaining !== null && dailyResetsInSeconds > 0 && dailyRemaining === 0;
 
-  const canSend =
-    !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0;
+  const canSend = !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0;
 
   if (accessBlocked) {
     const title = accessBlocked === "blocked" ? "Access blocked" : "Pending approval";
@@ -643,9 +635,7 @@ export default function ChatPage() {
               <Badge variant="outline">Usage unavailable</Badge>
             )}
 
-            <Badge variant={emailVerified ? "secondary" : "outline"}>
-              {emailVerified ? "Verified" : "Unverified"}
-            </Badge>
+            <Badge variant={emailVerified ? "secondary" : "outline"}>{emailVerified ? "Verified" : "Unverified"}</Badge>
 
             {dailyRemaining !== null && dailyResetsInSeconds > 0 ? (
               <Badge variant="outline">Resets in {formatCountdown(dailyResetsInSeconds)}</Badge>
@@ -663,9 +653,7 @@ export default function ChatPage() {
           <div className="flex flex-wrap items-center gap-3">
             <div className="text-sm text-muted-foreground">
               Bot:{" "}
-              <span className="text-foreground font-medium">
-                {botsLoading ? "Loading…" : selectedBotName || "None"}
-              </span>
+              <span className="text-foreground font-medium">{botsLoading ? "Loading…" : selectedBotName || "None"}</span>
             </div>
 
             <select
@@ -708,18 +696,12 @@ export default function ChatPage() {
                         m.role === "user" ? "bg-foreground text-background" : "bg-background/60 text-foreground"
                       }`}
                     >
-                      {m.role === "assistant" ? (
-                        <AssistantMarkdown text={m.text} />
-                      ) : (
-                        <span className="whitespace-pre-wrap">{m.text}</span>
-                      )}
+                      {m.role === "assistant" ? <AssistantMarkdown text={m.text} /> : <span className="whitespace-pre-wrap">{m.text}</span>}
                     </div>
                   </div>
                 ))}
                 {loading && (
-                  <div className="rounded-[22px] bg-background/60 px-4 py-3 text-sm text-muted-foreground">
-                    Thinking…
-                  </div>
+                  <div className="rounded-[22px] bg-background/60 px-4 py-3 text-sm text-muted-foreground">Thinking…</div>
                 )}
                 <div ref={bottomRef} />
               </div>

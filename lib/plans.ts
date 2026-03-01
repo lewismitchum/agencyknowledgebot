@@ -3,7 +3,7 @@
 export type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corporation";
 
 export type PlanLimits = {
-  daily_messages: number;
+  daily_messages: number | null; // null = unlimited
   daily_uploads: number | null; // null = unlimited
   max_users: number | null; // billable members only (exclude owner/admin)
   max_agency_bots: number | null;
@@ -35,7 +35,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     summarize_after_messages: 30,
   },
   pro: {
-    daily_messages: 999999,
+    daily_messages: null, // ✅ unlimited (no sentinels)
     daily_uploads: null,
     max_users: 15,
     max_agency_bots: 3,
@@ -44,7 +44,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     summarize_after_messages: 40,
   },
   enterprise: {
-    daily_messages: 999999,
+    daily_messages: null, // ✅ unlimited
     daily_uploads: null,
     max_users: 50,
     max_agency_bots: 5,
@@ -53,7 +53,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     summarize_after_messages: 50,
   },
   corporation: {
-    daily_messages: 999999,
+    daily_messages: null, // ✅ unlimited
     daily_uploads: null,
     max_users: 100,
     max_agency_bots: 10,

@@ -23,8 +23,13 @@ export async function enforceDailyMessages(
   const limits = getPlanLimits(p);
   const usage = await getUsageRow(db, agencyId, dateKey);
 
-  const limit = Number(limits.daily_messages ?? 0);
-  if (limit > 0 && usage.messages_count >= limit) {
+  const limit = limits.daily_messages; // number | null
+  if (limit == null) return { ok: true }; // ✅ unlimited
+
+  const n = Number(limit);
+  if (!Number.isFinite(n) || n <= 0) return { ok: true };
+
+  if (usage.messages_count >= n) {
     return {
       ok: false,
       status: 429,
@@ -32,7 +37,7 @@ export async function enforceDailyMessages(
         ok: false,
         error: "DAILY_LIMIT_EXCEEDED",
         used: usage.messages_count,
-        daily_limit: limit,
+        daily_limit: n,
         plan: p,
         date: dateKey,
       },
