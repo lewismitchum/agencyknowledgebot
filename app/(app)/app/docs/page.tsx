@@ -11,6 +11,7 @@ type DocRow = {
   openai_file_id?: string | null;
   created_at: string | null;
   bytes?: number | null;
+  mime_type?: string | null;
 };
 
 type BotRow = {
@@ -51,6 +52,17 @@ function formatDate(iso: string | null) {
   return d.toLocaleString();
 }
 
+function labelMime(mime: string | null | undefined) {
+  if (!mime) return null;
+  const m = String(mime).toLowerCase();
+  if (m.startsWith("application/pdf")) return "PDF";
+  if (m.startsWith("text/plain")) return "TXT";
+  if (m.includes("officedocument.wordprocessingml.document")) return "DOCX";
+  if (m.startsWith("image/")) return "IMAGE";
+  if (m.startsWith("video/")) return "VIDEO";
+  return m.toUpperCase();
+}
+
 const BOT_STORAGE_KEY = "louis.docs.selectedBotId";
 
 export default function DocsPage() {
@@ -81,6 +93,9 @@ export default function DocsPage() {
   const [uploadsUsed, setUploadsUsed] = useState<number>(0);
   const [uploadsLimit, setUploadsLimit] = useState<number | null>(null);
   const [uploadsRemaining, setUploadsRemaining] = useState<number | null>(null);
+
+  const planKey = String(plan ?? "").toLowerCase();
+  const isProPlus = planKey === "pro" || planKey === "enterprise" || planKey === "corporation";
 
   const botNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -189,6 +204,7 @@ export default function DocsPage() {
         openai_file_id: d?.openai_file_id ? String(d.openai_file_id) : null,
         created_at: d?.created_at ? String(d.created_at) : null,
         bytes: d?.bytes == null ? null : Number(d.bytes),
+        mime_type: d?.mime_type ? String(d.mime_type) : null,
       }));
 
       setDocs(mapped.filter((d) => d.id));
@@ -317,6 +333,27 @@ export default function DocsPage() {
     }
   }
 
+  const uploadAccept = useMemo(() => {
+    if (isProPlus) {
+      return [
+        ".pdf,.txt,.docx",
+        "application/pdf",
+        "text/plain",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "image/*",
+        "video/*",
+      ].join(",");
+    }
+    return [
+      ".pdf,.txt,.docx",
+      "application/pdf",
+      "text/plain",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ].join(",");
+  }, [isProPlus]);
+
+  const uploadSupportedLabel = isProPlus ? "Supported: PDF, TXT, DOCX, images, video" : "Supported: PDF, TXT, DOCX";
+
   async function onUpload() {
     setUploadMsg("");
     setExtractMsg("");
@@ -338,13 +375,22 @@ export default function DocsPage() {
       return;
     }
 
-    const okType =
+    const name = file.name.toLowerCase();
+    const isDoc =
       file.type === "application/pdf" ||
       file.type === "text/plain" ||
-      file.name.toLowerCase().endsWith(".docx");
+      file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      name.endsWith(".pdf") ||
+      name.endsWith(".txt") ||
+      name.endsWith(".docx");
+
+    const isImage = file.type?.startsWith("image/");
+    const isVideo = file.type?.startsWith("video/");
+
+    const okType = isDoc || (isProPlus && (isImage || isVideo));
 
     if (!okType) {
-      setUploadMsg("Supported files: PDF, TXT, DOCX.");
+      setUploadMsg(isProPlus ? "Supported files: PDF, TXT, DOCX, images, video." : "Supported files: PDF, TXT, DOCX.");
       return;
     }
 
@@ -367,7 +413,7 @@ export default function DocsPage() {
       });
 
       if (fileRef.current) fileRef.current.value = "";
-      setUploadMsg("Uploaded and indexed.");
+      setUploadMsg(isDoc ? "Uploaded and indexed." : "Uploaded. (Media search quality may be limited until enhanced indexing is added.)");
       await loadDocs(selectedBotId);
       await refreshMe();
     } catch (e: any) {
@@ -403,6 +449,13 @@ export default function DocsPage() {
 
         if (e.status === 401) {
           window.location.href = "/login";
+          return;
+        }
+
+        // MIME blocked by plan (server-side truth)
+        if (e.status === 415) {
+          setUploadMsg("That file type isn’t allowed on your plan. Upgrade to upload images/video.");
+          setUploading(false);
           return;
         }
       }
@@ -533,12 +586,12 @@ export default function DocsPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex-1">
             <div className="text-sm font-medium">Upload</div>
-            <div className="text-xs text-muted-foreground">Supported: PDF, TXT, DOCX</div>
+            <div className="text-xs text-muted-foreground">{uploadSupportedLabel}</div>
 
             <input
               ref={fileRef}
               type="file"
-              accept=".pdf,.txt,.docx,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept={uploadAccept}
               className="mt-2 block w-full text-sm"
               disabled={uploading || !selectedBotId || isVectorStoreMissing || uploadsBlocked}
             />
@@ -594,47 +647,57 @@ export default function DocsPage() {
                   </td>
                 </tr>
               ) : (
-                docs.map((doc) => (
-                  <tr key={doc.id} className="border-b last:border-b-0">
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{doc.filename}</div>
-                      {doc.openai_file_id ? (
-                        <div className="text-xs text-muted-foreground">OpenAI file: {doc.openai_file_id}</div>
-                      ) : null}
-                    </td>
+                docs.map((doc) => {
+                  const mimeLabel = labelMime(doc.mime_type);
+                  return (
+                    <tr key={doc.id} className="border-b last:border-b-0">
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="font-medium">{doc.filename}</div>
+                          {mimeLabel ? (
+                            <span className="rounded-full border bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground">
+                              {mimeLabel}
+                            </span>
+                          ) : null}
+                        </div>
+                        {doc.openai_file_id ? (
+                          <div className="text-xs text-muted-foreground">OpenAI file: {doc.openai_file_id}</div>
+                        ) : null}
+                      </td>
 
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {doc.bot_id ? botNameById.get(doc.bot_id) ?? doc.bot_id : "—"}
-                    </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {doc.bot_id ? botNameById.get(doc.bot_id) ?? doc.bot_id : "—"}
+                      </td>
 
-                    <td className="px-4 py-3 text-muted-foreground">{formatBytes(doc.bytes)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{formatBytes(doc.bytes)}</td>
 
-                    <td className="px-4 py-3 text-muted-foreground">{formatDate(doc.created_at)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{formatDate(doc.created_at)}</td>
 
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => onExtract(doc)}
-                          disabled={extractingId === doc.id || !selectedBotId}
-                          className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-                          title="Extract schedule events / tasks from this document"
-                        >
-                          {extractingId === doc.id ? "Extracting…" : "Extract"}
-                        </button>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onExtract(doc)}
+                            disabled={extractingId === doc.id || !selectedBotId}
+                            className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                            title="Extract schedule events / tasks from this document"
+                          >
+                            {extractingId === doc.id ? "Extracting…" : "Extract"}
+                          </button>
 
-                        <button
-                          type="button"
-                          onClick={() => onDelete(doc)}
-                          disabled={deletingId === doc.id}
-                          className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-                        >
-                          {deletingId === doc.id ? "Deleting…" : "Delete"}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                          <button
+                            type="button"
+                            onClick={() => onDelete(doc)}
+                            disabled={deletingId === doc.id}
+                            className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                          >
+                            {deletingId === doc.id ? "Deleting…" : "Delete"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -642,8 +705,7 @@ export default function DocsPage() {
       </div>
 
       <p className="mt-4 text-xs text-muted-foreground">
-        Deleting should remove both the database record and the vector-store file (handled server-side in the DELETE
-        route).
+        Deleting should remove both the database record and the vector-store file (handled server-side in the DELETE route).
       </p>
     </div>
   );

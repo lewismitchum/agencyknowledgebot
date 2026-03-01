@@ -5,7 +5,7 @@ import { openai } from "@/lib/openai";
 import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
-import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
+import { ensureUsageDailySchema, incrementUsage, getUsageRow } from "@/lib/usage";
 import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
 
 export const runtime = "nodejs";
@@ -132,6 +132,14 @@ function isFileLike(v: any): v is File {
   return v && typeof v === "object" && typeof v.name === "string" && typeof v.arrayBuffer === "function";
 }
 
+function toUiDailyUploadsLimit(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : raw == null ? null : Number(raw);
+  if (n == null || !Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  if (n >= 90000) return null;
+  return Math.floor(n);
+}
+
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -145,13 +153,14 @@ export async function POST(req: NextRequest) {
 
     // Source-of-truth plan from DB
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
-    const limits = getPlanLimits(plan);
+    const planKey = normalizePlan(plan);
+    const limits = getPlanLimits(planKey);
 
-    const allowMultimedia = hasFeature(plan, "multimedia");
+    const allowMultimedia = hasFeature(planKey, "multimedia");
     const allowImages = allowMultimedia;
     const allowVideo = allowMultimedia;
     const allowOtherBinary = allowMultimedia;
-    const maxBytes = maxBytesForPlan(plan);
+    const maxBytes = maxBytesForPlan(planKey);
 
     const form = await req.formData();
 
@@ -176,7 +185,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Daily upload limit (plan-based, agency-local day key)
-    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, plan, files.length);
+    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, planKey, files.length);
     if (!uploadsGate.ok) {
       return Response.json(
         {
@@ -199,8 +208,8 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "FILE_TOO_LARGE",
-            message: `File exceeds size limit for plan '${plan}'.`,
-            plan,
+            message: `File exceeds size limit for plan '${planKey}'.`,
+            plan: planKey,
             maxBytes,
             file: { name: file.name, size },
           },
@@ -216,11 +225,11 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `Images are not allowed on plan '${plan}'.`,
-            plan,
+            message: `Images are not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: file.name, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
 
@@ -229,11 +238,11 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `Video is not allowed on plan '${plan}'.`,
-            plan,
+            message: `Video is not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: file.name, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
 
@@ -242,25 +251,24 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `This file type is not allowed on plan '${plan}'.`,
-            plan,
+            message: `This file type is not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: file.name, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
 
-      // docs-only plans: reject "other" binaries
-      if ((plan === "free" || plan === "starter") && kind === "other") {
+      if ((planKey === "free" || planKey === "starter") && kind === "other") {
         return Response.json(
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `This file type is not allowed on plan '${plan}'.`,
-            plan,
+            message: `This file type is not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: file.name, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
     }
@@ -358,7 +366,7 @@ export async function POST(req: NextRequest) {
     await incrementUsage(db, ctx.agencyId, dateKey, "uploads", files.length);
 
     // read latest usage
-    const usageRow = await (await import("@/lib/usage")).getUsageRow(db, ctx.agencyId, dateKey);
+    const usageRow = await getUsageRow(db, ctx.agencyId, dateKey);
 
     return Response.json({
       ok: true,
@@ -368,8 +376,8 @@ export async function POST(req: NextRequest) {
       timezone: agencyTz,
       usage: {
         uploads_used: usageRow.uploads_count,
-        daily_uploads_limit: limits.daily_uploads,
-        plan,
+        daily_uploads_limit: toUiDailyUploadsLimit((limits as any)?.daily_uploads),
+        plan: planKey,
       },
     });
   } catch (err: any) {

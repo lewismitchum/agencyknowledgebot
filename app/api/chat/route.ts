@@ -239,13 +239,9 @@ function looksInternalBusinessQuestion(message: string) {
 }
 
 function responseHasFileSearchEvidence(resp: any) {
-  // OpenAI Responses API can return tool results in output[]; structure varies.
-  // We treat "any file_search tool call produced results" as evidence.
   try {
     const outputs = Array.isArray(resp?.output) ? resp.output : [];
     for (const item of outputs) {
-      // tool outputs often look like: { type: "tool_call", tool_name: "file_search", ... }
-      // or { type: "file_search_call", results: [...] } depending on SDK shape.
       const toolName = (item?.tool_name || item?.name || item?.tool)?.toString?.() ?? "";
       const type = (item?.type || "").toString();
 
@@ -253,10 +249,8 @@ function responseHasFileSearchEvidence(resp: any) {
         const results = item?.results ?? item?.output?.results ?? item?.result ?? item?.output;
         if (Array.isArray(results) && results.length > 0) return true;
 
-        // sometimes results are nested as { data: [...] }
         if (results?.data && Array.isArray(results.data) && results.data.length > 0) return true;
 
-        // if there's a "citations" array or similar
         const citations = item?.citations ?? item?.output?.citations;
         if (Array.isArray(citations) && citations.length > 0) return true;
       }
@@ -268,11 +262,10 @@ function responseHasFileSearchEvidence(resp: any) {
 }
 
 function toUiDailyLimit(raw: unknown): number | null {
-  // Canonical: unlimited must be NULL to the client (never 99999 / huge sentinel).
   const n = typeof raw === "number" ? raw : raw == null ? null : Number(raw);
   if (n == null || !Number.isFinite(n)) return null;
   if (n <= 0) return null;
-  if (n >= 90000) return null; // treat sentinel-style "unlimited" as null
+  if (n >= 90000) return null;
   return Math.floor(n);
 }
 
@@ -341,7 +334,13 @@ export async function POST(req: NextRequest) {
     } else {
       const internal = looksInternalBusinessQuestion(message);
 
-      // Always attempt file_search when available; we use evidence deterministically.
+      // If files exist but the question is explicitly about images/video, avoid hallucination:
+      // - do NOT fallback for internal unless no evidence (handled below)
+      // - but for media, warn the model it may not be able to read pixels/audio
+      const mediaHint =
+        "If the user asks about the contents of an image/video file, be honest: you may not be able to see pixels/audio. " +
+        "Use file_search evidence only. If the docs don't contain the answer, say you don't have it in the docs yet.";
+
       const resp = await openai.responses.create({
         model: "gpt-4.1-mini",
         instructions: `
@@ -351,6 +350,7 @@ Behavior:
 - Docs-first: for internal/business questions, prioritize the user's uploaded docs via file_search.
 - General questions (non-internal): answer normally using general knowledge/reasoning.
 - Never fabricate internal/company-specific details.
+- ${mediaHint}
 - If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
 Do not add extra words before or after the fallback.
@@ -367,7 +367,6 @@ Do not add extra words before or after the fallback.
       if (internal && tools.length > 0 && !hasEvidence) {
         answer = FALLBACK;
       } else if (internal && tools.length === 0) {
-        // No vector store attached; safest is fallback for internal questions.
         answer = FALLBACK;
       } else {
         answer = modelText || (internal ? FALLBACK : "Sorry — I couldn’t generate a response.");
@@ -414,7 +413,7 @@ Do not add extra words before or after the fallback.
       answer,
       usage: {
         used: usageRow.messages_count,
-        daily_limit: dailyLimitUi, // ✅ null means unlimited (never 99999)
+        daily_limit: dailyLimitUi,
         plan: planKey,
         timezone: agencyTz,
         date: dateKey,

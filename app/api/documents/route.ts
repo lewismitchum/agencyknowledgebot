@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
-import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
+import { hasFeature, normalizePlan } from "@/lib/plans";
 import { ensureUsageDailySchema } from "@/lib/usage";
 import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
 
@@ -36,20 +36,28 @@ async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
 
 async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
   const bot = (await db.get(
-    `SELECT id, agency_id, owner_user_id, vector_store_id
+    `SELECT id, agency_id, owner_user_id
      FROM bots
      WHERE id = ?
      LIMIT 1`,
     args.bot_id
-  )) as
-    | { id: string; agency_id: string; owner_user_id: string | null; vector_store_id: string | null }
-    | undefined;
+  )) as | { id: string; agency_id: string; owner_user_id: string | null } | undefined;
 
   if (!bot?.id) throw new Error("BOT_NOT_FOUND");
   if (bot.agency_id !== args.agency_id) throw new Error("FORBIDDEN_BOT");
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
+}
 
-  const vsId = String(bot.vector_store_id ?? "").trim();
+async function assertBotVectorStorePresent(db: Db, args: { bot_id: string }) {
+  const row = (await db.get(
+    `SELECT vector_store_id
+     FROM bots
+     WHERE id = ?
+     LIMIT 1`,
+    args.bot_id
+  )) as { vector_store_id?: string | null } | undefined;
+
+  const vsId = String(row?.vector_store_id ?? "").trim();
   if (!vsId) throw new Error("BOT_VECTOR_STORE_MISSING");
 }
 
@@ -132,6 +140,31 @@ function pickFilesFromFormData(formData: FormData): File[] {
   return out;
 }
 
+async function loadDocumentsForBot(db: Db, agencyId: string, botId: string) {
+  // Drift-safe: older DBs may not have mime_type/bytes.
+  try {
+    const rows = await db.all(
+      `SELECT id, title, openai_file_id, mime_type, bytes, created_at
+       FROM documents
+       WHERE agency_id = ? AND bot_id = ?
+       ORDER BY created_at DESC`,
+      agencyId,
+      botId
+    );
+    return rows ?? [];
+  } catch {
+    const rows = await db.all(
+      `SELECT id, title, openai_file_id, created_at
+       FROM documents
+       WHERE agency_id = ? AND bot_id = ?
+       ORDER BY created_at DESC`,
+      agencyId,
+      botId
+    );
+    return rows ?? [];
+  }
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -154,21 +187,14 @@ export async function GET(req: NextRequest) {
       bot_id = fallback;
     }
 
-    // access + VS presence check
+    // access check (do NOT require vector store for listing)
     await assertBotAccess(db, {
       bot_id,
       agency_id: ctx.agencyId,
       user_id: ctx.userId,
     });
 
-    const documents = await db.all(
-      `SELECT id, title, openai_file_id, created_at
-       FROM documents
-       WHERE agency_id = ? AND bot_id = ?
-       ORDER BY created_at DESC`,
-      ctx.agencyId,
-      bot_id
-    );
+    const documents = await loadDocumentsForBot(db, ctx.agencyId, bot_id);
 
     return Response.json({ ok: true, bot_id, documents: documents ?? [] });
   } catch (err: any) {
@@ -180,9 +206,6 @@ export async function GET(req: NextRequest) {
     const msg = String(err?.message ?? err);
     if (msg === "BOT_NOT_FOUND") return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
     if (msg === "FORBIDDEN_BOT") return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
-    if (msg === "BOT_VECTOR_STORE_MISSING") {
-      return Response.json({ ok: false, error: "BOT_VECTOR_STORE_MISSING" }, { status: 409 });
-    }
 
     console.error("DOCUMENTS_GET_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });
@@ -202,13 +225,13 @@ export async function POST(req: NextRequest) {
 
     // Source of truth plan from DB
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
-    const limits = getPlanLimits(plan);
+    const planKey = normalizePlan(plan);
 
-    const allowMultimedia = hasFeature(plan, "multimedia");
+    const allowMultimedia = hasFeature(planKey, "multimedia");
     const allowImages = allowMultimedia;
     const allowVideo = allowMultimedia;
     const allowOtherBinary = allowMultimedia;
-    const maxBytes = maxBytesForPlan(plan);
+    const maxBytes = maxBytesForPlan(planKey);
 
     const formData = await req.formData();
 
@@ -218,12 +241,12 @@ export async function POST(req: NextRequest) {
       const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
       if (!fallback) return Response.json({ ok: false, error: "NO_BOTS" }, { status: 404 });
       bot_id = fallback;
-      // ensure upstream receives bot_id
       formData.set("bot_id", bot_id);
     }
 
     // ✅ enforce bot access + vector store presence BEFORE any gating/forwarding
     await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
+    await assertBotVectorStorePresent(db, { bot_id });
 
     // --- HARD UPLOAD ENFORCEMENT (server-side, before forwarding) ---
     const files = pickFilesFromFormData(formData);
@@ -233,7 +256,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Daily uploads gating (centralized)
-    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, plan, files.length);
+    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, planKey, files.length);
     if (!uploadsGate.ok) {
       return Response.json(
         {
@@ -256,8 +279,8 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "FILE_TOO_LARGE",
-            message: `File exceeds size limit for plan '${plan}'.`,
-            plan,
+            message: `File exceeds size limit for plan '${planKey}'.`,
+            plan: planKey,
             maxBytes,
             file: { name: (f as any).name ?? null, size },
           },
@@ -273,11 +296,11 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `Images are not allowed on plan '${plan}'.`,
-            plan,
+            message: `Images are not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: (f as any).name ?? null, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
 
@@ -286,11 +309,11 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `Video is not allowed on plan '${plan}'.`,
-            plan,
+            message: `Video is not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: (f as any).name ?? null, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
 
@@ -299,24 +322,24 @@ export async function POST(req: NextRequest) {
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `This file type is not allowed on plan '${plan}'.`,
-            plan,
+            message: `This file type is not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: (f as any).name ?? null, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
 
-      if ((plan === "free" || plan === "starter") && kind === "other") {
+      if ((planKey === "free" || planKey === "starter") && kind === "other") {
         return Response.json(
           {
             ok: false,
             error: "MIME_NOT_ALLOWED",
-            message: `This file type is not allowed on plan '${plan}'.`,
-            plan,
+            message: `This file type is not allowed on plan '${planKey}'.`,
+            plan: planKey,
             file: { name: (f as any).name ?? null, type: mime, kind },
           },
-          { status: 403 }
+          { status: 415 }
         );
       }
     }
