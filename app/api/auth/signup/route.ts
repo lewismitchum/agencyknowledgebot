@@ -101,7 +101,6 @@ export async function POST(req: NextRequest) {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const agencyName = name.trim();
 
     // IMPORTANT: "signup" here is for creating a NEW agency/owner.
     // If the email already exists as an AGENCY login, block.
@@ -149,8 +148,9 @@ export async function POST(req: NextRequest) {
         id, name, email, password_hash, vector_store_id, created_at,
         email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+
       agencyId,
-      agencyName,
+      name.trim(),
       normalizedEmail,
       password_hash,
       null,
@@ -161,11 +161,12 @@ export async function POST(req: NextRequest) {
       willSendEmail ? nowIso() : null
     );
 
-    // Owner user: always active if no email verification, otherwise pending until verified.
-    // Onboarding: explicitly start as NOT completed (0).
+    // Owner user: if verification required => pending until verified.
+    // Onboarding starts incomplete (0).
     await db.run(
       `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at, password_hash)
        VALUES (?, ?, ?, ?, 'owner', ?, 0, ?, ?, ?)`,
+
       ownerUserId,
       agencyId,
       normalizedEmail,
@@ -199,17 +200,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ✅ Welcome email:
-    // - If verification is NOT required: send immediately.
-    // - If verification IS required: send AFTER they verify (see /api/auth/verify-email below).
+    // If email verification is NOT required, send welcome immediately (never blocks signup).
     if (emailVerified) {
-      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName });
+      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName: name.trim() });
     }
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
 
-    if (isJson) {
-      const res = NextResponse.json({ ok: true, redirectTo });
+    // ✅ Only set a session when the account is active (no email verification required).
+    if (emailVerified) {
+      if (isJson) {
+        const res = NextResponse.json({ ok: true, redirectTo });
+        setSessionCookie(res, {
+          agencyId,
+          agencyEmail: normalizedEmail,
+          userId: ownerUserId,
+          userEmail: normalizedEmail,
+        });
+        return res;
+      }
+
+      const res = NextResponse.redirect(new URL(redirectTo, req.url));
       setSessionCookie(res, {
         agencyId,
         agencyEmail: normalizedEmail,
@@ -219,14 +230,12 @@ export async function POST(req: NextRequest) {
       return res;
     }
 
-    const res = NextResponse.redirect(new URL(redirectTo, req.url));
-    setSessionCookie(res, {
-      agencyId,
-      agencyEmail: normalizedEmail,
-      userId: ownerUserId,
-      userEmail: normalizedEmail,
-    });
-    return res;
+    // ✅ Verification required: do NOT create a session yet.
+    if (isJson) {
+      return NextResponse.json({ ok: true, redirectTo });
+    }
+
+    return NextResponse.redirect(new URL(redirectTo, req.url));
   } catch (err: any) {
     console.error("SIGNUP_ERROR", err);
     return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
