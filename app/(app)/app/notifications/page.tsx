@@ -1,4 +1,3 @@
-// app/(app)/app/notifications/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -24,12 +23,9 @@ type Extraction = {
 };
 
 type NotificationsPayload = {
-  plan: string;
-  schedule_enabled: boolean;
   events: Event[];
   tasks: Task[];
   extractions: Extraction[];
-  notices: Array<{ id: string; title: string; body: string }>;
 };
 
 function isFetchJsonError(e: any): e is FetchJsonError {
@@ -39,6 +35,7 @@ function isFetchJsonError(e: any): e is FetchJsonError {
 export default function NotificationsPage() {
   const [data, setData] = useState<NotificationsPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [gated, setGated] = useState(false);
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
@@ -46,6 +43,7 @@ export default function NotificationsPage() {
 
     async function load() {
       setLoading(true);
+      setGated(false);
       setError("");
 
       try {
@@ -55,21 +53,25 @@ export default function NotificationsPage() {
         });
 
         const payload: NotificationsPayload = {
-          plan: String(j?.plan ?? "free"),
-          schedule_enabled: !!j?.schedule_enabled,
           events: Array.isArray(j?.events) ? j.events : [],
           tasks: Array.isArray(j?.tasks) ? j.tasks : [],
           extractions: Array.isArray(j?.extractions) ? j.extractions : [],
-          notices: Array.isArray(j?.notices) ? j.notices : [],
         };
 
         if (!cancelled) setData(payload);
       } catch (e: any) {
         if (cancelled) return;
 
-        if (isFetchJsonError(e) && e.status === 401) {
-          window.location.href = "/login";
-          return;
+        if (isFetchJsonError(e)) {
+          if (e.status === 401) {
+            window.location.href = "/login";
+            return;
+          }
+          if (e.status === 403) {
+            setGated(true);
+            setLoading(false);
+            return;
+          }
         }
 
         setError(e?.message ?? "Failed to load notifications");
@@ -84,6 +86,19 @@ export default function NotificationsPage() {
     };
   }, []);
 
+  if (gated) {
+    return (
+      <div className="mx-auto max-w-4xl p-6">
+        <UpgradeGate
+          title="Notifications are a paid feature"
+          message="Upgrade your plan to unlock schedule and task notifications."
+          ctaHref="/app/billing"
+          ctaLabel="Upgrade Plan"
+        />
+      </div>
+    );
+  }
+
   if (loading) return <div className="p-6">Loading...</div>;
 
   if (error) {
@@ -95,69 +110,13 @@ export default function NotificationsPage() {
     );
   }
 
-  const plan = data?.plan ?? "free";
-  const scheduleEnabled = !!data?.schedule_enabled;
-
-  // Notifications are for all tiers, but schedule/task feed is Starter+.
-  if (!scheduleEnabled) {
-    return (
-      <div className="p-6 space-y-6">
-        <h1 className="text-2xl font-semibold">Notifications</h1>
-
-        <div className="rounded-2xl border bg-card p-5">
-          <div className="text-sm font-medium">You’re on {plan}.</div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            Schedule, tasks, and extraction notifications unlock on Starter+.
-          </div>
-          <div className="mt-4">
-            <UpgradeGate
-              title="Unlock notifications that matter"
-              message="Upgrade to get schedule/task reminders and extraction outcomes."
-              ctaHref="/app/billing"
-              ctaLabel="Upgrade"
-            />
-          </div>
-        </div>
-
-        {(data?.notices ?? []).length > 0 ? (
-          <section>
-            <h2 className="mb-2 text-lg font-medium">Notices</h2>
-            <ul className="space-y-2">
-              {(data?.notices ?? []).map((n) => (
-                <li key={n.id} className="rounded-lg border p-3">
-                  <div className="font-medium">{n.title}</div>
-                  <div className="text-sm text-muted-foreground">{n.body}</div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-      </div>
-    );
-  }
-
   const events = data?.events ?? [];
   const tasks = data?.tasks ?? [];
   const extractions = data?.extractions ?? [];
-  const notices = data?.notices ?? [];
 
   return (
     <div className="p-6 space-y-8">
       <h1 className="text-2xl font-semibold">Notifications</h1>
-
-      {notices.length > 0 ? (
-        <section>
-          <h2 className="mb-2 text-lg font-medium">Notices</h2>
-          <ul className="space-y-2">
-            {notices.map((n) => (
-              <li key={n.id} className="rounded-lg border p-3">
-                <div className="font-medium">{n.title}</div>
-                <div className="text-sm text-muted-foreground">{n.body}</div>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
 
       <section>
         <h2 className="mb-2 text-lg font-medium">Upcoming Events</h2>
@@ -168,7 +127,9 @@ export default function NotificationsPage() {
             {events.map((e) => (
               <li key={e.id} className="rounded border p-3">
                 <div className="font-medium">{e.title}</div>
-                <div className="text-sm text-muted-foreground">{new Date(e.start_time).toLocaleString()}</div>
+                <div className="text-sm text-muted-foreground">
+                  {new Date(e.start_time).toLocaleString()}
+                </div>
               </li>
             ))}
           </ul>
@@ -185,7 +146,9 @@ export default function NotificationsPage() {
               <li key={t.id} className="rounded border p-3">
                 <div className="font-medium">{t.title}</div>
                 {t.due_date ? (
-                  <div className="text-sm text-muted-foreground">Due {new Date(t.due_date).toLocaleDateString()}</div>
+                  <div className="text-sm text-muted-foreground">
+                    Due {new Date(t.due_date).toLocaleDateString()}
+                  </div>
                 ) : null}
               </li>
             ))}
@@ -202,7 +165,9 @@ export default function NotificationsPage() {
             {extractions.map((x) => (
               <li key={x.id} className="rounded border p-3">
                 <div className="text-sm">Extraction from document {x.document_id}</div>
-                <div className="text-xs text-muted-foreground">{new Date(x.created_at).toLocaleString()}</div>
+                <div className="text-xs text-muted-foreground">
+                  {new Date(x.created_at).toLocaleString()}
+                </div>
               </li>
             ))}
           </ul>

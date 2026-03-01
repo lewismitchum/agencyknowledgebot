@@ -1,11 +1,12 @@
-// app/api/notifications/route.ts
-import { NextResponse, type NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
 import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const SCHEDULE_PLANS: PlanKey[] = ["starter", "pro", "enterprise", "corporation"];
 
@@ -20,38 +21,14 @@ export async function GET(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const agency = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, session.agencyId)) as
+    const agency = (await db.get(`SELECT plan FROM agencies WHERE id = ?`, session.agencyId)) as
       | { plan?: string | null }
       | undefined;
 
-    const planKey = normalizePlan(agency?.plan || "free");
-    const scheduleEnabled = isScheduleEnabled(planKey);
+    const plan = normalizePlan(agency?.plan ?? session.plan ?? "free");
 
-    const notices = [
-      {
-        id: "n_docs_first",
-        title: "Docs-first answers",
-        body: "For internal questions, Louis prioritizes your uploads and stays honest when the docs don’t support it.",
-      },
-    ];
-
-    if (!scheduleEnabled) {
-      // Notifications page exists for all tiers; schedule feed is gated.
-      return NextResponse.json({
-        plan: planKey,
-        schedule_enabled: false,
-        events: [],
-        tasks: [],
-        extractions: [],
-        notices: [
-          ...notices,
-          {
-            id: "n_upgrade_schedule",
-            title: "Upgrade for schedule notifications",
-            body: "Unlock schedule, tasks, and extraction notifications on Starter+.",
-          },
-        ],
-      });
+    if (!isScheduleEnabled(plan)) {
+      return NextResponse.json({ error: "SCHEDULE_NOT_ENABLED" }, { status: 403 });
     }
 
     const now = new Date();
@@ -105,12 +82,9 @@ export async function GET(req: NextRequest) {
     );
 
     return NextResponse.json({
-      plan: planKey,
-      schedule_enabled: true,
       events: Array.isArray(events) ? events : [],
       tasks: Array.isArray(tasks) ? tasks : [],
       extractions: Array.isArray(extractions) ? extractions : [],
-      notices,
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
@@ -123,6 +97,9 @@ export async function GET(req: NextRequest) {
     }
 
     console.error("NOTIFICATIONS_GET_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }
