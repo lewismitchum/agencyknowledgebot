@@ -1,4 +1,3 @@
-// app/(public)/check-email/page.tsx
 import { Suspense } from "react";
 import CheckEmailClient from "./check-email-client";
 
