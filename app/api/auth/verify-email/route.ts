@@ -4,6 +4,7 @@ import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { hashToken } from "@/lib/tokens";
 import { sendWelcomeEmailSafe } from "@/lib/email";
+import { setSessionCookie } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,10 +13,6 @@ async function ensureUserRoleColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
 }
 
 async function verifyTokenAndActivate(db: Db, token: string) {
@@ -33,10 +30,10 @@ async function verifyTokenAndActivate(db: Db, token: string) {
   )) as
     | {
         id: string;
-        name: string | null;
+        name: string;
         email: string;
         email_verify_expires_at: string | null;
-        email_verified: number | null;
+        email_verified: number;
       }
     | undefined;
 
@@ -48,7 +45,7 @@ async function verifyTokenAndActivate(db: Db, token: string) {
 
   let justVerified = false;
 
-  if (!Number(agency.email_verified ?? 0)) {
+  if (!agency.email_verified) {
     if (!exp || Date.now() > exp) {
       return { ok: false as const, status: 400, error: "Invalid or expired link" };
     }
@@ -70,22 +67,39 @@ async function verifyTokenAndActivate(db: Db, token: string) {
     `UPDATE users
      SET email_verified = 1,
          role = coalesce(role, 'owner'),
-         status = 'active',
-         updated_at = COALESCE(updated_at, datetime('now'))
+         status = 'active'
      WHERE agency_id = ? AND lower(email) = lower(?)`,
     agency.id,
     agency.email
   );
 
-  // ✅ Send welcome email exactly once: only when the agency transitions to verified.
+  const userRow = (await db.get(
+    `SELECT id, email
+     FROM users
+     WHERE agency_id = ? AND lower(email) = lower(?)
+     LIMIT 1`,
+    agency.id,
+    agency.email
+  )) as { id: string; email: string } | undefined;
+
+  if (!userRow?.id) {
+    return { ok: false as const, status: 500, error: "Owner user missing" };
+  }
+
   if (justVerified) {
     void sendWelcomeEmailSafe({
       to: agency.email,
-      agencyName: agency.name ?? null,
+      agencyName: agency.name,
     });
   }
 
-  return { ok: true as const };
+  return {
+    ok: true as const,
+    agencyId: agency.id,
+    agencyEmail: agency.email,
+    userId: userRow.id,
+    userEmail: userRow.email,
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -100,8 +114,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(new URL(`/verify-email?error=${encodeURIComponent(out.error)}`, req.url));
     }
 
-    // Verified -> send them into the app.
-    return NextResponse.redirect(new URL("/app", req.url));
+    // ✅ Auto-login on verify
+    const res = NextResponse.redirect(new URL("/app/chat", req.url));
+    setSessionCookie(res, {
+      agencyId: out.agencyId,
+      agencyEmail: out.agencyEmail,
+      userId: out.userId,
+      userEmail: out.userEmail,
+    });
+    return res;
   } catch (err: any) {
     console.error("VERIFY_EMAIL_GET_ERROR", err);
     return NextResponse.redirect(new URL("/verify-email?error=server_error", req.url));
@@ -118,7 +139,15 @@ export async function POST(req: NextRequest) {
     const out = await verifyTokenAndActivate(db, String(token || ""));
     if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status });
 
-    return NextResponse.json({ ok: true });
+    // Optional: also set session cookie for POST verification flows
+    const res = NextResponse.json({ ok: true });
+    setSessionCookie(res, {
+      agencyId: out.agencyId,
+      agencyEmail: out.agencyEmail,
+      userId: out.userId,
+      userEmail: out.userEmail,
+    });
+    return res;
   } catch (err: any) {
     console.error("VERIFY_EMAIL_POST_ERROR", err);
     return NextResponse.json(
