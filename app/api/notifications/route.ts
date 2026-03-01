@@ -4,111 +4,108 @@ import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
-import { normalizePlan, requireFeature } from "@/lib/plans";
+import { hasFeature, normalizePlan } from "@/lib/plans";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type Upsell = { code?: string; message?: string };
+
 export async function GET(req: NextRequest) {
   try {
-    const session = await requireActiveMember(req);
+    const ctx = await requireActiveMember(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const agency = (await db.get(`SELECT plan FROM agencies WHERE id = ?`, session.agencyId)) as
-      | { plan?: string | null }
-      | undefined;
+    const agency = (await db.get(
+      `SELECT plan
+       FROM agencies
+       WHERE id = ?
+       LIMIT 1`,
+      ctx.agencyId
+    )) as { plan: string | null } | undefined;
 
-    const plan = normalizePlan(agency?.plan ?? session.plan ?? "free");
+    const plan = normalizePlan(agency?.plan ?? (ctx as any)?.plan ?? "free");
 
-    // ✅ Notifications endpoint exists for ALL tiers.
-    // Free returns empty data + upsell (no hard 403).
-    const scheduleGate = requireFeature(plan, "schedule");
-    if (!scheduleGate.ok) {
+    // Notifications page is visible to all plans.
+    // But schedule-derived data is a paid feature; free gets empty arrays + an upsell hint.
+    const scheduleEnabled = hasFeature(plan, "schedule");
+
+    const upsell: Upsell | null = scheduleEnabled
+      ? null
+      : {
+          code: "UPSELL_SCHEDULE",
+          message:
+            "Upgrade to unlock schedule + task notifications (auto-extracted from docs).",
+        };
+
+    if (!scheduleEnabled) {
       return NextResponse.json({
         ok: true,
         plan,
-        upsell: {
-          code: "SCHEDULE_NOT_ENABLED",
-          message: "Upgrade to unlock schedule + extraction notifications.",
-        },
+        upsell,
         events: [],
         tasks: [],
         extractions: [],
       });
     }
 
-    const now = new Date();
-    const in7Days = new Date(now.getTime());
-    in7Days.setDate(in7Days.getDate() + 7);
+    const nowIso = new Date().toISOString();
 
-    const events = await db.all(
-      `
-      SELECT
-        id,
-        title,
-        start_at AS start_time
-      FROM schedule_events
-      WHERE agency_id = ?
-        AND start_at BETWEEN ? AND ?
-      ORDER BY start_at ASC
-      LIMIT 10
-      `,
-      session.agencyId,
-      now.toISOString(),
-      in7Days.toISOString()
-    );
+    const events = (await db.all(
+      `SELECT id, title, start_time
+       FROM schedule_events
+       WHERE agency_id = ?
+         AND start_time >= ?
+       ORDER BY start_time ASC
+       LIMIT 10`,
+      ctx.agencyId,
+      nowIso
+    )) as Array<{ id: string; title: string; start_time: string }>;
 
-    const tasks = await db.all(
-      `
-      SELECT
-        id,
-        title,
-        due_at AS due_date
-      FROM schedule_tasks
-      WHERE agency_id = ?
-        AND status = 'open'
-      ORDER BY COALESCE(due_at, '9999-12-31T00:00:00.000Z') ASC
-      LIMIT 10
-      `,
-      session.agencyId
-    );
+    // Prefer "status" if present, otherwise completed_at semantics.
+    // (If your schema only has one of these, ensureSchema should create canonical columns.)
+    const tasks = (await db.all(
+      `SELECT id, title, due_date
+       FROM schedule_tasks
+       WHERE agency_id = ?
+         AND (status IS NULL OR lower(status) != 'done')
+       ORDER BY
+         CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
+         due_date ASC
+       LIMIT 25`,
+      ctx.agencyId
+    )) as Array<{ id: string; title: string; due_date: string | null }>;
 
-    const extractions = await db.all(
-      `
-      SELECT
-        id,
-        document_id,
-        created_at
-      FROM extractions
-      WHERE agency_id = ?
-      ORDER BY created_at DESC
-      LIMIT 5
-      `,
-      session.agencyId
-    );
+    const extractions = (await db.all(
+      `SELECT id, document_id, created_at
+       FROM extractions
+       WHERE agency_id = ?
+       ORDER BY created_at DESC
+       LIMIT 25`,
+      ctx.agencyId
+    )) as Array<{ id: string; document_id: string; created_at: string }>;
 
     return NextResponse.json({
       ok: true,
       plan,
-      events: Array.isArray(events) ? events : [],
-      tasks: Array.isArray(tasks) ? tasks : [],
-      extractions: Array.isArray(extractions) ? extractions : [],
+      upsell,
+      events: events ?? [],
+      tasks: tasks ?? [],
+      extractions: extractions ?? [],
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
-
     if (code === "UNAUTHENTICATED") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
     }
     if (code === "FORBIDDEN_NOT_ACTIVE") {
-      return NextResponse.json({ error: "Pending approval" }, { status: 403 });
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
     }
-
     console.error("NOTIFICATIONS_GET_ERROR", err);
     return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
+      { ok: false, error: "INTERNAL_ERROR", message: String(err?.message ?? err) },
       { status: 500 }
     );
   }
