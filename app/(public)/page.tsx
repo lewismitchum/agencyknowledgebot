@@ -26,15 +26,15 @@ export default function HomePage() {
         <div className="grid gap-10 md:grid-cols-2 md:items-center">
           <div>
             <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
-              Docs-only AI for agencies.
+              Docs-first AI for agencies.
               <span className="block text-muted-foreground">
-                No guessing. No leakage. No hallucinations.
+                Grounded answers. No leakage. No made-up “company facts.”
               </span>
             </h1>
 
             <p className="mt-5 text-lg text-muted-foreground">
-              Upload SOPs, playbooks, onboarding, and brand docs. Louis answers strictly
-              from your files. If it’s not in the docs, it says so — exactly.
+              Upload SOPs, playbooks, onboarding, and brand docs. Louis prioritizes your
+              files for business answers and stays honest when the docs don’t support it.
             </p>
 
             <div className="mt-8 flex flex-wrap gap-3">
@@ -59,16 +59,24 @@ export default function HomePage() {
             </div>
 
             <div className="mt-6 rounded-2xl border bg-card p-4">
-              <div className="text-xs text-muted-foreground">If it’s not in your uploads:</div>
+              <div className="text-xs text-muted-foreground">
+                When you ask an internal question and the docs don’t support an answer:
+              </div>
               <div className="mt-2 rounded-xl bg-muted p-3 font-mono text-sm">
                 I don’t have that information in the docs yet.
               </div>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-2 text-xs text-muted-foreground">
-              <span className="rounded-full border bg-muted/30 px-3 py-1">Per-agency isolation</span>
-              <span className="rounded-full border bg-muted/30 px-3 py-1">Hard docs-only rule</span>
-              <span className="rounded-full border bg-muted/30 px-3 py-1">Plan-based limits</span>
+              <span className="rounded-full border bg-muted/30 px-3 py-1">
+                Per-agency isolation
+              </span>
+              <span className="rounded-full border bg-muted/30 px-3 py-1">
+                Docs-first grounding
+              </span>
+              <span className="rounded-full border bg-muted/30 px-3 py-1">
+                Plan-based limits
+              </span>
             </div>
           </div>
 
@@ -78,10 +86,10 @@ export default function HomePage() {
                 title="Upload your docs"
                 body="SOPs, onboarding, offers, pricing, brand guides."
               />
-              <MockCard title="Ask anything" body="“What’s our onboarding checklist?”" />
+              <MockCard title="Ask questions" body="“What’s our onboarding checklist?”" />
               <MockCard
                 title="Get a grounded answer"
-                body="Answers cite your docs (and never invent anything)."
+                body="Louis prioritizes your uploads for business answers and stays honest when they don’t cover it."
               />
               <div className="rounded-2xl border p-4">
                 <div className="text-sm font-medium">Private by design</div>
@@ -98,8 +106,8 @@ export default function HomePage() {
         <div className="mx-auto max-w-6xl px-4 py-14">
           <div className="grid gap-4 md:grid-cols-3">
             <Feature
-              title="Docs-only enforcement"
-              body="Hard rule: if it’s not in the docs, Louis won’t answer."
+              title="Docs-first grounding"
+              body="Business answers prioritize your uploads. When evidence isn’t there, Louis says so."
             />
             <Feature
               title="Agency isolation"
