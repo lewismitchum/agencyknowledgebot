@@ -13,8 +13,12 @@ type Upsell = { code?: string; message?: string };
 
 async function tableColumns(db: Db, table: string): Promise<Set<string>> {
   const safe = String(table).replace(/[^a-zA-Z0-9_]/g, "");
-  const rows = (await db.all(`PRAGMA table_info(${safe})`)) as Array<{ name?: string }>;
-  return new Set((rows ?? []).map((r) => String(r?.name ?? "").trim()).filter(Boolean));
+  try {
+    const rows = (await db.all(`PRAGMA table_info(${safe})`)) as Array<{ name?: string }>;
+    return new Set((rows ?? []).map((r) => String(r?.name ?? "").trim()).filter(Boolean));
+  } catch {
+    return new Set();
+  }
 }
 
 function pickFirst(cols: Set<string>, options: string[]): string | null {
@@ -64,33 +68,40 @@ export async function GET(req: NextRequest) {
     const evCols = await tableColumns(db, "schedule_events");
     const taskCols = await tableColumns(db, "schedule_tasks");
 
-    const evTitleCol = pickFirst(evCols, ["title", "name", "summary"]) ?? "title";
+    const evTitleCol = pickFirst(evCols, ["title", "name", "summary"]);
     const evStartCol =
       pickFirst(evCols, ["start_time", "starts_at", "start_at", "start", "startsOn", "start_datetime"]) ??
       pickFirst(evCols, ["date", "event_time", "begins_at"]) ??
       null;
 
-    // If we cannot find any reasonable time column, return events empty (don’t 500).
     const nowIso = new Date().toISOString();
 
+    // EVENTS (best-effort, never 500)
     let events: Array<{ id: string; title: string; start_time: string }> = [];
-    if (evStartCol) {
-      const rows = (await db.all(
-        `SELECT id,
-                ${evTitleCol} as title,
-                ${evStartCol} as start_time
-         FROM schedule_events
-         WHERE agency_id = ?
-           AND ${evStartCol} >= ?
-         ORDER BY ${evStartCol} ASC
-         LIMIT 10`,
-        ctx.agencyId,
-        nowIso
-      )) as Array<{ id: string; title: string; start_time: string }>;
-      events = (rows ?? []).filter((r) => r && r.id && r.start_time);
+    try {
+      if (evStartCol) {
+        const titleSelect = evTitleCol ? `${evTitleCol} as title` : `id as title`;
+
+        const rows = (await db.all(
+          `SELECT id,
+                  ${titleSelect},
+                  ${evStartCol} as start_time
+           FROM schedule_events
+           WHERE agency_id = ?
+             AND ${evStartCol} >= ?
+           ORDER BY ${evStartCol} ASC
+           LIMIT 10`,
+          ctx.agencyId,
+          nowIso
+        )) as Array<{ id: string; title: string; start_time: string }>;
+
+        events = (rows ?? []).filter((r) => r && r.id && r.start_time);
+      }
+    } catch {
+      events = [];
     }
 
-    const taskTitleCol = pickFirst(taskCols, ["title", "name", "summary"]) ?? "title";
+    const taskTitleCol = pickFirst(taskCols, ["title", "name", "summary"]);
     const taskDueCol = pickFirst(taskCols, ["due_date", "due_at", "due", "due_datetime", "deadline"]) ?? null;
 
     // Open-ness drift: prefer status; else completed_at; else is_done; else return everything (best-effort)
@@ -103,45 +114,59 @@ export async function GET(req: NextRequest) {
     else if (taskCompletedAtCol) whereOpen = `${taskCompletedAtCol} IS NULL`;
     else if (taskIsDoneCol) whereOpen = `( ${taskIsDoneCol} IS NULL OR ${taskIsDoneCol} = 0 )`;
 
+    const titleSelect = taskTitleCol ? `${taskTitleCol} as title` : `id as title`;
     const dueSelect = taskDueCol ? `${taskDueCol} as due_date` : `NULL as due_date`;
     const dueOrder = taskDueCol
       ? `CASE WHEN ${taskDueCol} IS NULL THEN 1 ELSE 0 END, ${taskDueCol} ASC`
       : `id DESC`;
 
-    const tasks = (await db.all(
-      `SELECT id,
-              ${taskTitleCol} as title,
-              ${dueSelect}
-       FROM schedule_tasks
-       WHERE agency_id = ?
-         AND ${whereOpen}
-       ORDER BY ${dueOrder}
-       LIMIT 25`,
-      ctx.agencyId
-    )) as Array<{ id: string; title: string; due_date: string | null }>;
+    // TASKS (best-effort, never 500)
+    let tasks: Array<{ id: string; title: string; due_date: string | null }> = [];
+    try {
+      tasks = (await db.all(
+        `SELECT id,
+                ${titleSelect},
+                ${dueSelect}
+         FROM schedule_tasks
+         WHERE agency_id = ?
+           AND ${whereOpen}
+         ORDER BY ${dueOrder}
+         LIMIT 25`,
+        ctx.agencyId
+      )) as Array<{ id: string; title: string; due_date: string | null }>;
+      tasks = tasks ?? [];
+    } catch {
+      tasks = [];
+    }
 
-    const extractions = (await db.all(
-      `SELECT id, document_id, created_at
-       FROM extractions
-       WHERE agency_id = ?
-       ORDER BY created_at DESC
-       LIMIT 25`,
-      ctx.agencyId
-    )) as Array<{ id: string; document_id: string; created_at: string }>;
+    // EXTRACTIONS (best-effort, never 500)
+    let extractions: Array<{ id: string; document_id: string; created_at: string }> = [];
+    try {
+      extractions = (await db.all(
+        `SELECT id, document_id, created_at
+         FROM extractions
+         WHERE agency_id = ?
+         ORDER BY created_at DESC
+         LIMIT 25`,
+        ctx.agencyId
+      )) as Array<{ id: string; document_id: string; created_at: string }>;
+      extractions = extractions ?? [];
+    } catch {
+      extractions = [];
+    }
 
     return NextResponse.json({
       ok: true,
       plan,
       upsell,
-      events: events ?? [],
-      tasks: tasks ?? [],
-      extractions: extractions ?? [],
-      // helpful for debugging (safe to keep or remove)
+      events,
+      tasks,
+      extractions,
       _debug: {
         schedule_events_start_col: evStartCol,
-        schedule_events_title_col: evTitleCol,
+        schedule_events_title_col: evTitleCol ?? "id",
         schedule_tasks_due_col: taskDueCol,
-        schedule_tasks_title_col: taskTitleCol,
+        schedule_tasks_title_col: taskTitleCol ?? "id",
         schedule_tasks_open_logic: taskStatusCol
           ? "status != done"
           : taskCompletedAtCol
