@@ -9,25 +9,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function ensureUserRoleColumns(db: Db) {
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN role TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN status TEXT");
-  } catch {}
-  try {
-    await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER");
-  } catch {}
+  await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
 }
 
-export async function POST(req: NextRequest) {
-  const { token } = await req.json().catch(() => ({}));
+async function verifyTokenAndActivate(db: Db, token: string) {
   const t = String(token || "").trim();
-  if (!t) return NextResponse.json({ error: "Missing token" }, { status: 400 });
-
-  const db: Db = await getDb();
-  await ensureSchema(db);
-  await ensureUserRoleColumns(db);
+  if (!t) return { ok: false as const, status: 400, error: "Missing token" };
 
   const tokenHash = hashToken(t);
 
@@ -48,18 +37,16 @@ export async function POST(req: NextRequest) {
     | undefined;
 
   if (!agency?.id) {
-    return NextResponse.json({ error: "Invalid or expired link" }, { status: 400 });
+    return { ok: false as const, status: 400, error: "Invalid or expired link" };
   }
 
-  const exp = agency.email_verify_expires_at
-    ? new Date(agency.email_verify_expires_at).getTime()
-    : 0;
+  const exp = agency.email_verify_expires_at ? new Date(agency.email_verify_expires_at).getTime() : 0;
 
   let justVerified = false;
 
   if (!agency.email_verified) {
     if (!exp || Date.now() > exp) {
-      return NextResponse.json({ error: "Invalid or expired link" }, { status: 400 });
+      return { ok: false as const, status: 400, error: "Invalid or expired link" };
     }
 
     await db.run(
@@ -85,7 +72,6 @@ export async function POST(req: NextRequest) {
     agency.email
   );
 
-  // Send welcome email only when verification actually happens
   if (justVerified) {
     void sendWelcomeEmailSafe({
       to: agency.email,
@@ -93,5 +79,45 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ ok: true });
+  return { ok: true as const };
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const token = req.nextUrl.searchParams.get("token") || "";
+    const db: Db = await getDb();
+    await ensureSchema(db);
+    await ensureUserRoleColumns(db);
+
+    const out = await verifyTokenAndActivate(db, token);
+    if (!out.ok) {
+      return NextResponse.redirect(new URL(`/verify-email?error=${encodeURIComponent(out.error)}`, req.url));
+    }
+
+    // Verified -> send them into the app.
+    return NextResponse.redirect(new URL("/app", req.url));
+  } catch (err: any) {
+    console.error("VERIFY_EMAIL_GET_ERROR", err);
+    return NextResponse.redirect(new URL("/verify-email?error=server_error", req.url));
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { token } = await req.json().catch(() => ({}));
+    const db: Db = await getDb();
+    await ensureSchema(db);
+    await ensureUserRoleColumns(db);
+
+    const out = await verifyTokenAndActivate(db, String(token || ""));
+    if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status });
+
+    return NextResponse.json({ ok: true });
+  } catch (err: any) {
+    console.error("VERIFY_EMAIL_POST_ERROR", err);
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message ?? err) },
+      { status: 500 }
+    );
+  }
 }
