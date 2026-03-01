@@ -1,3 +1,4 @@
+// app/(app)/app/billing/page.tsx
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -20,6 +21,10 @@ type MeResponse =
         plan: string;
         stripe_current_period_end?: string | null;
         stripe_customer_id?: string | null;
+        stripe_subscription_id?: string | null;
+        stripe_price_id?: string | null;
+        trial_used?: number | null;
+        trial_days_left?: number | null;
       };
       user: {
         id: string;
@@ -83,6 +88,10 @@ function BillingContent() {
   const [periodEnd, setPeriodEnd] = useState<string | null>(null);
   const [hasStripeCustomer, setHasStripeCustomer] = useState(false);
 
+  const [stripeSubscriptionId, setStripeSubscriptionId] = useState<string | null>(null);
+  const [trialUsed, setTrialUsed] = useState(false);
+  const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
+
   const [isOwner, setIsOwner] = useState(false);
   const [devPlan, setDevPlan] = useState<PlanKey>("free");
   const [devSaving, setDevSaving] = useState(false);
@@ -111,6 +120,18 @@ function BillingContent() {
 
           if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
           if (a?.stripe_customer_id) setHasStripeCustomer(true);
+
+          setStripeSubscriptionId(typeof a?.stripe_subscription_id === "string" ? a.stripe_subscription_id : null);
+
+          const tu = Number((a as any)?.trial_used ?? 0) === 1;
+          setTrialUsed(tu);
+
+          const tdl = (a as any)?.trial_days_left;
+          if (tdl === null || typeof tdl === "undefined") setTrialDaysLeft(null);
+          else {
+            const n = Number(tdl);
+            setTrialDaysLeft(Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null);
+          }
 
           setIsOwner(String(u?.role || "") === "owner");
         }
@@ -269,6 +290,9 @@ function BillingContent() {
 
   const isPaid = currentPlan && currentPlan !== "free";
 
+  // Eligible if they haven't used trial yet and they don't already have a subscription.
+  const trialEligible = !trialUsed && !stripeSubscriptionId;
+
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8">
       <div className="mb-6">
@@ -292,6 +316,16 @@ function BillingContent() {
               {portalLoading ? "Opening…" : "Manage"}
             </Button>
           </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {trialDaysLeft != null ? (
+            <Badge variant={trialDaysLeft > 0 ? "secondary" : "outline"}>
+              {trialDaysLeft > 0 ? `Trial: ${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"} left` : "Trial ended"}
+            </Badge>
+          ) : null}
+
+          {trialEligible ? <Badge variant="secondary">7-day free trial available</Badge> : null}
         </div>
 
         {periodEnd ? (
@@ -347,6 +381,11 @@ function BillingContent() {
             bots/docs are isolated per user.
           </p>
           <p>Schedule/to-do/calendar extraction is a paid feature. Basic reminders/notifications UI can exist on all tiers.</p>
+          <p>
+            {trialEligible
+              ? "If you upgrade now, your first subscription starts with a 7-day free trial (one-time per agency)."
+              : "Trials are one-time per agency. If you’ve already had a subscription or trial, checkout starts billing immediately."}
+          </p>
         </CardContent>
       </Card>
 
@@ -377,6 +416,12 @@ function BillingContent() {
                     </li>
                   ))}
                 </ul>
+
+                {isPaidCheckout && trialEligible && !isCurrent ? (
+                  <div className="pt-1">
+                    <Badge variant="secondary">Includes 7-day free trial</Badge>
+                  </div>
+                ) : null}
 
                 <div className="pt-2 flex items-center gap-2">
                   {isPaidCheckout ? (

@@ -78,10 +78,7 @@ function toIsoFromUnixSeconds(sec: number | null | undefined) {
   return new Date(sec * 1000).toISOString();
 }
 
-async function findAgencyIdByStripeIds(
-  db: Db,
-  args: { customerId?: string | null; subscriptionId?: string | null }
-) {
+async function findAgencyIdByStripeIds(db: Db, args: { customerId?: string | null; subscriptionId?: string | null }) {
   const subId = String(args.subscriptionId || "").trim();
   const custId = String(args.customerId || "").trim();
 
@@ -150,7 +147,12 @@ async function updateAgencyBilling(
 
 async function recordStripeEventOnce(db: Db, event: Stripe.Event): Promise<boolean> {
   try {
-    await db.run(`INSERT INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)`, event.id, event.type, new Date().toISOString());
+    await db.run(
+      `INSERT INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)`,
+      event.id,
+      event.type,
+      new Date().toISOString()
+    );
     return true;
   } catch {
     return false;
@@ -167,6 +169,12 @@ async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
     await db.run("ROLLBACK").catch(() => {});
     throw e;
   }
+}
+
+function toInt(v: any): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.floor(n);
 }
 
 export async function POST(req: NextRequest) {
@@ -217,12 +225,16 @@ export async function POST(req: NextRequest) {
               ? String((session.subscription as any).id)
               : null;
 
+        const trialDaysMeta = String(((session.metadata || {}) as any)?.trial_days ?? "");
+        const usedTrial = toInt(trialDaysMeta) > 0 ? 1 : 0;
+
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, {
             plan: desired !== "free" ? desired : undefined,
             stripe_customer_id: customerId ?? undefined,
             stripe_subscription_id: subscriptionId ?? undefined,
-            trial_used: 1, // ✅ prevent repeated trials
+            // ✅ Only mark trial_used if this checkout actually started a trial
+            ...(usedTrial ? { trial_used: 1 } : {}),
           });
         }
         return;
@@ -257,6 +269,11 @@ export async function POST(req: NextRequest) {
           agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
         }
 
+        // ✅ Trial used if Stripe says trial_end exists and is in the future, or status is trialing.
+        const trialEndSec = toInt((sub as any).trial_end);
+        const trialingNow = status === "trialing";
+        const hasTrial = trialingNow || trialEndSec > 0;
+
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, {
             plan: active ? bestPlan : "free",
@@ -264,7 +281,7 @@ export async function POST(req: NextRequest) {
             stripe_subscription_id: sub.id ?? undefined,
             stripe_price_id: chosenPriceId ?? undefined,
             stripe_current_period_end: periodEndIso ?? undefined,
-            trial_used: 1, // ✅ also set here for safety
+            ...(hasTrial ? { trial_used: 1 } : {}),
           });
         }
         return;
@@ -352,7 +369,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     console.error("STRIPE_WEBHOOK_ERROR", err);
-    // Stripe retries on non-2xx; we return 200 so you don’t get spammed during transient errors.
     return NextResponse.json({ ok: true, warning: "webhook_error_logged" }, { status: 200 });
   }
 }

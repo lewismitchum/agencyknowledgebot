@@ -45,6 +45,13 @@ function pickMaxAgencyBotsFromAny(limits: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+async function safeJson(r: Response) {
+  return await r.json().catch(async () => {
+    const t = await r.text().catch(() => "");
+    return { _raw: t };
+  });
+}
+
 export default function BotsPage() {
   const [bots, setBots] = useState<BotRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,33 +64,39 @@ export default function BotsPage() {
   const [repairingId, setRepairingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState<string>("");
+
   const [plan, setPlan] = useState<string | null>(null);
   const [limits, setLimits] = useState<any>(null);
   const [botLimitUsed, setBotLimitUsed] = useState<number>(0);
   const [botLimitMax, setBotLimitMax] = useState<number | null>(null);
+
+  const [meRole, setMeRole] = useState<"owner" | "admin" | "member">("member");
+  const [meUserId, setMeUserId] = useState<string>("");
 
   async function loadBots() {
     setLoading(true);
     setMsg("");
     try {
       const r = await fetch("/api/bots", { credentials: "include" });
-      const j = (await r.json().catch(() => null)) as BotsResponse | null;
+      const j = (await safeJson(r)) as BotsResponse | any;
 
       if (!r.ok) {
-        setMsg((j as any)?.error || "Failed to load bots");
+        setMsg(j?.error || "Failed to load bots");
         setBots([]);
         return;
       }
 
-      const rows = Array.isArray(j?.bots) ? j!.bots : [];
-      const normalized: BotRow[] = rows.map((b) => ({
-        id: b.id,
-        name: b.name,
+      const rows = Array.isArray(j?.bots) ? j.bots : [];
+      const normalized: BotRow[] = rows.map((b: any) => ({
+        id: String(b.id),
+        name: String(b.name ?? "Untitled Bot"),
         description: null,
-        owner_user_id: b.owner_user_id,
-        vector_store_id: b.vector_store_id,
-        created_at: b.created_at,
-        scope: b.scope,
+        owner_user_id: b.owner_user_id ?? null,
+        vector_store_id: b.vector_store_id ?? null,
+        created_at: b.created_at ?? null,
+        scope: b.scope === "private" ? "private" : "agency",
       }));
 
       setBots(normalized);
@@ -97,11 +110,19 @@ export default function BotsPage() {
   async function loadMe() {
     try {
       const r = await fetch("/api/me", { credentials: "include" });
-      const j = (await r.json().catch(() => null)) as any;
+      const j = (await safeJson(r)) as any;
       if (!r.ok) return;
 
-      setPlan(String(j?.plan ?? j?.agency?.plan ?? "") || null);
+      const p = String(j?.plan ?? j?.agency?.plan ?? "") || null;
+      setPlan(p);
+
+      // limits may or may not be present depending on /api/me implementation.
       setLimits(j?.limits ?? null);
+
+      const roleRaw = String(j?.user?.role ?? "member").toLowerCase();
+      setMeRole(roleRaw === "owner" ? "owner" : roleRaw === "admin" ? "admin" : "member");
+
+      setMeUserId(String(j?.user?.id ?? ""));
     } catch {
       // non-fatal
     }
@@ -120,7 +141,10 @@ export default function BotsPage() {
     setBotLimitMax(max);
   }, [bots, limits]);
 
-  const defaultBot = useMemo(() => bots.find((b) => (b.scope ? b.scope === "agency" : b.owner_user_id == null)) ?? null, [bots]);
+  const defaultBot = useMemo(
+    () => bots.find((b) => (b.scope ? b.scope === "agency" : b.owner_user_id == null)) ?? null,
+    [bots]
+  );
 
   const agencyBotAtCap = useMemo(() => {
     if (botLimitMax == null) return false;
@@ -128,6 +152,70 @@ export default function BotsPage() {
   }, [botLimitUsed, botLimitMax]);
 
   const isError = /fail|error|required|cannot|unauth|forbidden|quota|billing|limit/i.test(msg);
+
+  function canManageBot(bot: BotRow) {
+    const isPrivate = bot.scope ? bot.scope === "private" : !!bot.owner_user_id;
+    if (isPrivate) return !!meUserId && String(bot.owner_user_id ?? "") === meUserId;
+    return meRole === "owner" || meRole === "admin";
+  }
+
+  function canRenameBot(bot: BotRow) {
+    return canManageBot(bot);
+  }
+
+  function canDeleteBot(bot: BotRow) {
+    return canManageBot(bot);
+  }
+
+  function startRename(bot: BotRow) {
+    setMsg("");
+    setRenamingId(bot.id);
+    setRenameValue(bot.name ?? "");
+  }
+
+  function cancelRename() {
+    setRenamingId(null);
+    setRenameValue("");
+  }
+
+  async function submitRename(bot: BotRow) {
+    const next = renameValue.trim();
+    if (!next) {
+      setMsg("Name is required.");
+      return;
+    }
+
+    setMsg("");
+    setRenamingId(bot.id);
+
+    try {
+      const r = await fetch(`/api/bots/${encodeURIComponent(bot.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name: next }),
+      });
+
+      const j: any = await safeJson(r);
+
+      if (!r.ok) {
+        const e = String(j?.error ?? j?.message ?? "Rename failed");
+        if (e === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only rename your own private bots.");
+        else if (e === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || e === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
+        else setMsg(e);
+        return;
+      }
+
+      setMsg("Bot renamed.");
+      cancelRename();
+      await loadBots();
+    } catch (e: any) {
+      setMsg(e?.message || "Rename failed");
+    } finally {
+      // keep renamingId cleared by cancelRename on success; otherwise leave it
+      if (renamingId && renamingId !== bot.id) setRenamingId(null);
+    }
+  }
 
   async function createBot() {
     setMsg("");
@@ -158,24 +246,24 @@ export default function BotsPage() {
         }),
       });
 
-      const j = await r.json().catch(() => null);
+      const j = await safeJson(r);
 
       if (!r.ok) {
-        if (j?.error === "BOT_LIMIT_REACHED") {
-          const used = Number(j?.bots?.used ?? botLimitUsed);
-          const limit = j?.bots?.limit ?? botLimitMax ?? null;
+        if ((j as any)?.error === "BOT_LIMIT_EXCEEDED") {
+          const used = Number((j as any)?.used ?? botLimitUsed);
+          const limit = (j as any)?.limit ?? botLimitMax ?? null;
           setMsg(limit == null ? "Agency bot limit reached." : `Agency bot limit reached (${used} / ${limit}). Upgrade in Billing.`);
           await loadMe();
           await loadBots();
           return;
         }
 
-        if (j?.error === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || j?.error === "FORBIDDEN_NOT_OWNER") {
+        if ((j as any)?.error === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || (j as any)?.error === "FORBIDDEN_NOT_OWNER") {
           setMsg("Only owner/admin can create agency bots.");
           return;
         }
 
-        setMsg(j?.error || "Create failed");
+        setMsg((j as any)?.error || "Create failed");
         return;
       }
 
@@ -202,14 +290,10 @@ export default function BotsPage() {
         body: JSON.stringify({ bot_id: botId }),
       });
 
-      const text = await r.text();
-      let j: any = null;
-      try {
-        j = text ? JSON.parse(text) : null;
-      } catch {}
+      const j: any = await safeJson(r);
 
       if (!r.ok) {
-        setMsg(j?.error || j?.message || text || "Repair failed");
+        setMsg(j?.error || j?.message || "Repair failed");
         return;
       }
 
@@ -225,25 +309,29 @@ export default function BotsPage() {
   async function deleteBot(bot: BotRow) {
     setMsg("");
 
-    const isPrivate = bot.scope ? bot.scope === "private" : !!bot.owner_user_id;
-    if (!isPrivate) {
-      setMsg("Agency bots cannot be deleted (yet).");
+    if (!canDeleteBot(bot)) {
+      setMsg("You don’t have permission to delete this bot.");
       return;
     }
 
-    const ok = window.confirm(`Delete "${bot.name}"?\n\nThis will remove the bot and related data. This cannot be undone.`);
-    if (!ok) return;
+    const okConfirm = window.confirm(
+      `Delete "${bot.name}"?\n\nThis will remove the bot and related data. This cannot be undone.`
+    );
+    if (!okConfirm) return;
 
     setDeletingId(bot.id);
     try {
-      const r = await fetch(`/api/bots/${bot.id}`, {
+      const r = await fetch(`/api/bots/${encodeURIComponent(bot.id)}`, {
         method: "DELETE",
         credentials: "include",
       });
 
-      const j = await r.json().catch(() => null);
+      const j: any = await safeJson(r);
       if (!r.ok) {
-        setMsg(j?.error || "Delete failed");
+        const e = String(j?.error ?? j?.message ?? "Delete failed");
+        if (e === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only delete your own private bots.");
+        else if (e === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || e === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
+        else setMsg(e);
         return;
       }
 
@@ -308,17 +396,24 @@ export default function BotsPage() {
                   Agency bot cap reached
                 </Badge>
               ) : null}
+              <Badge variant="outline" className="rounded-full">
+                Role: {meRole}
+              </Badge>
             </div>
 
             <Separator />
           </CardHeader>
 
           <CardContent className="space-y-3">
-            {msg && (
-              <div className={`rounded-2xl border p-3 text-sm ${isError ? "border-red-200 bg-red-50 text-red-700" : "bg-background/60"}`}>
+            {msg ? (
+              <div
+                className={`rounded-2xl border p-3 text-sm ${
+                  isError ? "border-red-200 bg-red-50 text-red-700" : "bg-background/60"
+                }`}
+              >
                 {msg}
               </div>
-            )}
+            ) : null}
 
             <div className="overflow-x-auto rounded-2xl border bg-background/60">
               <table className="w-full text-sm">
@@ -348,22 +443,52 @@ export default function BotsPage() {
                     bots.map((b) => {
                       const missing = !b.vector_store_id;
                       const isPrivate = b.scope ? b.scope === "private" : !!b.owner_user_id;
+                      const canManage = canManageBot(b);
 
                       return (
                         <tr key={b.id} className="border-b last:border-b-0">
                           <td className="px-4 py-3">
-                            <div className="font-medium">{b.name}</div>
-                            {b.description && <div className="text-xs text-muted-foreground">{b.description}</div>}
+                            {renamingId === b.id ? (
+                              <div className="flex flex-col gap-2">
+                                <Input
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  placeholder="Bot name"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <Button size="sm" className="h-7 rounded-full px-3" onClick={() => submitRename(b)}>
+                                    Save
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 rounded-full px-3"
+                                    onClick={cancelRename}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="font-medium">{b.name}</div>
+                            )}
+
+                            {b.description ? <div className="text-xs text-muted-foreground">{b.description}</div> : null}
                           </td>
+
                           <td className="px-4 py-3">
                             <Badge variant="outline" className="rounded-full">
                               {isPrivate ? "Private bot" : "Agency bot"}
                             </Badge>
                           </td>
+
                           <td className="px-4 py-3">
                             {missing ? (
                               <div className="flex flex-wrap items-center gap-2">
-                                <Badge variant="outline" className="rounded-full border-amber-200 bg-amber-50 text-amber-800">
+                                <Badge
+                                  variant="outline"
+                                  className="rounded-full border-amber-200 bg-amber-50 text-amber-800"
+                                >
                                   Missing vector store
                                 </Badge>
                                 <Button
@@ -383,21 +508,37 @@ export default function BotsPage() {
                               </Badge>
                             )}
                           </td>
+
                           <td className="px-4 py-3 text-muted-foreground">{formatDate(b.created_at)}</td>
-                          <td className="px-4 py-3 text-right">
-                            {isPrivate ? (
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                className="h-7 rounded-full px-3"
-                                disabled={deletingId === b.id}
-                                onClick={() => deleteBot(b)}
-                              >
-                                {deletingId === b.id ? "Deleting…" : "Delete"}
-                              </Button>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">—</span>
-                            )}
+
+                          <td className="px-4 py-3">
+                            <div className="flex justify-end gap-2">
+                              {canManage && renamingId !== b.id ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 rounded-full px-3"
+                                  onClick={() => startRename(b)}
+                                  disabled={!canRenameBot(b)}
+                                >
+                                  Rename
+                                </Button>
+                              ) : null}
+
+                              {canManage ? (
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  className="h-7 rounded-full px-3"
+                                  disabled={deletingId === b.id || !canDeleteBot(b)}
+                                  onClick={() => deleteBot(b)}
+                                >
+                                  {deletingId === b.id ? "Deleting…" : "Delete"}
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -437,7 +578,9 @@ export default function BotsPage() {
 
             {scope === "agency" ? (
               <div className="rounded-2xl border bg-background/60 p-3 text-xs text-muted-foreground">
-                {botLimitMax == null ? `Agency bot limit: unlimited (used ${botLimitUsed}).` : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
+                {botLimitMax == null
+                  ? `Agency bot limit: unlimited (used ${botLimitUsed}).`
+                  : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
                 {agencyBotAtCap ? " Upgrade in Billing to add more." : ""}
               </div>
             ) : null}
@@ -457,13 +600,24 @@ export default function BotsPage() {
               />
             </div>
 
-            <Button onClick={createBot} disabled={creating || !name.trim() || (scope === "agency" && agencyBotAtCap)} className="rounded-full">
+            <Button
+              onClick={createBot}
+              disabled={creating || !name.trim() || (scope === "agency" && agencyBotAtCap)}
+              className="rounded-full"
+            >
               {creating ? "Creating..." : "Create bot"}
             </Button>
 
             {scope === "agency" && agencyBotAtCap ? (
               <div className="text-xs text-muted-foreground">Creation disabled: agency bot limit reached.</div>
             ) : null}
+
+            <div className="pt-2 text-xs text-muted-foreground">
+              Need to upgrade?{" "}
+              <Link className="underline" href="/app/billing">
+                Go to Billing
+              </Link>
+            </div>
           </CardContent>
         </Card>
       </div>

@@ -29,6 +29,7 @@ async function ensureAgencyBillingColumns(db: Db) {
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN trial_used INTEGER`).catch(() => {});
 }
 
 async function ensureUserColumns(db: Db) {
@@ -67,6 +68,16 @@ function toUiDailyLimit(raw: unknown): number | null {
   return Math.floor(n);
 }
 
+function daysLeftFromPeriodEnd(iso: string | null | undefined) {
+  if (!iso) return null;
+  const end = new Date(String(iso));
+  if (!Number.isFinite(end.getTime())) return null;
+  const now = new Date();
+  const ms = end.getTime() - now.getTime();
+  const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+  return Math.max(0, days);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -80,7 +91,8 @@ export async function GET(req: NextRequest) {
 
     const agency = (await db.get(
       `SELECT id, name, email, plan,
-              stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_current_period_end
+              stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_current_period_end,
+              trial_used
        FROM agencies
        WHERE id = ?
        LIMIT 1`,
@@ -95,6 +107,7 @@ export async function GET(req: NextRequest) {
           stripe_subscription_id: string | null;
           stripe_price_id: string | null;
           stripe_current_period_end: string | null;
+          trial_used: number | null;
         }
       | undefined;
 
@@ -119,13 +132,11 @@ export async function GET(req: NextRequest) {
     const plan = normalizePlan(rawPlan);
     const limits = getPlanLimits(plan);
 
-    // ✅ Source of truth: plans.ts
     const dailyLimit = toUiDailyLimit((limits as any)?.daily_messages);
 
     const date = todayYmd();
     const usage = await getDailyUsage(db, ctx.agencyId, date);
 
-    // ✅ null => unlimited. Never return sentinel.
     const daily_remaining = dailyLimit == null ? null : Math.max(0, dailyLimit - Number(usage.messages_count));
 
     const docsRow = (await db.get(
@@ -138,6 +149,12 @@ export async function GET(req: NextRequest) {
     const role = normalizeUserRole((user as any)?.role ?? (ctx as any)?.role);
     const status = normalizeUserStatus((user as any)?.status ?? (ctx as any)?.status);
 
+    const trial_used = Number((agency as any)?.trial_used ?? 0) === 1 ? 1 : 0;
+
+    // Best-effort: during trial, Stripe period end is also the trial end / current period end.
+    // If they’re not in trial, this still returns days-to-renew (UI can ignore if desired).
+    const trial_days_left = daysLeftFromPeriodEnd(agency?.stripe_current_period_end);
+
     return NextResponse.json({
       ok: true,
       agency: {
@@ -149,6 +166,8 @@ export async function GET(req: NextRequest) {
         stripe_subscription_id: agency?.stripe_subscription_id ?? null,
         stripe_price_id: agency?.stripe_price_id ?? null,
         stripe_current_period_end: agency?.stripe_current_period_end ?? null,
+        trial_used,
+        trial_days_left,
       },
       user: {
         id: user?.id ?? ctx.userId,
@@ -159,7 +178,6 @@ export async function GET(req: NextRequest) {
       },
       documents_count: Number(docsRow?.c ?? 0),
 
-      // Chat page expects these
       daily_remaining, // null => unlimited
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
     });
