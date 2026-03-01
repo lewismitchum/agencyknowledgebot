@@ -49,35 +49,16 @@ function bad(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 400 });
 }
 
-/**
- * IMPORTANT: DDL (ensureSchema) must NOT run inside a BEGIN/COMMIT transaction.
- * SQLite/libSQL may implicitly end the transaction after certain DDL statements,
- * producing: "cannot commit - no transaction is active"
- *
- * To make this bulletproof, we always call ensureSchema() BEFORE beginning a TX.
- */
-async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
-  let began = false;
-
-  try {
-    // ✅ BEGIN IMMEDIATE prevents race conditions on cap enforcement
-    await db.run("BEGIN IMMEDIATE");
-    began = true;
-
-    const out = await fn();
-
-    // If fn() returned a Response (e.g., 403 BOT_LIMIT_EXCEEDED),
-    // we still want to commit the read-only TX cleanly.
-    await db.run("COMMIT");
-    began = false;
-
-    return out;
-  } catch (e: any) {
-    if (began) {
-      await db.run("ROLLBACK").catch(() => {});
-    }
-    throw e;
-  }
+function getRowsAffected(info: any): number {
+  const n =
+    info?.rowsAffected ??
+    info?.rows_affected ??
+    info?.changes ??
+    info?.affectedRows ??
+    info?.affected_rows ??
+    0;
+  const num = Number(n);
+  return Number.isFinite(num) ? num : 0;
 }
 
 export async function GET(req: NextRequest) {
@@ -85,8 +66,6 @@ export async function GET(req: NextRequest) {
     const ctx = (await requireActiveMember(req)) as Ctx;
 
     const db: Db = await getDb();
-
-    // ✅ ensureSchema OUTSIDE any transaction
     await ensureSchema(db);
 
     const bots = (await db.all(
@@ -142,8 +121,6 @@ export async function POST(req: NextRequest) {
       : ((await requireActiveMember(req)) as Ctx)) as Ctx;
 
     const db: Db = await getDb();
-
-    // ✅ ensureSchema OUTSIDE any transaction (critical fix)
     await ensureSchema(db);
 
     const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
@@ -152,76 +129,88 @@ export async function POST(req: NextRequest) {
 
     const ownerUserId = scope === "private" ? ctx.userId : null;
 
-    // Create vector store OUTSIDE the DB transaction to avoid holding locks during OpenAI call.
-    // If we later fail (cap hit / insert fails), we best-effort delete the vector store.
+    // Create vector store OUTSIDE any DB locking.
+    // If we fail to insert (cap exceeded / DB error), we best-effort delete it.
     const vs = await openai.vectorStores.create({ name });
 
     try {
-      const result = await withTx(db, async () => {
-        if (scope === "agency" && maxAgencyBots != null) {
-          const row = (await db.get(
-            `SELECT COUNT(1) as n
-             FROM bots
-             WHERE agency_id = ? AND owner_user_id IS NULL`,
-            ctx.agencyId
-          )) as { n: number } | undefined;
+      const id = crypto.randomUUID();
 
-          const used = Number(row?.n ?? 0);
-
-          if (used >= maxAgencyBots) {
-            // Return a response; TX will commit cleanly.
-            return NextResponse.json(
-              {
-                ok: false,
-                error: "BOT_LIMIT_EXCEEDED",
-                code: "BOT_LIMIT_EXCEEDED",
-                plan,
-                used,
-                limit: maxAgencyBots,
-              },
-              { status: 403 }
-            );
-          }
-        }
-
-        const id = crypto.randomUUID();
-
-        await db.run(
+      if (scope === "agency" && maxAgencyBots != null) {
+        // ✅ Atomic cap enforcement in ONE statement (no BEGIN/COMMIT).
+        // This avoids libsql transaction issues ("cannot commit - no transaction is active")
+        // while remaining race-safe.
+        const info = await db.run(
           `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           SELECT ?, ?, ?, ?, ?, ?
+           WHERE (
+             SELECT COUNT(1)
+             FROM bots
+             WHERE agency_id = ? AND owner_user_id IS NULL
+           ) < ?`,
           id,
           ctx.agencyId,
           name,
-          ownerUserId,
+          null,
           vs.id,
-          new Date().toISOString()
+          new Date().toISOString(),
+          ctx.agencyId,
+          maxAgencyBots
         );
+
+        const affected = getRowsAffected(info);
+        if (affected === 0) {
+          // cap hit — clean up VS
+          try {
+            await openai.vectorStores.delete(vs.id);
+          } catch {}
+
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "BOT_LIMIT_EXCEEDED",
+              code: "BOT_LIMIT_EXCEEDED",
+              plan,
+              limit: maxAgencyBots,
+            },
+            { status: 403 }
+          );
+        }
 
         return NextResponse.json({
           ok: true,
           bot: {
             id,
             name,
-            scope,
-            owner_user_id: ownerUserId,
+            scope: "agency",
+            owner_user_id: null,
             vector_store_id: vs.id,
           },
         });
-      });
-
-      // If we returned a cap error response inside the TX, clean up the created VS.
-      if (result.status === 403) {
-        try {
-          const payload = (await result.clone().json().catch(() => null)) as any;
-          if (payload?.code === "BOT_LIMIT_EXCEEDED") {
-            try {
-              await openai.vectorStores.delete(vs.id);
-            } catch {}
-          }
-        } catch {}
       }
 
-      return result;
+      // Private bot (no cap here)
+      await db.run(
+        `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        id,
+        ctx.agencyId,
+        name,
+        ownerUserId,
+        vs.id,
+        new Date().toISOString()
+      );
+
+      return NextResponse.json({
+        ok: true,
+        bot: {
+          id,
+          name,
+          scope: "private",
+          owner_user_id: ownerUserId,
+          vector_store_id: vs.id,
+        },
+      });
     } catch (e) {
       // Best-effort cleanup if DB op fails after VS created
       try {
