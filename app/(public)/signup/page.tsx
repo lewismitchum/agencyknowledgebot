@@ -4,23 +4,6 @@ import Link from "next/link";
 import Script from "next/script";
 import { useEffect, useRef, useState } from "react";
 
-declare global {
-  interface Window {
-    turnstile?: {
-      render: (
-        el: HTMLElement,
-        opts: {
-          sitekey: string;
-          theme?: "light" | "dark" | "auto";
-          callback?: (token: string) => void;
-          "error-callback"?: () => void;
-          "expired-callback"?: () => void;
-        }
-      ) => string;
-      reset: (widgetId: string) => void;
-    };
-  }
-}
 
 export default function SignupPage() {
   const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
@@ -38,13 +21,13 @@ export default function SignupPage() {
     if (!siteKey) return;
     if (!tsReady) return;
     if (!widgetRef.current) return;
-    if (!window.turnstile) return;
+    if (!(window as any).turnstile) return;
     if (widgetIdRef.current) return;
 
-    widgetIdRef.current = window.turnstile.render(widgetRef.current, {
+    widgetIdRef.current = (window as any).turnstile.render(widgetRef.current, {
       sitekey: siteKey,
       theme: "auto",
-      callback: (token) => setTsToken(token || ""),
+      callback: (token: string) => setTsToken(token || ""),
       "error-callback": () => setTsToken(""),
       "expired-callback": () => setTsToken(""),
     });
@@ -52,20 +35,20 @@ export default function SignupPage() {
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
-    if (id && window.turnstile) {
+    if (id && (window as any).turnstile) {
       try {
-        window.turnstile.reset(id);
+        (window as any).turnstile.reset(id);
       } catch {}
     }
     setTsToken("");
   }
 
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function onSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     setErr("");
     setOk("");
 
-    const fd = new FormData(e.currentTarget);
+    const fd = new FormData(e.currentTarget as HTMLFormElement);
     const name = String(fd.get("name") || "").trim();
     const email = String(fd.get("email") || "").trim();
     const password = String(fd.get("password") || "");
