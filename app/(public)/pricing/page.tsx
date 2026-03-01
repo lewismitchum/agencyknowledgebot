@@ -10,12 +10,16 @@ export default function PricingPage() {
             Pricing that scales with your agency.
           </h1>
           <p className="mt-4 text-lg text-muted-foreground">
-            Start on Free. Upgrade when your team is ready. Every plan keeps the
-            non-negotiable rule: Louis answers only from your uploaded docs.
+            Start on Free. Upgrade when your team is ready. Every plan keeps the non-negotiable rule: Louis answers only
+            from your uploaded docs.
+          </p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">Paid feature note:</span> schedule/to-do/calendar extraction is
+            available on Starter+ (server-side enforced).
           </p>
         </div>
 
-        <div className="mt-10 grid gap-4 md:grid-cols-4">
+        <div className="mt-10 grid gap-4 md:grid-cols-5">
           <PlanCard
             name="Free"
             price="$0"
@@ -25,7 +29,8 @@ export default function PricingPage() {
               "1 agency bot",
               "Docs-only knowledge base",
               "Strict fallback behavior",
-              "Basic daily limit",
+              "No schedule/to-do/calendar",
+              "5 daily uploads (docs only)",
             ]}
             ctaLabel="Start free"
             ctaHref="/signup"
@@ -34,85 +39,110 @@ export default function PricingPage() {
 
           <PlanCard
             name="Starter"
-            price="$—"
+            price="$79–$99"
             cadence="/mo"
-            highlight="Docs-only • Higher limits"
+            highlight="Schedule + extraction"
             bullets={[
               "1 agency bot",
-              "Up to ~10 users",
-              "Higher daily usage",
-              "Priority indexing",
+              "Up to 5 users (owner/admin excluded from seats)",
+              "Higher daily chat limits",
+              "Unlimited uploads (docs only)",
+              "Schedule/to-do/calendar enabled",
             ]}
-            ctaLabel="Upgrade soon"
-            ctaHref="/signup"
+            ctaLabel="Upgrade"
+            ctaHref="/app/settings/billing"
             variant="primary"
-            disabled
             badge="Most popular"
           />
 
           <PlanCard
             name="Pro"
-            price="$—"
+            price="$249–$399"
             cadence="/mo"
-            highlight="Docs + images • Higher limits"
+            highlight="Multimedia + schedule"
             bullets={[
-              "2–3 agency bots",
-              "Up to ~25–50 users",
-              "Docs + images",
-              "Higher rate limits",
+              "3 agency bots",
+              "Up to 15 users (owner/admin excluded from seats)",
+              "Unlimited daily chats",
+              "Uploads (docs + images + video)",
+              "Schedule/to-do/calendar enabled",
             ]}
-            ctaLabel="Upgrade soon"
-            ctaHref="/signup"
+            ctaLabel="Upgrade"
+            ctaHref="/app/settings/billing"
             variant="outline"
-            disabled
           />
 
           <PlanCard
             name="Enterprise"
-            price="Custom"
-            cadence=""
-            highlight="Full isolation • User bots"
+            price="$899–$999"
+            cadence="/mo"
+            highlight="Teams"
             bullets={[
-              "Up to 100 users",
-              "Each user gets their own bot",
-              "Docs + images + video",
-              "Highest limits + support",
+              "5 agency bots",
+              "Up to 50 users (owner/admin excluded from seats)",
+              "Unlimited daily chats",
+              "Uploads (docs + images + video)",
+              "Schedule/to-do/calendar enabled",
             ]}
-            ctaLabel="Contact"
-            ctaHref="/signup"
+            ctaLabel="Upgrade"
+            ctaHref="/app/settings/billing"
+            variant="outline"
+          />
+
+          <PlanCard
+            name="Corporation"
+            price="$1799–$1999"
+            cadence="/mo"
+            highlight="Email + AI triage"
+            bullets={[
+              "10 agency bots",
+              "Up to 100 users (owner/admin excluded from seats)",
+              "Unlimited daily chats",
+              "Uploads (docs + images + video)",
+              "Schedule/to-do/calendar enabled",
+              "Email page enabled (Gmail-like)",
+            ]}
+            ctaLabel="Upgrade"
+            ctaHref="/app/settings/billing"
             variant="outline"
           />
         </div>
 
         <div className="mt-10 rounded-3xl border bg-card p-8 md:p-10">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            The rule that makes Louis reliable
-          </h2>
+          <h2 className="text-2xl font-semibold tracking-tight">The rule that makes Louis reliable</h2>
           <p className="mt-2 text-muted-foreground">
-            Louis may only answer using uploaded documents. If the answer isn’t
-            present, it must reply exactly:
+            Louis may only answer using uploaded documents. If the answer isn’t present, it must reply exactly:
           </p>
 
-          <div className="mt-5 rounded-2xl bg-muted p-4 font-mono text-sm">
-            I don’t have that information in the docs yet.
-          </div>
+          <div className="mt-5 rounded-2xl bg-muted p-4 font-mono text-sm">I don’t have that information in the docs yet.</div>
 
           <PricingCTA />
         </div>
 
         <div className="mt-12 grid gap-4 md:grid-cols-3">
-          <MiniCard
-            title="Isolation by design"
-            body="Each agency is isolated. Knowledge never crosses workspaces."
-          />
-          <MiniCard
-            title="Graceful failure"
-            body="If OpenAI errors or limits hit, Louis still returns the safe fallback."
-          />
-          <MiniCard
-            title="Built for real ops"
-            body="Designed for SOPs, onboarding, pricing, deliverables, and brand docs."
-          />
+          <MiniCard title="Isolation by design" body="Each agency is isolated. Knowledge never crosses workspaces." />
+          <MiniCard title="Graceful failure" body="If OpenAI errors or limits hit, Louis still returns the safe fallback." />
+          <MiniCard title="Built for real ops" body="Designed for SOPs, onboarding, pricing, deliverables, and brand docs." />
+        </div>
+
+        <div className="mt-12 rounded-3xl border bg-card p-8 md:p-10">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-2xl font-semibold tracking-tight">Ready to stop searching old docs?</h2>
+              <p className="mt-2 text-muted-foreground">Start on Free. Upgrade when your team is ready.</p>
+            </div>
+            <div className="flex gap-3">
+              <Link
+                href="/signup"
+                className="rounded-xl bg-primary px-5 py-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                Start free
+              </Link>
+              <Link href="/app/settings/billing" className="rounded-xl border px-5 py-3 text-sm hover:bg-accent">
+                Upgrade
+              </Link>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -154,9 +184,7 @@ function PlanCard({
 
       <div className="mt-3 flex items-end gap-1">
         <div className="text-3xl font-semibold">{price}</div>
-        {cadence ? (
-          <div className="pb-1 text-sm text-muted-foreground">{cadence}</div>
-        ) : null}
+        {cadence ? <div className="pb-1 text-sm text-muted-foreground">{cadence}</div> : null}
       </div>
 
       <div className="mt-2 text-sm text-muted-foreground">{highlight}</div>
@@ -178,17 +206,15 @@ function PlanCard({
           disabled
             ? "cursor-not-allowed bg-muted text-muted-foreground"
             : variant === "primary"
-            ? "bg-primary text-primary-foreground hover:opacity-90"
-            : "border hover:bg-accent",
+              ? "bg-primary text-primary-foreground hover:opacity-90"
+              : "border hover:bg-accent",
         ].join(" ")}
       >
         {ctaLabel}
       </Link>
 
       {disabled ? (
-        <p className="mt-3 text-xs text-muted-foreground">
-          Checkout will be enabled after billing setup.
-        </p>
+        <p className="mt-3 text-xs text-muted-foreground">Checkout will be enabled after billing setup.</p>
       ) : null}
     </div>
   );

@@ -1,4 +1,3 @@
-// app/(app)/app/billing/page.tsx
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -105,7 +104,6 @@ function BillingContent() {
           if (a?.plan) {
             const p = String(a.plan);
             setCurrentPlan(p);
-            // keep dev dropdown in sync
             if (["free", "starter", "pro", "enterprise", "corporation"].includes(p)) {
               setDevPlan(p as PlanKey);
             }
@@ -316,9 +314,7 @@ function BillingContent() {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-muted-foreground">
-              Useful for testing paid gates without Stripe.
-            </div>
+            <div className="text-sm text-muted-foreground">Useful for testing paid gates without Stripe.</div>
 
             <div className="flex items-center gap-2">
               <select
@@ -347,7 +343,8 @@ function BillingContent() {
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
           <p>
-            Louis.Ai is a multi-tenant agency knowledge system: agency bots/docs are shared across the agency; private bots/docs are isolated per user.
+            Louis.Ai is a multi-tenant agency knowledge system: agency bots/docs are shared across the agency; private
+            bots/docs are isolated per user.
           </p>
           <p>Schedule/to-do/calendar extraction is a paid feature. Basic reminders/notifications UI can exist on all tiers.</p>
         </CardContent>
@@ -397,7 +394,7 @@ function BillingContent() {
                   )}
 
                   <Button asChild variant="ghost">
-                    <Link href="/app/docs">Plan details</Link>
+                    <Link href="/pricing">Plan details</Link>
                   </Button>
                 </div>
 
