@@ -81,6 +81,8 @@ function BillingStatusBanner() {
 }
 
 function BillingContent() {
+  const sp = useSearchParams();
+
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
 
@@ -96,52 +98,98 @@ function BillingContent() {
   const [devPlan, setDevPlan] = useState<PlanKey>("free");
   const [devSaving, setDevSaving] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  const isProd = process.env.NODE_ENV === "production";
+  const showDevSwitcher = !isProd; // dev-only UI (route itself is also locked server-side)
 
-    (async () => {
-      try {
-        const res = await fetch("/api/me", { method: "GET", cache: "no-store" });
-        const data = (await res.json().catch(() => ({}))) as MeResponse;
+  const successParam = sp.get("success");
+  const statusParam = sp.get("status");
+  const isSuccess = successParam === "1" || statusParam === "success";
 
-        if (cancelled) return;
+  async function loadMeOnce(signal?: AbortSignal) {
+    const res = await fetch("/api/me", { method: "GET", cache: "no-store", signal });
+    const data = (await res.json().catch(() => ({}))) as MeResponse;
 
-        if ((data as any)?.ok && (data as any)?.agency) {
-          const a = (data as any).agency;
-          const u = (data as any).user;
+    if ((data as any)?.ok && (data as any)?.agency) {
+      const a = (data as any).agency;
+      const u = (data as any).user;
 
-          if (a?.plan) {
-            const p = String(a.plan);
-            setCurrentPlan(p);
-            if (["free", "starter", "pro", "enterprise", "corporation"].includes(p)) {
-              setDevPlan(p as PlanKey);
-            }
-          }
-
-          if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
-          if (a?.stripe_customer_id) setHasStripeCustomer(true);
-
-          setStripeSubscriptionId(typeof a?.stripe_subscription_id === "string" ? a.stripe_subscription_id : null);
-
-          const tu = Number((a as any)?.trial_used ?? 0) === 1;
-          setTrialUsed(tu);
-
-          const tdl = (a as any)?.trial_days_left;
-          if (tdl === null || typeof tdl === "undefined") setTrialDaysLeft(null);
-          else {
-            const n = Number(tdl);
-            setTrialDaysLeft(Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null);
-          }
-
-          setIsOwner(String(u?.role || "") === "owner");
+      if (a?.plan) {
+        const p = String(a.plan);
+        setCurrentPlan(p);
+        if (["free", "starter", "pro", "enterprise", "corporation"].includes(p)) {
+          setDevPlan(p as PlanKey);
         }
-      } catch {}
-    })();
+      }
+
+      if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
+      if (a?.stripe_customer_id) setHasStripeCustomer(true);
+
+      setStripeSubscriptionId(typeof a?.stripe_subscription_id === "string" ? a.stripe_subscription_id : null);
+
+      const tu = Number((a as any)?.trial_used ?? 0) === 1;
+      setTrialUsed(tu);
+
+      const tdl = (a as any)?.trial_days_left;
+      if (tdl === null || typeof tdl === "undefined") setTrialDaysLeft(null);
+      else {
+        const n = Number(tdl);
+        setTrialDaysLeft(Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null);
+      }
+
+      setIsOwner(String(u?.role || "") === "owner");
+    }
+
+    return data;
+  }
+
+  useEffect(() => {
+    const ac = new AbortController();
+    loadMeOnce(ac.signal).catch(() => {});
+    return () => ac.abort();
+  }, []);
+
+  // ✅ Auto-refresh after successful checkout (webhook may take a moment)
+  useEffect(() => {
+    if (!isSuccess) return;
+
+    let stopped = false;
+    const ac = new AbortController();
+
+    const startedAt = Date.now();
+    const maxMs = 20_000; // stop polling after 20s
+    const everyMs = 2_000;
+
+    async function tick() {
+      if (stopped) return;
+
+      try {
+        const data = await loadMeOnce(ac.signal);
+        const plan = String((data as any)?.agency?.plan ?? "").toLowerCase().trim();
+
+        // stop when plan becomes a paid tier
+        if (plan && plan !== "free") {
+          stopped = true;
+          return;
+        }
+      } catch {
+        // ignore and keep trying until timeout
+      }
+
+      if (Date.now() - startedAt >= maxMs) {
+        stopped = true;
+        return;
+      }
+
+      setTimeout(tick, everyMs);
+    }
+
+    tick();
 
     return () => {
-      cancelled = true;
+      stopped = true;
+      ac.abort();
     };
-  }, []);
+  }, [isSuccess]);
 
   async function startCheckout(plan: "starter" | "pro" | "enterprise" | "corporation") {
     try {
@@ -339,7 +387,7 @@ function BillingContent() {
         <BillingStatusBanner />
       </Suspense>
 
-      {isOwner ? (
+      {showDevSwitcher && isOwner ? (
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="text-base">Owner-only tier switcher</CardTitle>
@@ -377,8 +425,8 @@ function BillingContent() {
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
           <p>
-            Louis.Ai is a multi-tenant agency knowledge system: agency bots/docs are shared across the agency; private
-            bots/docs are isolated per user.
+            Louis.Ai is a multi-tenant agency knowledge system: agency bots/docs are shared across the agency; private bots/docs
+            are isolated per user.
           </p>
           <p>Schedule/to-do/calendar extraction is a paid feature. Basic reminders/notifications UI can exist on all tiers.</p>
           <p>
@@ -425,11 +473,7 @@ function BillingContent() {
 
                 <div className="pt-2 flex items-center gap-2">
                   {isPaidCheckout ? (
-                    <Button
-                      variant={(p as any).cta.variant}
-                      onClick={(p as any).onClick}
-                      disabled={isCurrent || loadingPlan === p.key}
-                    >
+                    <Button variant={(p as any).cta.variant} onClick={(p as any).onClick} disabled={isCurrent || loadingPlan === p.key}>
                       {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : (p as any).cta.label}
                     </Button>
                   ) : (
@@ -443,9 +487,7 @@ function BillingContent() {
                   </Button>
                 </div>
 
-                <p className="text-xs text-muted-foreground">
-                  Note: checkout + webhook wiring updates <code>agencies.plan</code>.
-                </p>
+                <p className="text-xs text-muted-foreground">Note: checkout + webhook wiring updates <code>agencies.plan</code>.</p>
               </CardContent>
             </Card>
           );
@@ -456,5 +498,9 @@ function BillingContent() {
 }
 
 export default function BillingPage() {
-  return <BillingContent />;
+  return (
+    <Suspense fallback={null}>
+      <BillingContent />
+    </Suspense>
+  );
 }
