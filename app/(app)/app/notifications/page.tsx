@@ -127,9 +127,7 @@ export default function NotificationsPage() {
             {events.map((e) => (
               <li key={e.id} className="rounded border p-3">
                 <div className="font-medium">{e.title}</div>
-                <div className="text-sm text-muted-foreground">
-                  {new Date(e.start_time).toLocaleString()}
-                </div>
+                <div className="text-sm text-muted-foreground">{new Date(e.start_time).toLocaleString()}</div>
               </li>
             ))}
           </ul>
@@ -146,9 +144,7 @@ export default function NotificationsPage() {
               <li key={t.id} className="rounded border p-3">
                 <div className="font-medium">{t.title}</div>
                 {t.due_date ? (
-                  <div className="text-sm text-muted-foreground">
-                    Due {new Date(t.due_date).toLocaleDateString()}
-                  </div>
+                  <div className="text-sm text-muted-foreground">Due {new Date(t.due_date).toLocaleDateString()}</div>
                 ) : null}
               </li>
             ))}
@@ -165,9 +161,7 @@ export default function NotificationsPage() {
             {extractions.map((x) => (
               <li key={x.id} className="rounded border p-3">
                 <div className="text-sm">Extraction from document {x.document_id}</div>
-                <div className="text-xs text-muted-foreground">
-                  {new Date(x.created_at).toLocaleString()}
-                </div>
+                <div className="text-xs text-muted-foreground">{new Date(x.created_at).toLocaleString()}</div>
               </li>
             ))}
           </ul>

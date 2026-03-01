@@ -97,9 +97,6 @@ export async function GET(req: NextRequest) {
     }
 
     console.error("NOTIFICATIONS_GET_ERROR", err);
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
