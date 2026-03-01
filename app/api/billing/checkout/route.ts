@@ -7,6 +7,7 @@ import { requireOwner } from "@/lib/authz";
 import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function getOrigin(req: NextRequest) {
   const h = req.headers;
@@ -24,7 +25,6 @@ function getOrigin(req: NextRequest) {
 function getStripe() {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("Missing STRIPE_SECRET_KEY");
-  // Avoid pinning to a non-standard/future API version string.
   return new Stripe(key);
 }
 
@@ -33,7 +33,11 @@ function priceIdForPlan(plan: PlanKey): string | null {
   if (plan === "pro") return process.env.STRIPE_PRICE_PRO || null;
   if (plan === "enterprise") return process.env.STRIPE_PRICE_ENTERPRISE || null;
   if (plan === "corporation") return process.env.STRIPE_PRICE_CORPORATION || null;
-  return null; // free has no price
+  return null;
+}
+
+async function ensureAgencyTrialColumns(db: Db) {
+  await db.run(`ALTER TABLE agencies ADD COLUMN trial_used INTEGER`).catch(() => {});
 }
 
 export async function POST(req: NextRequest) {
@@ -42,6 +46,7 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureAgencyTrialColumns(db);
 
     const body = await req.json().catch(() => ({}));
     const desired = normalizePlan(body?.plan);
@@ -55,8 +60,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "MISSING_PRICE_ID", plan: desired }, { status: 500 });
     }
 
+    const agency = (await db.get(
+      `SELECT id, email, stripe_customer_id, stripe_subscription_id, trial_used
+       FROM agencies
+       WHERE id = ?
+       LIMIT 1`,
+      ctx.agencyId
+    )) as
+      | {
+          id: string;
+          email: string | null;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
+          trial_used: number | null;
+        }
+      | undefined;
+
     const origin = getOrigin(req);
     const stripe = getStripe();
+
+    // ✅ Trial rules:
+    // - Only apply a 7-day trial if:
+    //   - agency.trial_used is not set AND
+    //   - agency has no existing subscription id
+    const trialEligible =
+      Number(agency?.trial_used ?? 0) !== 1 && !String(agency?.stripe_subscription_id ?? "").trim();
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -67,18 +95,24 @@ export async function POST(req: NextRequest) {
       metadata: {
         agency_id: ctx.agencyId,
         plan: desired,
+        trial_days: trialEligible ? "7" : "0",
       },
       subscription_data: {
         metadata: {
           agency_id: ctx.agencyId,
           plan: desired,
         },
+        ...(trialEligible ? { trial_period_days: 7 } : {}),
       },
       success_url: `${origin}/app/billing?success=1`,
       cancel_url: `${origin}/app/billing?canceled=1`,
     });
 
-    return NextResponse.json({ ok: true, url: session.url });
+    return NextResponse.json({
+      ok: true,
+      url: session.url,
+      trial: trialEligible ? { days: 7 } : { days: 0 },
+    });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
     if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

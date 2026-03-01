@@ -252,7 +252,7 @@ export default function ChatPage() {
 
   // Usage
   const [usageLoaded, setUsageLoaded] = useState(false);
-  const [dailyRemaining, setDailyRemaining] = useState(0);
+  const [dailyRemaining, setDailyRemaining] = useState<number | null>(null); // null => unlimited
   const [dailyResetsInSeconds, setDailyResetsInSeconds] = useState(0);
 
   const [bots, setBots] = useState<BotRow[]>([]);
@@ -335,10 +335,17 @@ export default function ChatPage() {
 
         setDocumentsCount(Number(j?.documents_count ?? 0));
 
-        const dr = Number(j?.daily_remaining ?? 0);
-        const reset = Number(j?.daily_resets_in_seconds ?? 0);
+        // ✅ IMPORTANT: daily_remaining can be null for unlimited (Pro+).
+        if (j?.daily_remaining === null) {
+          setDailyRemaining(null);
+        } else if (typeof j?.daily_remaining === "number") {
+          setDailyRemaining(Number(j.daily_remaining));
+        } else {
+          // unknown => treat as 0 but "Usage unavailable" badge handles it
+          setDailyRemaining(0);
+        }
 
-        setDailyRemaining(dr);
+        const reset = Number(j?.daily_resets_in_seconds ?? 0);
         setDailyResetsInSeconds(reset);
       } catch (e: any) {
         setBootError(e?.message || "Failed to load session");
@@ -461,7 +468,8 @@ export default function ChatPage() {
     if (!input.trim() || loading) return;
     if (accessBlocked) return;
 
-    if (dailyRemaining === 0 && dailyResetsInSeconds > 0) return;
+    // If limited plan and remaining is 0, block sending.
+    if (dailyRemaining !== null && dailyRemaining === 0 && dailyResetsInSeconds > 0) return;
 
     const userMsg = input.trim();
     setInput("");
@@ -517,12 +525,17 @@ export default function ChatPage() {
 
       setUsageLoaded(true);
 
-      if (typeof j?.daily_remaining === "number") {
-        setDailyRemaining(j.daily_remaining);
+      // ✅ IMPORTANT: daily_remaining can be null for unlimited (Pro+).
+      if (j?.daily_remaining === null) {
+        setDailyRemaining(null);
+      } else if (typeof j?.daily_remaining === "number") {
+        setDailyRemaining(Number(j.daily_remaining));
       } else if (j?.usage && typeof j.usage === "object") {
         const used = Number(j.usage.used ?? 0);
         const limit = j.usage.daily_limit == null ? null : Number(j.usage.daily_limit);
-        if (limit != null && limit >= 0) {
+        if (limit == null) {
+          setDailyRemaining(null);
+        } else if (limit >= 0) {
           setDailyRemaining(Math.max(0, limit - used));
         }
       }
@@ -555,9 +568,10 @@ export default function ChatPage() {
   }
 
   const dailyKnown = usageLoaded;
-  const dailyBlocked = dailyResetsInSeconds > 0 && dailyRemaining === 0;
+  const dailyBlocked = dailyRemaining !== null && dailyResetsInSeconds > 0 && dailyRemaining === 0;
 
-  const canSend = !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0;
+  const canSend =
+    !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0;
 
   if (accessBlocked) {
     const title = accessBlocked === "blocked" ? "Access blocked" : "Pending approval";
@@ -619,6 +633,8 @@ export default function ChatPage() {
           <div className="flex flex-wrap items-center gap-2">
             {!dailyKnown ? (
               <Badge variant="outline">Usage loading…</Badge>
+            ) : dailyRemaining === null ? (
+              <Badge variant="secondary">Unlimited</Badge>
             ) : dailyRemaining > 0 ? (
               <Badge>{dailyRemaining} left today</Badge>
             ) : dailyResetsInSeconds > 0 ? (
@@ -631,7 +647,7 @@ export default function ChatPage() {
               {emailVerified ? "Verified" : "Unverified"}
             </Badge>
 
-            {dailyResetsInSeconds > 0 ? (
+            {dailyRemaining !== null && dailyResetsInSeconds > 0 ? (
               <Badge variant="outline">Resets in {formatCountdown(dailyResetsInSeconds)}</Badge>
             ) : null}
 
@@ -647,7 +663,9 @@ export default function ChatPage() {
           <div className="flex flex-wrap items-center gap-3">
             <div className="text-sm text-muted-foreground">
               Bot:{" "}
-              <span className="text-foreground font-medium">{botsLoading ? "Loading…" : selectedBotName || "None"}</span>
+              <span className="text-foreground font-medium">
+                {botsLoading ? "Loading…" : selectedBotName || "None"}
+              </span>
             </div>
 
             <select
@@ -690,12 +708,18 @@ export default function ChatPage() {
                         m.role === "user" ? "bg-foreground text-background" : "bg-background/60 text-foreground"
                       }`}
                     >
-                      {m.role === "assistant" ? <AssistantMarkdown text={m.text} /> : <span className="whitespace-pre-wrap">{m.text}</span>}
+                      {m.role === "assistant" ? (
+                        <AssistantMarkdown text={m.text} />
+                      ) : (
+                        <span className="whitespace-pre-wrap">{m.text}</span>
+                      )}
                     </div>
                   </div>
                 ))}
                 {loading && (
-                  <div className="rounded-[22px] bg-background/60 px-4 py-3 text-sm text-muted-foreground">Thinking…</div>
+                  <div className="rounded-[22px] bg-background/60 px-4 py-3 text-sm text-muted-foreground">
+                    Thinking…
+                  </div>
                 )}
                 <div ref={bottomRef} />
               </div>
@@ -726,7 +750,7 @@ export default function ChatPage() {
 
       <div className="mt-4 text-xs text-muted-foreground">
         Need to manage bots?{" "}
-        <Link className="underline" href="/bots">
+        <Link className="underline" href="/app/bots">
           Go to Bots
         </Link>
       </div>

@@ -6,6 +6,7 @@ import { ensureSchema } from "@/lib/schema";
 import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function getStripe() {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -17,6 +18,14 @@ function getWebhookSecret() {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) throw new Error("Missing STRIPE_WEBHOOK_SECRET");
   return secret;
+}
+
+async function ensureAgencyBillingColumns(db: Db) {
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN trial_used INTEGER`).catch(() => {});
 }
 
 function planFromPriceId(priceId: string | null | undefined): PlanKey {
@@ -77,18 +86,16 @@ async function findAgencyIdByStripeIds(
   const custId = String(args.customerId || "").trim();
 
   if (subId) {
-    const row = (await db.get(
-      `SELECT id FROM agencies WHERE stripe_subscription_id = ? LIMIT 1`,
-      subId
-    )) as { id?: string } | undefined;
+    const row = (await db.get(`SELECT id FROM agencies WHERE stripe_subscription_id = ? LIMIT 1`, subId)) as
+      | { id?: string }
+      | undefined;
     if (row?.id) return String(row.id);
   }
 
   if (custId) {
-    const row = (await db.get(
-      `SELECT id FROM agencies WHERE stripe_customer_id = ? LIMIT 1`,
-      custId
-    )) as { id?: string } | undefined;
+    const row = (await db.get(`SELECT id FROM agencies WHERE stripe_customer_id = ? LIMIT 1`, custId)) as
+      | { id?: string }
+      | undefined;
     if (row?.id) return String(row.id);
   }
 
@@ -104,6 +111,7 @@ async function updateAgencyBilling(
     stripe_subscription_id?: string | null;
     stripe_price_id?: string | null;
     stripe_current_period_end?: string | null;
+    trial_used?: number | null;
   }
 ) {
   const fields: string[] = [];
@@ -129,6 +137,10 @@ async function updateAgencyBilling(
     fields.push("stripe_current_period_end = ?");
     args.push(patch.stripe_current_period_end);
   }
+  if (typeof patch.trial_used !== "undefined") {
+    fields.push("trial_used = ?");
+    args.push(patch.trial_used);
+  }
 
   if (!fields.length) return;
 
@@ -138,13 +150,7 @@ async function updateAgencyBilling(
 
 async function recordStripeEventOnce(db: Db, event: Stripe.Event): Promise<boolean> {
   try {
-    await db.run(
-      `INSERT INTO stripe_events (id, type, created_at)
-       VALUES (?, ?, ?)`,
-      event.id,
-      event.type,
-      new Date().toISOString()
-    );
+    await db.run(`INSERT INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)`, event.id, event.type, new Date().toISOString());
     return true;
   } catch {
     return false;
@@ -185,11 +191,10 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureAgencyBillingColumns(db);
 
     const firstTime = await recordStripeEventOnce(db, event);
-    if (!firstTime) {
-      return NextResponse.json({ ok: true });
-    }
+    if (!firstTime) return NextResponse.json({ ok: true });
 
     await withTx(db, async () => {
       if (event.type === "checkout.session.completed") {
@@ -217,9 +222,9 @@ export async function POST(req: NextRequest) {
             plan: desired !== "free" ? desired : undefined,
             stripe_customer_id: customerId ?? undefined,
             stripe_subscription_id: subscriptionId ?? undefined,
+            trial_used: 1, // ✅ prevent repeated trials
           });
         }
-
         return;
       }
 
@@ -249,10 +254,7 @@ export async function POST(req: NextRequest) {
         const periodEndIso = toIsoFromUnixSeconds((sub as any).current_period_end);
 
         if (!agencyId) {
-          agencyId = await findAgencyIdByStripeIds(db, {
-            customerId,
-            subscriptionId: sub.id,
-          });
+          agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
         }
 
         if (agencyId) {
@@ -262,9 +264,9 @@ export async function POST(req: NextRequest) {
             stripe_subscription_id: sub.id ?? undefined,
             stripe_price_id: chosenPriceId ?? undefined,
             stripe_current_period_end: periodEndIso ?? undefined,
+            trial_used: 1, // ✅ also set here for safety
           });
         }
-
         return;
       }
 
@@ -281,10 +283,7 @@ export async function POST(req: NextRequest) {
               : null;
 
         if (!agencyId) {
-          agencyId = await findAgencyIdByStripeIds(db, {
-            customerId,
-            subscriptionId: sub.id,
-          });
+          agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
         }
 
         if (agencyId) {
@@ -296,7 +295,6 @@ export async function POST(req: NextRequest) {
             stripe_current_period_end: null,
           });
         }
-
         return;
       }
 
@@ -319,16 +317,12 @@ export async function POST(req: NextRequest) {
 
         let agencyId = agencyIdFromInvoice(inv);
         if (!agencyId) {
-          agencyId = await findAgencyIdByStripeIds(db, {
-            customerId,
-            subscriptionId,
-          });
+          agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId });
         }
 
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, { plan: "free" });
         }
-
         return;
       }
 
@@ -345,16 +339,12 @@ export async function POST(req: NextRequest) {
               : null;
 
         if (!agencyId) {
-          agencyId = await findAgencyIdByStripeIds(db, {
-            customerId,
-            subscriptionId: sub.id,
-          });
+          agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
         }
 
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, { plan: "free" });
         }
-
         return;
       }
     });
@@ -362,6 +352,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     console.error("STRIPE_WEBHOOK_ERROR", err);
+    // Stripe retries on non-2xx; we return 200 so you don’t get spammed during transient errors.
     return NextResponse.json({ ok: true, warning: "webhook_error_logged" }, { status: 200 });
   }
 }

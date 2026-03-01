@@ -279,14 +279,12 @@ export default function MembersPage() {
       if (!r.ok) {
         const code = String(j?.code ?? j?.error ?? "");
 
-        // NEW standardized code from API
         if (code === "USER_LIMIT_EXCEEDED") {
           seatLimitToast(j);
           await loadAll();
           return;
         }
 
-        // Back-compat (older API responses)
         if (code === "SEAT_LIMIT_REACHED") {
           const used = Number(j?.seats?.used ?? seats?.used ?? 0);
           const limit = j?.seats?.limit ?? seats?.limit ?? null;
@@ -305,10 +303,42 @@ export default function MembersPage() {
     }
   }
 
+  async function removeMember(userId: string, email: string) {
+    if (!canManageMembers) return;
+    if (meUserId && userId === meUserId) return;
+
+    const ok = window.confirm(`Remove ${email} from your agency?\n\nThey will lose access immediately.`);
+    if (!ok) return;
+
+    setSavingId(userId);
+    try {
+      const r = await fetch(`/api/agency/users/${encodeURIComponent(userId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      if (r.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const j = await r.json().catch(() => null);
+
+      if (!r.ok) {
+        alert(j?.error || `Remove failed (${r.status})`);
+        return;
+      }
+
+      showToast("Member removed.");
+      await loadAll();
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   async function revokeInvite(inviteId: string) {
     setSavingId(inviteId);
     try {
-      // IMPORTANT: avoid DELETE bodies (some proxies strip them). Put inviteId in the query string.
       const r = await fetch(`/api/agency/users?inviteId=${encodeURIComponent(inviteId)}`, {
         method: "DELETE",
         credentials: "include",
@@ -354,14 +384,12 @@ export default function MembersPage() {
       if (!r.ok) {
         const code = String(j?.code ?? j?.error ?? "");
 
-        // NEW standardized code from API
         if (code === "USER_LIMIT_EXCEEDED") {
           seatLimitToast(j);
           await loadAll();
           return;
         }
 
-        // Back-compat (older API responses)
         if (code === "SEAT_LIMIT_REACHED") {
           const used = Number(j?.seats?.used ?? seats?.used ?? 0);
           const reserved = Number(j?.seats?.reserved ?? seats?.reserved ?? 0);
@@ -650,6 +678,8 @@ export default function MembersPage() {
                 const canRoleToggle = canEditTarget && !isOwner;
                 const canStatusToggle = canEditTarget;
 
+                const canRemove = canManageMembers && !isMe && !isOwner;
+
                 return (
                   <div
                     key={m.id}
@@ -722,6 +752,15 @@ export default function MembersPage() {
                           onClick={() => showToast("Ownership transfer is not supported in this UI yet.")}
                         >
                           Make owner
+                        </Button>
+
+                        <Button
+                          variant="destructive"
+                          className="rounded-full"
+                          disabled={busy || !canRemove}
+                          onClick={() => removeMember(m.id, m.email)}
+                        >
+                          Remove
                         </Button>
                       </div>
 
