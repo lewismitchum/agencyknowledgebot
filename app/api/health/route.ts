@@ -2,66 +2,134 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 function has(v?: string | null) {
   return Boolean(v && String(v).trim().length > 0);
 }
 
-export const runtime = "nodejs";
+function setOrMissing(v?: string | null) {
+  return has(v) ? "set" : "missing";
+}
 
 export async function GET() {
   const checks: Record<string, { ok: boolean; detail?: string }> = {};
 
-  // Required for production
-  checks.OPENAI_API_KEY = {
-    ok: has(process.env.OPENAI_API_KEY),
-    detail: has(process.env.OPENAI_API_KEY) ? "set" : "missing",
-  };
+  // Core app/env
+  checks.NODE_ENV = { ok: true, detail: String(process.env.NODE_ENV || "unknown") };
+
+  const appUrl =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    process.env.NEXTAUTH_URL ||
+    process.env.VERCEL_URL;
 
   checks.APP_URL = {
-    ok: has(process.env.APP_URL),
-    detail: has(process.env.APP_URL) ? String(process.env.APP_URL) : "missing",
+    ok: has(appUrl),
+    detail: has(appUrl) ? String(appUrl) : "missing (set NEXT_PUBLIC_APP_URL or APP_URL)",
   };
 
-  // Turso env vars (production DB)
+  // Auth/session
+  checks.JWT_SECRET = {
+    ok: has(process.env.JWT_SECRET),
+    detail: setOrMissing(process.env.JWT_SECRET),
+  };
+
+  // Turnstile (login/signup)
+  checks.TURNSTILE_SITE_KEY = {
+    ok: has(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY),
+    detail: setOrMissing(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY),
+  };
+  checks.TURNSTILE_SECRET_KEY = {
+    ok: has(process.env.TURNSTILE_SECRET_KEY),
+    detail: setOrMissing(process.env.TURNSTILE_SECRET_KEY),
+  };
+
+  // OpenAI
+  checks.OPENAI_API_KEY = {
+    ok: has(process.env.OPENAI_API_KEY),
+    detail: setOrMissing(process.env.OPENAI_API_KEY),
+  };
+
+  // Email (you’re using Resend in lib/email.ts)
+  checks.RESEND_API_KEY = {
+    ok: has(process.env.RESEND_API_KEY),
+    detail: setOrMissing(process.env.RESEND_API_KEY),
+  };
+  checks.RESEND_FROM = {
+    ok: has(process.env.RESEND_FROM),
+    detail: has(process.env.RESEND_FROM) ? String(process.env.RESEND_FROM) : "missing",
+  };
+  checks.SUPPORT_INBOX_EMAIL = {
+    ok: has(process.env.SUPPORT_INBOX_EMAIL),
+    detail: has(process.env.SUPPORT_INBOX_EMAIL) ? String(process.env.SUPPORT_INBOX_EMAIL) : "missing",
+  };
+
+  // Stripe (if billing is enabled)
+  checks.STRIPE_SECRET_KEY = {
+    ok: has(process.env.STRIPE_SECRET_KEY),
+    detail: setOrMissing(process.env.STRIPE_SECRET_KEY),
+  };
+  checks.STRIPE_WEBHOOK_SECRET = {
+    ok: has(process.env.STRIPE_WEBHOOK_SECRET),
+    detail: setOrMissing(process.env.STRIPE_WEBHOOK_SECRET),
+  };
+
+  // Turso
+  const tursoUrlOk = has(process.env.TURSO_DATABASE_URL);
+  const tursoTokenOk = has(process.env.TURSO_AUTH_TOKEN);
+
   checks.TURSO_DATABASE_URL = {
-    ok: has(process.env.TURSO_DATABASE_URL),
-    detail: has(process.env.TURSO_DATABASE_URL) ? "set" : "missing",
+    ok: tursoUrlOk,
+    detail: setOrMissing(process.env.TURSO_DATABASE_URL),
   };
-
   checks.TURSO_AUTH_TOKEN = {
-    ok: has(process.env.TURSO_AUTH_TOKEN),
-    detail: has(process.env.TURSO_AUTH_TOKEN) ? "set" : "missing",
+    ok: tursoTokenOk,
+    detail: setOrMissing(process.env.TURSO_AUTH_TOKEN),
   };
 
-  const smtpKeys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"] as const;
-  const smtpOk = smtpKeys.every((k) => has(process.env[k]));
-  checks.SMTP = {
-    ok: smtpOk,
-    detail: smtpOk ? "configured" : "missing one or more SMTP_* vars",
-  };
-
-  // DB connectivity (Turso via @libsql/client)
-  try {
-    const db = await getDb();
-    // Cheap query that works on libsql and verifies connectivity.
-    const row = await db.get<{ one: number }>("SELECT 1 as one");
-    checks.DB = { ok: row?.one === 1, detail: row?.one === 1 ? "connected" : "unexpected response" };
-  } catch (e: any) {
-    checks.DB = { ok: false, detail: e?.message || "db error" };
+  // DB connectivity (only attempt if Turso env looks present)
+  if (tursoUrlOk && tursoTokenOk) {
+    try {
+      const db = await getDb();
+      const row = await db.get<{ one: number }>("SELECT 1 as one");
+      checks.DB = {
+        ok: row?.one === 1,
+        detail: row?.one === 1 ? "connected" : "unexpected response",
+      };
+    } catch (e: any) {
+      checks.DB = { ok: false, detail: e?.message || "db error" };
+    }
+  } else {
+    checks.DB = {
+      ok: false,
+      detail: "skipped (missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN)",
+    };
   }
 
-  // Note: If DB vars are missing, Vercel serverless instances have no durable local sqlite.
-  checks.VERCEL_DB_NOTE = {
-    ok: true,
-    detail:
-      "Production requires a hosted DB. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel (Production) and redeploy.",
-  };
+  // Decide what is REQUIRED for “ok”
+  const requiredKeys = [
+    "APP_URL",
+    "JWT_SECRET",
+    "TURNSTILE_SITE_KEY",
+    "TURNSTILE_SECRET_KEY",
+    "OPENAI_API_KEY",
+    "RESEND_API_KEY",
+    "RESEND_FROM",
+    "TURSO_DATABASE_URL",
+    "TURSO_AUTH_TOKEN",
+    "DB",
+  ] as const;
 
-  const ok = Object.values(checks).every((c) => c.ok || c === checks.VERCEL_DB_NOTE);
+  const ok = requiredKeys.every((k) => checks[k]?.ok);
 
-  return NextResponse.json({
-    ok,
-    checks,
-    env: process.env.NODE_ENV,
-  });
+  return NextResponse.json(
+    { ok, checks },
+    {
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    }
+  );
 }

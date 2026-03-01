@@ -115,7 +115,7 @@ export default function NotificationsPage() {
   const extractions = data?.extractions ?? [];
 
   return (
-    <div className="p-6 space-y-8">
+    <div className="space-y-8 p-6">
       <h1 className="text-2xl font-semibold">Notifications</h1>
 
       <section>
