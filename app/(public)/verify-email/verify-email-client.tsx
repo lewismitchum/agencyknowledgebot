@@ -19,6 +19,7 @@ export default function VerifyEmailClient() {
 
   async function verifyNow() {
     setMessage("");
+
     if (!token) {
       setStatus("error");
       setMessage("Missing token. Please open the verification link from your email again.");
@@ -51,14 +52,13 @@ export default function VerifyEmailClient() {
       }
 
       setStatus("success");
-      setMessage("Email verified. You can log in now.");
+      setMessage("Email verified. Your workspace is now active.");
     } catch (e: any) {
       setStatus("error");
       setMessage(e?.message || "Network error.");
     }
   }
 
-  // Auto-run once when token exists
   useEffect(() => {
     if (!token) {
       setStatus("error");
@@ -74,9 +74,7 @@ export default function VerifyEmailClient() {
       <div className="mx-auto max-w-xl">
         <div className="rounded-3xl border bg-card p-8 shadow-sm">
           <h1 className="text-2xl font-semibold tracking-tight">Verify email</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            We’re confirming your email address.
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">We’re confirming your email address.</p>
 
           <div className="mt-6 rounded-2xl border bg-muted p-3 text-sm">
             <div className="font-medium">
@@ -94,14 +92,30 @@ export default function VerifyEmailClient() {
           </div>
 
           <div className="mt-6 flex flex-col gap-3">
-            <button
-              type="button"
-              onClick={verifyNow}
-              disabled={status === "verifying"}
-              className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+            {status === "success" ? (
+              <Link
+                href="/app/chat"
+                className="w-full rounded-xl bg-primary px-4 py-2 text-center text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                Go to app
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={verifyNow}
+                disabled={status === "verifying"}
+                className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+              >
+                {status === "verifying" ? "Verifying..." : "Retry verification"}
+              </button>
+            )}
+
+            <Link
+              href="/check-email"
+              className="w-full rounded-xl border bg-background px-4 py-2 text-center text-sm font-medium hover:bg-muted"
             >
-              {status === "verifying" ? "Verifying..." : "Retry verification"}
-            </button>
+              Resend verification
+            </Link>
 
             <Link
               href="/login"
@@ -111,15 +125,15 @@ export default function VerifyEmailClient() {
             </Link>
           </div>
 
-          {!token ? (
-            <div className="mt-4 text-xs text-muted-foreground break-all">
-              Tip: the URL should look like <code>/verify-email?token=...</code>
-            </div>
-          ) : (
+          {process.env.NODE_ENV !== "production" && token ? (
             <div className="mt-4 text-xs text-muted-foreground break-all">
               Token detected: <code>{token.slice(0, 12)}…</code>
             </div>
-          )}
+          ) : !token ? (
+            <div className="mt-4 text-xs text-muted-foreground break-all">
+              Tip: the URL should look like <code>/verify-email?token=...</code>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
