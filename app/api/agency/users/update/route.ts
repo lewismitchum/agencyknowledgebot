@@ -6,6 +6,7 @@ import { requireOwnerOrAdmin } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { nowIso } from "@/lib/tokens";
 import { ensureSchema } from "@/lib/schema";
+import { sendWelcomeEmailSafe } from "@/lib/email";
 
 export const runtime = "nodejs";
 
@@ -111,13 +112,13 @@ export async function POST(req: NextRequest) {
     }
 
     const target = (await db.get(
-      `SELECT id, COALESCE(role,'member') as role, COALESCE(status,'pending') as status
+      `SELECT id, email, COALESCE(role,'member') as role, COALESCE(status,'pending') as status
        FROM users
        WHERE id = ? AND agency_id = ?
        LIMIT 1`,
       user_id,
       ctx.agencyId
-    )) as { id: string; role: string; status: string } | undefined;
+    )) as { id: string; email: string; role: string; status: string } | undefined;
 
     if (!target?.id) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -181,6 +182,26 @@ export async function POST(req: NextRequest) {
       user_id,
       ctx.agencyId
     );
+
+    // ✅ If user just became an ACTIVE MEMBER, send welcome email (non-blocking).
+    // We only send on transition into active, not if already active.
+    const becameActive = beforeStatus !== "active" && afterStatus === "active";
+    const shouldWelcome = becameActive && afterRole === "member";
+
+    if (shouldWelcome) {
+      const agency = (await db.get(`SELECT name FROM agencies WHERE id = ? LIMIT 1`, ctx.agencyId)) as
+        | { name?: string | null }
+        | undefined;
+
+      const agencyName = String(agency?.name ?? "").trim();
+
+      if (agencyName && target.email) {
+        void sendWelcomeEmailSafe({
+          to: String(target.email).trim().toLowerCase(),
+          agencyName,
+        });
+      }
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err: any) {
