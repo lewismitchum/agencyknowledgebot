@@ -28,6 +28,16 @@ async function ensureAgencyBillingColumns(db: Db) {
   await db.run(`ALTER TABLE agencies ADD COLUMN trial_used INTEGER`).catch(() => {});
 }
 
+async function ensureStripeEventsTable(db: Db) {
+  await db.run(
+    `CREATE TABLE IF NOT EXISTS stripe_events (
+      id TEXT PRIMARY KEY,
+      type TEXT,
+      created_at TEXT
+    )`
+  ).catch(() => {});
+}
+
 function planFromPriceId(priceId: string | null | undefined): PlanKey {
   const starter = process.env.STRIPE_PRICE_STARTER || "";
   const pro = process.env.STRIPE_PRICE_PRO || "";
@@ -200,16 +210,19 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
     await ensureAgencyBillingColumns(db);
+    await ensureStripeEventsTable(db);
 
     const firstTime = await recordStripeEventOnce(db, event);
     if (!firstTime) return NextResponse.json({ ok: true });
 
     await withTx(db, async () => {
+      // ✅ DO NOT set trial_used based on checkout metadata (spoofable).
+      // Only set trial_used when Stripe tells us the subscription had/has a trial.
+
       if (event.type === "checkout.session.completed") {
         const session = event.data.object as Stripe.Checkout.Session;
 
         const agencyId = agencyIdFromCheckoutSession(session);
-        const desired = normalizePlan(((session.metadata || {}) as any)?.plan);
 
         const customerId =
           typeof session.customer === "string"
@@ -225,18 +238,13 @@ export async function POST(req: NextRequest) {
               ? String((session.subscription as any).id)
               : null;
 
-        const trialDaysMeta = String(((session.metadata || {}) as any)?.trial_days ?? "");
-        const usedTrial = toInt(trialDaysMeta) > 0 ? 1 : 0;
-
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, {
-            plan: desired !== "free" ? desired : undefined,
             stripe_customer_id: customerId ?? undefined,
             stripe_subscription_id: subscriptionId ?? undefined,
-            // ✅ Only mark trial_used if this checkout actually started a trial
-            ...(usedTrial ? { trial_used: 1 } : {}),
           });
         }
+
         return;
       }
 
@@ -269,10 +277,10 @@ export async function POST(req: NextRequest) {
           agencyId = await findAgencyIdByStripeIds(db, { customerId, subscriptionId: sub.id });
         }
 
-        // ✅ Trial used if Stripe says trial_end exists and is in the future, or status is trialing.
+        // ✅ One-time trial is considered "used" if Stripe ever reports a trial_end or trialing.
         const trialEndSec = toInt((sub as any).trial_end);
         const trialingNow = status === "trialing";
-        const hasTrial = trialingNow || trialEndSec > 0;
+        const hasEverHadTrial = trialingNow || trialEndSec > 0;
 
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, {
@@ -281,9 +289,10 @@ export async function POST(req: NextRequest) {
             stripe_subscription_id: sub.id ?? undefined,
             stripe_price_id: chosenPriceId ?? undefined,
             stripe_current_period_end: periodEndIso ?? undefined,
-            ...(hasTrial ? { trial_used: 1 } : {}),
+            ...(hasEverHadTrial ? { trial_used: 1 } : {}),
           });
         }
+
         return;
       }
 
@@ -312,6 +321,7 @@ export async function POST(req: NextRequest) {
             stripe_current_period_end: null,
           });
         }
+
         return;
       }
 
@@ -340,6 +350,7 @@ export async function POST(req: NextRequest) {
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, { plan: "free" });
         }
+
         return;
       }
 
@@ -362,6 +373,7 @@ export async function POST(req: NextRequest) {
         if (agencyId) {
           await updateAgencyBilling(db, agencyId, { plan: "free" });
         }
+
         return;
       }
     });
@@ -369,6 +381,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     console.error("STRIPE_WEBHOOK_ERROR", err);
+    // Stripe expects a 2xx to stop retry storms. We log and ack.
     return NextResponse.json({ ok: true, warning: "webhook_error_logged" }, { status: 200 });
   }
 }

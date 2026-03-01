@@ -49,15 +49,33 @@ function bad(msg: string) {
   return NextResponse.json({ ok: false, error: msg }, { status: 400 });
 }
 
+/**
+ * IMPORTANT: DDL (ensureSchema) must NOT run inside a BEGIN/COMMIT transaction.
+ * SQLite/libSQL may implicitly end the transaction after certain DDL statements,
+ * producing: "cannot commit - no transaction is active"
+ *
+ * To make this bulletproof, we always call ensureSchema() BEFORE beginning a TX.
+ */
 async function withTx<T>(db: Db, fn: () => Promise<T>): Promise<T> {
-  // ✅ BEGIN IMMEDIATE prevents race conditions on cap enforcement
-  await db.run("BEGIN IMMEDIATE");
+  let began = false;
+
   try {
+    // ✅ BEGIN IMMEDIATE prevents race conditions on cap enforcement
+    await db.run("BEGIN IMMEDIATE");
+    began = true;
+
     const out = await fn();
+
+    // If fn() returned a Response (e.g., 403 BOT_LIMIT_EXCEEDED),
+    // we still want to commit the read-only TX cleanly.
     await db.run("COMMIT");
+    began = false;
+
     return out;
-  } catch (e) {
-    await db.run("ROLLBACK").catch(() => {});
+  } catch (e: any) {
+    if (began) {
+      await db.run("ROLLBACK").catch(() => {});
+    }
     throw e;
   }
 }
@@ -67,6 +85,8 @@ export async function GET(req: NextRequest) {
     const ctx = (await requireActiveMember(req)) as Ctx;
 
     const db: Db = await getDb();
+
+    // ✅ ensureSchema OUTSIDE any transaction
     await ensureSchema(db);
 
     const bots = (await db.all(
@@ -122,6 +142,8 @@ export async function POST(req: NextRequest) {
       : ((await requireActiveMember(req)) as Ctx)) as Ctx;
 
     const db: Db = await getDb();
+
+    // ✅ ensureSchema OUTSIDE any transaction (critical fix)
     await ensureSchema(db);
 
     const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
@@ -147,6 +169,7 @@ export async function POST(req: NextRequest) {
           const used = Number(row?.n ?? 0);
 
           if (used >= maxAgencyBots) {
+            // Return a response; TX will commit cleanly.
             return NextResponse.json(
               {
                 ok: false,
@@ -216,7 +239,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
     }
     if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
-      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" },
+        { status: 403 }
+      );
     }
     if (msg === "FORBIDDEN_NOT_OWNER") {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });

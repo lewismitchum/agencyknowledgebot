@@ -38,6 +38,8 @@ function priceIdForPlan(plan: PlanKey): string | null {
 
 async function ensureAgencyTrialColumns(db: Db) {
   await db.run(`ALTER TABLE agencies ADD COLUMN trial_used INTEGER`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
 }
 
 export async function POST(req: NextRequest) {
@@ -79,24 +81,30 @@ export async function POST(req: NextRequest) {
     const origin = getOrigin(req);
     const stripe = getStripe();
 
-    // ✅ Trial rules:
-    // - Only apply a 7-day trial if:
-    //   - agency.trial_used is not set AND
-    //   - agency has no existing subscription id
+    // ✅ Trial rules (server-side):
+    // - 7-day trial ONLY if:
+    //   - agencies.trial_used != 1 AND
+    //   - agencies.stripe_subscription_id is empty
     const trialEligible =
       Number(agency?.trial_used ?? 0) !== 1 && !String(agency?.stripe_subscription_id ?? "").trim();
 
+    const customerId = String(agency?.stripe_customer_id ?? "").trim();
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      customer_email: ctx.agencyEmail,
+      ...(customerId
+        ? { customer: customerId }
+        : { customer_email: String(ctx.agencyEmail || agency?.email || "").trim() || undefined }),
+
       line_items: [{ price: priceId, quantity: 1 }],
       allow_promotion_codes: true,
+
       client_reference_id: ctx.agencyId,
       metadata: {
         agency_id: ctx.agencyId,
         plan: desired,
-        trial_days: trialEligible ? "7" : "0",
       },
+
       subscription_data: {
         metadata: {
           agency_id: ctx.agencyId,
@@ -104,6 +112,7 @@ export async function POST(req: NextRequest) {
         },
         ...(trialEligible ? { trial_period_days: 7 } : {}),
       },
+
       success_url: `${origin}/app/billing?success=1`,
       cancel_url: `${origin}/app/billing?canceled=1`,
     });
