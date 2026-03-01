@@ -1,49 +1,213 @@
+// app/(app)/app/notifications/page.tsx
 "use client";
 
-import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { useEffect, useState } from "react";
+import { UpgradeGate } from "@/components/upgrade-gate";
+import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
+
+type Event = {
+  id: string;
+  title: string;
+  start_time: string;
+};
+
+type Task = {
+  id: string;
+  title: string;
+  due_date: string | null;
+};
+
+type Extraction = {
+  id: string;
+  document_id: string;
+  created_at: string;
+};
+
+type NotificationsPayload = {
+  plan: string;
+  schedule_enabled: boolean;
+  events: Event[];
+  tasks: Task[];
+  extractions: Extraction[];
+  notices: Array<{ id: string; title: string; body: string }>;
+};
+
+function isFetchJsonError(e: any): e is FetchJsonError {
+  return !!e && typeof e === "object" && ("status" in e || "code" in e);
+}
 
 export default function NotificationsPage() {
-  return (
-    <div className="mx-auto max-w-3xl space-y-4">
-      <Card className="rounded-3xl">
-        <CardHeader>
-          <CardTitle className="text-xl">Notifications</CardTitle>
-          <CardDescription>
-            Reminders and alerts (coming next). This page exists so the nav link works.
-          </CardDescription>
-        </CardHeader>
+  const [data, setData] = useState<NotificationsPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
 
-        <CardContent className="space-y-3">
-          <div className="rounded-2xl border bg-muted/40 p-4 text-sm text-muted-foreground">
-            Planned:
-            <ul className="mt-2 list-disc space-y-1 pl-5">
-              <li>Daily digest (today’s tasks + upcoming events)</li>
-              <li>Due-soon reminders</li>
-              <li>Email / in-app notifications (plan-gated later if you want)</li>
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError("");
+
+      try {
+        const j = await fetchJson<any>("/api/notifications", {
+          credentials: "include",
+          cache: "no-store",
+        });
+
+        const payload: NotificationsPayload = {
+          plan: String(j?.plan ?? "free"),
+          schedule_enabled: !!j?.schedule_enabled,
+          events: Array.isArray(j?.events) ? j.events : [],
+          tasks: Array.isArray(j?.tasks) ? j.tasks : [],
+          extractions: Array.isArray(j?.extractions) ? j.extractions : [],
+          notices: Array.isArray(j?.notices) ? j.notices : [],
+        };
+
+        if (!cancelled) setData(payload);
+      } catch (e: any) {
+        if (cancelled) return;
+
+        if (isFetchJsonError(e) && e.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+
+        setError(e?.message ?? "Failed to load notifications");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (loading) return <div className="p-6">Loading...</div>;
+
+  if (error) {
+    return (
+      <div className="p-6">
+        <h1 className="mb-4 text-2xl font-semibold">Notifications</h1>
+        <div className="rounded-lg border bg-red-50 p-4 text-sm text-red-700">{error}</div>
+      </div>
+    );
+  }
+
+  const plan = data?.plan ?? "free";
+  const scheduleEnabled = !!data?.schedule_enabled;
+
+  // Notifications are for all tiers, but schedule/task feed is Starter+.
+  if (!scheduleEnabled) {
+    return (
+      <div className="p-6 space-y-6">
+        <h1 className="text-2xl font-semibold">Notifications</h1>
+
+        <div className="rounded-2xl border bg-card p-5">
+          <div className="text-sm font-medium">You’re on {plan}.</div>
+          <div className="mt-1 text-sm text-muted-foreground">
+            Schedule, tasks, and extraction notifications unlock on Starter+.
+          </div>
+          <div className="mt-4">
+            <UpgradeGate
+              title="Unlock notifications that matter"
+              message="Upgrade to get schedule/task reminders and extraction outcomes."
+              ctaHref="/app/billing"
+              ctaLabel="Upgrade"
+            />
+          </div>
+        </div>
+
+        {(data?.notices ?? []).length > 0 ? (
+          <section>
+            <h2 className="mb-2 text-lg font-medium">Notices</h2>
+            <ul className="space-y-2">
+              {(data?.notices ?? []).map((n) => (
+                <li key={n.id} className="rounded-lg border p-3">
+                  <div className="font-medium">{n.title}</div>
+                  <div className="text-sm text-muted-foreground">{n.body}</div>
+                </li>
+              ))}
             </ul>
-          </div>
+          </section>
+        ) : null}
+      </div>
+    );
+  }
 
-          <div className="flex flex-wrap gap-2">
-            <Button asChild variant="outline" className="rounded-full">
-              <Link href="/app/schedule">Open Schedule</Link>
-            </Button>
+  const events = data?.events ?? [];
+  const tasks = data?.tasks ?? [];
+  const extractions = data?.extractions ?? [];
+  const notices = data?.notices ?? [];
 
-            <Button asChild variant="outline" className="rounded-full">
-              <Link href="/app/chat">Open Chat</Link>
-            </Button>
+  return (
+    <div className="p-6 space-y-8">
+      <h1 className="text-2xl font-semibold">Notifications</h1>
 
-            <Button asChild variant="outline" className="rounded-full">
-              <Link href="/app/support">Support</Link>
-            </Button>
-          </div>
+      {notices.length > 0 ? (
+        <section>
+          <h2 className="mb-2 text-lg font-medium">Notices</h2>
+          <ul className="space-y-2">
+            {notices.map((n) => (
+              <li key={n.id} className="rounded-lg border p-3">
+                <div className="font-medium">{n.title}</div>
+                <div className="text-sm text-muted-foreground">{n.body}</div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
-          <div className="text-xs text-muted-foreground">
-            Next step when you’re ready: add a simple API that returns “due soon” tasks + next 7 days events.
-          </div>
-        </CardContent>
-      </Card>
+      <section>
+        <h2 className="mb-2 text-lg font-medium">Upcoming Events</h2>
+        {events.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No upcoming events.</p>
+        ) : (
+          <ul className="space-y-2">
+            {events.map((e) => (
+              <li key={e.id} className="rounded border p-3">
+                <div className="font-medium">{e.title}</div>
+                <div className="text-sm text-muted-foreground">{new Date(e.start_time).toLocaleString()}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-lg font-medium">Open Tasks</h2>
+        {tasks.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No open tasks.</p>
+        ) : (
+          <ul className="space-y-2">
+            {tasks.map((t) => (
+              <li key={t.id} className="rounded border p-3">
+                <div className="font-medium">{t.title}</div>
+                {t.due_date ? (
+                  <div className="text-sm text-muted-foreground">Due {new Date(t.due_date).toLocaleDateString()}</div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-lg font-medium">Recent Extractions</h2>
+        {extractions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No recent extractions.</p>
+        ) : (
+          <ul className="space-y-2">
+            {extractions.map((x) => (
+              <li key={x.id} className="rounded border p-3">
+                <div className="text-sm">Extraction from document {x.document_id}</div>
+                <div className="text-xs text-muted-foreground">{new Date(x.created_at).toLocaleString()}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

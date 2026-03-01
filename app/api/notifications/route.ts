@@ -1,18 +1,11 @@
-import { NextResponse } from "next/server";
+// app/api/notifications/route.ts
+import { NextResponse, type NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
-import * as auth from "@/lib/auth";
+import { requireActiveMember } from "@/lib/authz";
 import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export const runtime = "nodejs";
-
-const requireActiveMember: (req: Request) => Promise<any> =
-  (auth as any).requireActiveMember ??
-  (auth as any).requireMember ??
-  (auth as any).requireUser ??
-  (async () => {
-    throw new Error('requireActiveMember not found in "@/lib/auth"');
-  });
 
 const SCHEDULE_PLANS: PlanKey[] = ["starter", "pro", "enterprise", "corporation"];
 
@@ -20,25 +13,51 @@ function isScheduleEnabled(plan: PlanKey) {
   return SCHEDULE_PLANS.includes(plan);
 }
 
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
   try {
     const session = await requireActiveMember(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const agency = await db.get(`SELECT plan FROM agencies WHERE id = ?`, session.agencyId);
-    const plan = normalizePlan(agency?.plan || "free");
+    const agency = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, session.agencyId)) as
+      | { plan?: string | null }
+      | undefined;
 
-    if (!isScheduleEnabled(plan)) {
-      return NextResponse.json({ error: "SCHEDULE_NOT_ENABLED" }, { status: 403 });
+    const planKey = normalizePlan(agency?.plan || "free");
+    const scheduleEnabled = isScheduleEnabled(planKey);
+
+    const notices = [
+      {
+        id: "n_docs_first",
+        title: "Docs-first answers",
+        body: "For internal questions, Louis prioritizes your uploads and stays honest when the docs don’t support it.",
+      },
+    ];
+
+    if (!scheduleEnabled) {
+      // Notifications page exists for all tiers; schedule feed is gated.
+      return NextResponse.json({
+        plan: planKey,
+        schedule_enabled: false,
+        events: [],
+        tasks: [],
+        extractions: [],
+        notices: [
+          ...notices,
+          {
+            id: "n_upgrade_schedule",
+            title: "Upgrade for schedule notifications",
+            body: "Unlock schedule, tasks, and extraction notifications on Starter+.",
+          },
+        ],
+      });
     }
 
     const now = new Date();
     const in7Days = new Date(now.getTime());
     in7Days.setDate(in7Days.getDate() + 7);
 
-    // schedule schema: start_at/end_at (alias to UI’s start_time)
     const events = await db.all(
       `
       SELECT
@@ -56,7 +75,6 @@ export async function GET(req: Request) {
       in7Days.toISOString()
     );
 
-    // schedule schema: due_at (alias to UI’s due_date)
     const tasks = await db.all(
       `
       SELECT
@@ -87,9 +105,12 @@ export async function GET(req: Request) {
     );
 
     return NextResponse.json({
+      plan: planKey,
+      schedule_enabled: true,
       events: Array.isArray(events) ? events : [],
       tasks: Array.isArray(tasks) ? tasks : [],
       extractions: Array.isArray(extractions) ? extractions : [],
+      notices,
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
@@ -97,11 +118,11 @@ export async function GET(req: Request) {
     if (code === "UNAUTHENTICATED") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    if (code === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ error: "Pending approval" }, { status: 403 });
+    }
 
     console.error("NOTIFICATIONS_GET_ERROR", err);
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
