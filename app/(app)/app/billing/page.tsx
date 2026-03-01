@@ -33,7 +33,6 @@ type MeResponse =
         status: string;
         email_verified: number;
       };
-      tier_switcher_enabled?: boolean;
     }
   | { ok?: false; error?: string; message?: string };
 
@@ -96,18 +95,17 @@ function BillingContent() {
   const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
 
   const [isOwner, setIsOwner] = useState(false);
+  const [meUserId, setMeUserId] = useState<string>("");
+
   const [devPlan, setDevPlan] = useState<PlanKey>("free");
   const [devSaving, setDevSaving] = useState(false);
-
-  // ✅ server-driven permission (only YOUR account/agency should get this)
-  const [tierSwitcherEnabled, setTierSwitcherEnabled] = useState(false);
-
-  const isProd = process.env.NODE_ENV === "production";
-  const showDevSwitcher = !isProd && tierSwitcherEnabled; // UI locked to your user id + non-prod
 
   const successParam = sp.get("success");
   const statusParam = sp.get("status");
   const isSuccess = successParam === "1" || statusParam === "success";
+
+  // ✅ You-only switcher (set in Vercel + local env). Empty => never show.
+  const allowedUserId = (process.env.NEXT_PUBLIC_TIER_SWITCHER_USER_ID || "").trim();
 
   async function loadMeOnce(signal?: AbortSignal) {
     const res = await fetch("/api/me", { method: "GET", cache: "no-store", signal });
@@ -116,6 +114,9 @@ function BillingContent() {
     if ((data as any)?.ok && (data as any)?.agency) {
       const a = (data as any).agency;
       const u = (data as any).user;
+
+      const uid = String(u?.id ?? "");
+      setMeUserId(uid);
 
       if (a?.plan) {
         const p = String(a.plan);
@@ -141,9 +142,6 @@ function BillingContent() {
       }
 
       setIsOwner(String(u?.role || "") === "owner");
-
-      // ✅ only you get this flag from /api/me
-      setTierSwitcherEnabled(Boolean((data as any)?.tier_switcher_enabled));
     }
 
     return data;
@@ -163,7 +161,7 @@ function BillingContent() {
     const ac = new AbortController();
 
     const startedAt = Date.now();
-    const maxMs = 20_000; // stop polling after 20s
+    const maxMs = 20_000;
     const everyMs = 2_000;
 
     async function tick() {
@@ -172,15 +170,11 @@ function BillingContent() {
       try {
         const data = await loadMeOnce(ac.signal);
         const plan = String((data as any)?.agency?.plan ?? "").toLowerCase().trim();
-
-        // stop when plan becomes a paid tier
         if (plan && plan !== "free") {
           stopped = true;
           return;
         }
-      } catch {
-        // ignore and keep trying until timeout
-      }
+      } catch {}
 
       if (Date.now() - startedAt >= maxMs) {
         stopped = true;
@@ -344,9 +338,10 @@ function BillingContent() {
   ] as const;
 
   const isPaid = currentPlan && currentPlan !== "free";
-
-  // Eligible if they haven't used trial yet and they don't already have a subscription.
   const trialEligible = !trialUsed && !stripeSubscriptionId;
+
+  // ✅ you-only gate (must also be owner)
+  const showDevSwitcher = !!allowedUserId && !!meUserId && allowedUserId === meUserId && isOwner;
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8">
@@ -394,7 +389,7 @@ function BillingContent() {
         <BillingStatusBanner />
       </Suspense>
 
-      {showDevSwitcher && isOwner ? (
+      {showDevSwitcher ? (
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="text-base">Owner-only tier switcher</CardTitle>

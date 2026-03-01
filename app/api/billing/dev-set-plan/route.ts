@@ -13,24 +13,16 @@ type Body = {
 
 const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
 
-function tierSwitcherAllowedForUser(userId: string) {
-  const allowUser = String(process.env.TIER_SWITCHER_USER_ID || "").trim();
-  if (!allowUser) return false;
-  return String(userId) === allowUser;
-}
-
 export async function POST(req: NextRequest) {
-  // 🔒 Hard lock: dev-only route must not exist in production.
-  // Return 404 (not 403) to avoid advertising the endpoint.
-  if (process.env.NODE_ENV === "production") {
-    return new Response("Not Found", { status: 404 });
-  }
+  // 🔒 Not advertised + locked: only the specific user can use it.
+  const allowUserId = String(process.env.TIER_SWITCHER_USER_ID || "").trim();
+  if (!allowUserId) return new Response("Not Found", { status: 404 });
 
   try {
     const ctx = await requireOwner(req);
 
-    // 🔒 Only *your* user id can use this route
-    if (!tierSwitcherAllowedForUser(ctx.userId)) {
+    // Only your account
+    if (String(ctx.userId) !== allowUserId) {
       return new Response("Not Found", { status: 404 });
     }
 
