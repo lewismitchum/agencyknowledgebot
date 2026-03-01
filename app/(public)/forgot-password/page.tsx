@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Script from "next/script";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 declare global {
   interface Window {
@@ -18,12 +18,13 @@ declare global {
         }
       ) => string;
       reset: (widgetId: string) => void;
+      remove?: (widgetId: string) => void;
     };
   }
 }
 
 export default function ForgotPasswordPage() {
-  const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
+  const siteKey = useMemo(() => String(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "").trim(), []);
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -33,7 +34,7 @@ export default function ForgotPasswordPage() {
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
+  function renderTurnstile() {
     if (!siteKey) return;
     if (!widgetRef.current) return;
     if (!window.turnstile) return;
@@ -46,7 +47,24 @@ export default function ForgotPasswordPage() {
       "error-callback": () => setTsToken(""),
       "expired-callback": () => setTsToken(""),
     });
-  }, [siteKey]);
+  }
+
+  useEffect(() => {
+    // If script already loaded (client nav), render immediately.
+    renderTurnstile();
+
+    return () => {
+      // Cleanup on unmount so next mount can re-render cleanly
+      const id = widgetIdRef.current;
+      widgetIdRef.current = null;
+      setTsToken("");
+
+      try {
+        if (id && window.turnstile?.remove) window.turnstile.remove(id);
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
@@ -64,7 +82,7 @@ export default function ForgotPasswordPage() {
     setOk("");
 
     const fd = new FormData(e.currentTarget);
-    const email = String(fd.get("email") || "");
+    const email = String(fd.get("email") || "").trim().toLowerCase();
 
     if (!siteKey) {
       setErr("Turnstile misconfigured (missing site key).");
@@ -99,6 +117,7 @@ export default function ForgotPasswordPage() {
       }
 
       setOk("If that email exists, you’ll receive a reset link shortly.");
+      resetTurnstile();
     } catch (e: any) {
       setErr(e?.message || "Network error");
       resetTurnstile();
@@ -110,7 +129,15 @@ export default function ForgotPasswordPage() {
   return (
     <>
       {siteKey ? (
-        <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer />
+        <Script
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          async
+          defer
+          onLoad={() => {
+            // ✅ guarantees widget renders once script is ready
+            renderTurnstile();
+          }}
+        />
       ) : null}
 
       <div className="mx-auto max-w-6xl px-4 py-14 md:py-20">
@@ -148,6 +175,7 @@ export default function ForgotPasswordPage() {
                   autoComplete="email"
                   className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
                   placeholder="you@agency.com"
+                  disabled={loading}
                 />
               </div>
 
