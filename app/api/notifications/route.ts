@@ -1,18 +1,13 @@
+// app/api/notifications/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
-import { normalizePlan, type PlanKey } from "@/lib/plans";
+import { normalizePlan, requireFeature } from "@/lib/plans";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const SCHEDULE_PLANS: PlanKey[] = ["starter", "pro", "enterprise", "corporation"];
-
-function isScheduleEnabled(plan: PlanKey) {
-  return SCHEDULE_PLANS.includes(plan);
-}
 
 export async function GET(req: NextRequest) {
   try {
@@ -27,8 +22,21 @@ export async function GET(req: NextRequest) {
 
     const plan = normalizePlan(agency?.plan ?? session.plan ?? "free");
 
-    if (!isScheduleEnabled(plan)) {
-      return NextResponse.json({ error: "SCHEDULE_NOT_ENABLED" }, { status: 403 });
+    // ✅ Notifications endpoint exists for ALL tiers.
+    // Free returns empty data + upsell (no hard 403).
+    const scheduleGate = requireFeature(plan, "schedule");
+    if (!scheduleGate.ok) {
+      return NextResponse.json({
+        ok: true,
+        plan,
+        upsell: {
+          code: "SCHEDULE_NOT_ENABLED",
+          message: "Upgrade to unlock schedule + extraction notifications.",
+        },
+        events: [],
+        tasks: [],
+        extractions: [],
+      });
     }
 
     const now = new Date();
@@ -82,6 +90,8 @@ export async function GET(req: NextRequest) {
     );
 
     return NextResponse.json({
+      ok: true,
+      plan,
       events: Array.isArray(events) ? events : [],
       tasks: Array.isArray(tasks) ? tasks : [],
       extractions: Array.isArray(extractions) ? extractions : [],
@@ -97,6 +107,9 @@ export async function GET(req: NextRequest) {
     }
 
     console.error("NOTIFICATIONS_GET_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }
