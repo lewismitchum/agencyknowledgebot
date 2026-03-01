@@ -11,6 +11,17 @@ export const dynamic = "force-dynamic";
 
 type Upsell = { code?: string; message?: string };
 
+async function tableColumns(db: Db, table: string): Promise<Set<string>> {
+  const safe = String(table).replace(/[^a-zA-Z0-9_]/g, "");
+  const rows = (await db.all(`PRAGMA table_info(${safe})`)) as Array<{ name?: string }>;
+  return new Set((rows ?? []).map((r) => String(r?.name ?? "").trim()).filter(Boolean));
+}
+
+function pickFirst(cols: Set<string>, options: string[]): string | null {
+  for (const c of options) if (cols.has(c)) return c;
+  return null;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
@@ -28,18 +39,16 @@ export async function GET(req: NextRequest) {
 
     const plan = normalizePlan(agency?.plan ?? (ctx as any)?.plan ?? "free");
 
-    // Notifications page is visible to all plans.
-    // But schedule-derived data is a paid feature; free gets empty arrays + an upsell hint.
     const scheduleEnabled = hasFeature(plan, "schedule");
 
     const upsell: Upsell | null = scheduleEnabled
       ? null
       : {
           code: "UPSELL_SCHEDULE",
-          message:
-            "Upgrade to unlock schedule + task notifications (auto-extracted from docs).",
+          message: "Upgrade to unlock schedule + task notifications (auto-extracted from docs).",
         };
 
+    // Free plans still see the page; just return empty data + upsell.
     if (!scheduleEnabled) {
       return NextResponse.json({
         ok: true,
@@ -51,29 +60,62 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // --- Drift-safe column detection ---
+    const evCols = await tableColumns(db, "schedule_events");
+    const taskCols = await tableColumns(db, "schedule_tasks");
+
+    const evTitleCol = pickFirst(evCols, ["title", "name", "summary"]) ?? "title";
+    const evStartCol =
+      pickFirst(evCols, ["start_time", "starts_at", "start_at", "start", "startsOn", "start_datetime"]) ??
+      pickFirst(evCols, ["date", "event_time", "begins_at"]) ??
+      null;
+
+    // If we cannot find any reasonable time column, return events empty (don’t 500).
     const nowIso = new Date().toISOString();
 
-    const events = (await db.all(
-      `SELECT id, title, start_time
-       FROM schedule_events
-       WHERE agency_id = ?
-         AND start_time >= ?
-       ORDER BY start_time ASC
-       LIMIT 10`,
-      ctx.agencyId,
-      nowIso
-    )) as Array<{ id: string; title: string; start_time: string }>;
+    let events: Array<{ id: string; title: string; start_time: string }> = [];
+    if (evStartCol) {
+      const rows = (await db.all(
+        `SELECT id,
+                ${evTitleCol} as title,
+                ${evStartCol} as start_time
+         FROM schedule_events
+         WHERE agency_id = ?
+           AND ${evStartCol} >= ?
+         ORDER BY ${evStartCol} ASC
+         LIMIT 10`,
+        ctx.agencyId,
+        nowIso
+      )) as Array<{ id: string; title: string; start_time: string }>;
+      events = (rows ?? []).filter((r) => r && r.id && r.start_time);
+    }
 
-    // Prefer "status" if present, otherwise completed_at semantics.
-    // (If your schema only has one of these, ensureSchema should create canonical columns.)
+    const taskTitleCol = pickFirst(taskCols, ["title", "name", "summary"]) ?? "title";
+    const taskDueCol = pickFirst(taskCols, ["due_date", "due_at", "due", "due_datetime", "deadline"]) ?? null;
+
+    // Open-ness drift: prefer status; else completed_at; else is_done; else return everything (best-effort)
+    const taskStatusCol = pickFirst(taskCols, ["status"]) ?? null;
+    const taskCompletedAtCol = pickFirst(taskCols, ["completed_at", "done_at"]) ?? null;
+    const taskIsDoneCol = pickFirst(taskCols, ["is_done", "done"]) ?? null;
+
+    let whereOpen = "1=1";
+    if (taskStatusCol) whereOpen = `( ${taskStatusCol} IS NULL OR lower(${taskStatusCol}) != 'done' )`;
+    else if (taskCompletedAtCol) whereOpen = `${taskCompletedAtCol} IS NULL`;
+    else if (taskIsDoneCol) whereOpen = `( ${taskIsDoneCol} IS NULL OR ${taskIsDoneCol} = 0 )`;
+
+    const dueSelect = taskDueCol ? `${taskDueCol} as due_date` : `NULL as due_date`;
+    const dueOrder = taskDueCol
+      ? `CASE WHEN ${taskDueCol} IS NULL THEN 1 ELSE 0 END, ${taskDueCol} ASC`
+      : `id DESC`;
+
     const tasks = (await db.all(
-      `SELECT id, title, due_date
+      `SELECT id,
+              ${taskTitleCol} as title,
+              ${dueSelect}
        FROM schedule_tasks
        WHERE agency_id = ?
-         AND (status IS NULL OR lower(status) != 'done')
-       ORDER BY
-         CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
-         due_date ASC
+         AND ${whereOpen}
+       ORDER BY ${dueOrder}
        LIMIT 25`,
       ctx.agencyId
     )) as Array<{ id: string; title: string; due_date: string | null }>;
@@ -94,6 +136,20 @@ export async function GET(req: NextRequest) {
       events: events ?? [],
       tasks: tasks ?? [],
       extractions: extractions ?? [],
+      // helpful for debugging (safe to keep or remove)
+      _debug: {
+        schedule_events_start_col: evStartCol,
+        schedule_events_title_col: evTitleCol,
+        schedule_tasks_due_col: taskDueCol,
+        schedule_tasks_title_col: taskTitleCol,
+        schedule_tasks_open_logic: taskStatusCol
+          ? "status != done"
+          : taskCompletedAtCol
+          ? "completed_at is null"
+          : taskIsDoneCol
+          ? "is_done = 0"
+          : "no open filter",
+      },
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
