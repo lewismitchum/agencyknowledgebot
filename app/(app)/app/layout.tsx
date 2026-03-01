@@ -2,11 +2,92 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ModeToggle } from "@/components/mode-toggle";
 
+type GateState = "checking" | "ok" | "redirecting";
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+
+  const [gate, setGate] = useState<GateState>("checking");
+
+  // allow these inside /app without forcing a redirect loop
+  const gateBypass = useMemo(() => {
+    if (!pathname) return false;
+    return (
+      pathname.startsWith("/app/check-email") ||
+      pathname.startsWith("/app/verify-email") ||
+      pathname.startsWith("/app/logout")
+    );
+  }, [pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      if (gateBypass) {
+        if (!cancelled) setGate("ok");
+        return;
+      }
+
+      try {
+        const r = await fetch("/api/me", {
+          credentials: "include",
+          cache: "no-store",
+          headers: { "cache-control": "no-cache" },
+        });
+
+        if (cancelled) return;
+
+        if (r.status === 401) {
+          setGate("redirecting");
+          window.location.href = "/login";
+          return;
+        }
+
+        if (r.status === 403) {
+          setGate("redirecting");
+          window.location.href = "/check-email";
+          return;
+        }
+
+        // if /api/me returns other errors, do not brick the app shell
+        setGate("ok");
+      } catch {
+        if (!cancelled) setGate("ok");
+      }
+    }
+
+    setGate("checking");
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gateBypass]);
+
+  // Minimal gate UI — prevents random 403 flashes on first paint
+  if (gate !== "ok") {
+    return (
+      <div className="min-h-screen bg-background">
+        <div className="pointer-events-none fixed inset-0 -z-10">
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom,rgba(255,255,255,0.05),transparent_50%)]" />
+        </div>
+
+        <div className="mx-auto flex max-w-7xl px-4 py-10">
+          <div className="w-full rounded-3xl border bg-card p-6 shadow-sm">
+            <div className="text-sm font-medium">Loading workspace…</div>
+            <div className="mt-2 text-sm text-muted-foreground">
+              {gate === "redirecting" ? "Redirecting…" : "Checking your access…"}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
