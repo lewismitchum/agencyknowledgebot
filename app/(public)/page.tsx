@@ -1,9 +1,28 @@
+// app/(public)/page.tsx
 import Link from "next/link";
 
 export default function HomePage() {
   return (
     <div>
       <section className="mx-auto max-w-6xl px-4 py-16 md:py-24">
+        <div className="mb-10 flex items-center justify-between">
+          <div className="text-sm font-semibold tracking-tight">Louis.Ai</div>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/login"
+              className="rounded-xl border px-4 py-2 text-sm hover:bg-accent"
+            >
+              Log in
+            </Link>
+            <Link
+              href="/signup"
+              className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              Start free
+            </Link>
+          </div>
+        </div>
+
         <div className="grid gap-10 md:grid-cols-2 md:items-center">
           <div>
             <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
@@ -14,8 +33,8 @@ export default function HomePage() {
             </h1>
 
             <p className="mt-5 text-lg text-muted-foreground">
-              Upload SOPs, playbooks, onboarding, and brand docs. Louis answers strictly from your files.
-              If it’s not in the docs, it says so — exactly.
+              Upload SOPs, playbooks, onboarding, and brand docs. Louis answers strictly
+              from your files. If it’s not in the docs, it says so — exactly.
             </p>
 
             <div className="mt-8 flex flex-wrap gap-3">
@@ -31,6 +50,12 @@ export default function HomePage() {
               >
                 View pricing
               </Link>
+              <Link
+                href="/login"
+                className="rounded-xl border px-5 py-3 text-sm hover:bg-accent"
+              >
+                Log in
+              </Link>
             </div>
 
             <div className="mt-6 rounded-2xl border bg-card p-4">
@@ -39,11 +64,20 @@ export default function HomePage() {
                 I don’t have that information in the docs yet.
               </div>
             </div>
+
+            <div className="mt-6 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <span className="rounded-full border bg-muted/30 px-3 py-1">Per-agency isolation</span>
+              <span className="rounded-full border bg-muted/30 px-3 py-1">Hard docs-only rule</span>
+              <span className="rounded-full border bg-muted/30 px-3 py-1">Plan-based limits</span>
+            </div>
           </div>
 
           <div className="rounded-3xl border bg-card p-6 shadow-sm">
             <div className="grid gap-4">
-              <MockCard title="Upload your docs" body="SOPs, onboarding, offers, pricing, brand guides." />
+              <MockCard
+                title="Upload your docs"
+                body="SOPs, onboarding, offers, pricing, brand guides."
+              />
               <MockCard title="Ask anything" body="“What’s our onboarding checklist?”" />
               <MockCard
                 title="Get a grounded answer"
@@ -84,12 +118,14 @@ export default function HomePage() {
           <div className="rounded-3xl border bg-card p-8 md:p-10">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <h2 className="text-2xl font-semibold tracking-tight">Ready to stop searching old docs?</h2>
+                <h2 className="text-2xl font-semibold tracking-tight">
+                  Ready to stop searching old docs?
+                </h2>
                 <p className="mt-2 text-muted-foreground">
                   Start on Free. Upgrade when your team is ready.
                 </p>
               </div>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 <Link
                   href="/signup"
                   className="rounded-xl bg-primary px-5 py-3 text-sm font-medium text-primary-foreground hover:opacity-90"
@@ -102,7 +138,28 @@ export default function HomePage() {
                 >
                   Pricing
                 </Link>
+                <Link
+                  href="/login"
+                  className="rounded-xl border px-5 py-3 text-sm hover:bg-accent"
+                >
+                  Log in
+                </Link>
               </div>
+            </div>
+          </div>
+
+          <div className="mt-10 flex items-center justify-between text-xs text-muted-foreground">
+            <div>© {new Date().getFullYear()} Louis.Ai</div>
+            <div className="flex items-center gap-4">
+              <Link href="/support" className="hover:underline">
+                Support
+              </Link>
+              <Link href="/privacy" className="hover:underline">
+                Privacy
+              </Link>
+              <Link href="/terms" className="hover:underline">
+                Terms
+              </Link>
             </div>
           </div>
         </div>
