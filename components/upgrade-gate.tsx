@@ -7,11 +7,11 @@ type Props = {
   title?: string;
   message?: string;
 
-  // New names (preferred)
+  // Preferred props
   href?: string;
   cta?: string;
 
-  // Back-compat names (your pages currently use these)
+  // Backwards compatibility
   ctaHref?: string;
   ctaLabel?: string;
 
@@ -21,9 +21,11 @@ type Props = {
 export function UpgradeGate(props: Props) {
   const title = props.title ?? "Upgrade required";
   const message =
-    props.message ?? "This feature is available on a paid plan. Upgrade to unlock it.";
+    props.message ??
+    "This feature is available on a paid plan. Upgrade to unlock it.";
 
-  const href = props.href ?? props.ctaHref ?? "/app/settings/billing";
+  // Canonical billing route
+  const href = props.href ?? props.ctaHref ?? "/app/billing";
   const cta = props.cta ?? props.ctaLabel ?? "Upgrade";
 
   return (
