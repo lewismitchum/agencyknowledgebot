@@ -36,16 +36,21 @@ async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
 
 async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
   const bot = (await db.get(
-    `SELECT id, agency_id, owner_user_id
+    `SELECT id, agency_id, owner_user_id, vector_store_id
      FROM bots
      WHERE id = ?
      LIMIT 1`,
     args.bot_id
-  )) as { id: string; agency_id: string; owner_user_id: string | null } | undefined;
+  )) as
+    | { id: string; agency_id: string; owner_user_id: string | null; vector_store_id: string | null }
+    | undefined;
 
   if (!bot?.id) throw new Error("BOT_NOT_FOUND");
   if (bot.agency_id !== args.agency_id) throw new Error("FORBIDDEN_BOT");
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
+
+  const vsId = String(bot.vector_store_id ?? "").trim();
+  if (!vsId) throw new Error("BOT_VECTOR_STORE_MISSING");
 }
 
 async function getAgencyTimezone(db: Db, agencyId: string) {
@@ -149,6 +154,7 @@ export async function GET(req: NextRequest) {
       bot_id = fallback;
     }
 
+    // access + VS presence check
     await assertBotAccess(db, {
       bot_id,
       agency_id: ctx.agencyId,
@@ -174,6 +180,9 @@ export async function GET(req: NextRequest) {
     const msg = String(err?.message ?? err);
     if (msg === "BOT_NOT_FOUND") return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
     if (msg === "FORBIDDEN_BOT") return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
+    if (msg === "BOT_VECTOR_STORE_MISSING") {
+      return Response.json({ ok: false, error: "BOT_VECTOR_STORE_MISSING" }, { status: 409 });
+    }
 
     console.error("DOCUMENTS_GET_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });
@@ -201,8 +210,20 @@ export async function POST(req: NextRequest) {
     const allowOtherBinary = allowMultimedia;
     const maxBytes = maxBytesForPlan(plan);
 
-    // Compatibility shim: accept multipart FormData and forward to /api/upload server-side.
     const formData = await req.formData();
+
+    // bot_id (required, but fallback if omitted)
+    let bot_id = String(formData.get("bot_id") ?? "").trim();
+    if (!bot_id) {
+      const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
+      if (!fallback) return Response.json({ ok: false, error: "NO_BOTS" }, { status: 404 });
+      bot_id = fallback;
+      // ensure upstream receives bot_id
+      formData.set("bot_id", bot_id);
+    }
+
+    // ✅ enforce bot access + vector store presence BEFORE any gating/forwarding
+    await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
 
     // --- HARD UPLOAD ENFORCEMENT (server-side, before forwarding) ---
     const files = pickFilesFromFormData(formData);
@@ -320,8 +341,8 @@ export async function POST(req: NextRequest) {
     const text = await upstream.text();
 
     // ✅ SINGLE SOURCE OF TRUTH:
-    // /api/upload is responsible for incrementing uploads usage.
-    // Do NOT increment here, or you'll double-count and break limits.
+    // /api/upload increments uploads usage.
+    // Do NOT increment here.
 
     return new Response(text, {
       status: upstream.status,
@@ -331,8 +352,18 @@ export async function POST(req: NextRequest) {
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
+
     if (code === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
     if (code === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-    return Response.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+
+    const msg = String(err?.message ?? err);
+
+    if (msg === "BOT_NOT_FOUND") return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
+    if (msg === "FORBIDDEN_BOT") return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
+    if (msg === "BOT_VECTOR_STORE_MISSING") {
+      return Response.json({ ok: false, error: "BOT_VECTOR_STORE_MISSING" }, { status: 409 });
+    }
+
+    return Response.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }

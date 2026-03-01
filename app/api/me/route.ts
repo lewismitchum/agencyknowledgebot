@@ -8,17 +8,10 @@ import { requireActiveMember } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { normalizeUserRole, normalizeUserStatus } from "@/lib/users";
 import { openai } from "@/lib/openai";
+import { ensureUsageDailySchema } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function todayYmd() {
-  const d = new Date();
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 function secondsUntilUtcMidnight() {
   const now = new Date();
@@ -32,6 +25,7 @@ async function ensureAgencyBillingColumns(db: Db) {
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_price_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_current_period_end TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN trial_used INTEGER`).catch(() => {});
+  await db.run(`ALTER TABLE agencies ADD COLUMN timezone TEXT`).catch(() => {});
 }
 
 async function ensureUserColumns(db: Db) {
@@ -41,15 +35,7 @@ async function ensureUserColumns(db: Db) {
   await db.run(`ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER`).catch(() => {});
 }
 
-async function ensureUsageDailyColumns(db: Db) {
-  await db.run(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER`).catch(() => {});
-  await db.run(`ALTER TABLE usage_daily ADD COLUMN uploads_count INTEGER`).catch(() => {});
-}
-
 async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
-  // Idempotent:
-  // - If no agency bot exists, create one + vector store.
-  // - If agency bot exists but vector_store_id is NULL/empty, repair by creating VS + updating row.
   const existing = (await db.get(
     `SELECT id, name, vector_store_id
      FROM bots
@@ -90,42 +76,38 @@ async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
   }
 }
 
-async function getDailyUsage(db: Db, agencyId: string, date: string) {
-  const row = (await db.get(
-    `SELECT messages_count, uploads_count
-     FROM usage_daily
-     WHERE agency_id = ? AND date = ?
-     LIMIT 1`,
-    agencyId,
-    date
-  )) as { messages_count?: number; uploads_count?: number } | undefined;
+async function getAgencyTimezone(db: Db, agencyId: string) {
+  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { timezone?: string | null }
+    | undefined;
+  const tz = String(row?.timezone ?? "").trim();
+  return tz || "America/Chicago";
+}
 
-  return {
-    messages_count: Number(row?.messages_count ?? 0),
-    uploads_count: Number(row?.uploads_count ?? 0),
-  };
+function ymdInTz(tz: string) {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  }
 }
 
 function toUiDailyLimit(raw: unknown): number | null {
-  // Canonical: unlimited must be NULL (never 99999 / huge sentinel).
   const n = typeof raw === "number" ? raw : raw == null ? null : Number(raw);
   if (n == null || !Number.isFinite(n)) return null;
   if (n <= 0) return null;
   if (n >= 90000) return null;
   return Math.floor(n);
-}
-
-function pickUploadsLimit(limits: any): number | null {
-  // Accept a few names to avoid “limits drift”
-  return toUiDailyLimit(
-    limits?.daily_uploads ??
-      limits?.dailyUploads ??
-      limits?.uploads_daily ??
-      limits?.daily_upload_limit ??
-      limits?.daily_uploads_limit ??
-      limits?.daily_upload ??
-      null
-  );
 }
 
 function daysLeftFromPeriodEnd(iso: string | null | undefined) {
@@ -159,9 +141,8 @@ export async function GET(req: NextRequest) {
 
     await ensureAgencyBillingColumns(db);
     await ensureUserColumns(db);
-    await ensureUsageDailyColumns(db);
+    await ensureUsageDailySchema(db);
 
-    // ✅ Ensure agency always has a shared bot with a vector store
     await ensureDefaultAgencyBot(db, ctx.agencyId);
 
     const agency = (await db.get(
@@ -208,19 +189,21 @@ export async function GET(req: NextRequest) {
     const plan = normalizePlan(rawPlan);
     const limits = getPlanLimits(plan);
 
-    const date = todayYmd();
-    const usage = await getDailyUsage(db, ctx.agencyId, date);
-
-    // Messages (chat)
     const dailyMsgLimit = toUiDailyLimit((limits as any)?.daily_messages);
-    const daily_remaining =
-      dailyMsgLimit == null ? null : Math.max(0, dailyMsgLimit - Number(usage.messages_count));
+    const dailyUploadLimit = toUiDailyLimit((limits as any)?.daily_uploads);
 
-    // Uploads (docs)
-    const uploads_limit = pickUploadsLimit(limits);
-    const uploads_used = Math.max(0, Number(usage.uploads_count ?? 0));
-    const uploads_remaining =
-      uploads_limit == null ? null : Math.max(0, uploads_limit - uploads_used);
+    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+    const dateKey = ymdInTz(agencyTz);
+
+    const { getUsageRow } = await import("@/lib/usage");
+    const usage = await getUsageRow(db, ctx.agencyId, dateKey);
+
+    const daily_remaining =
+      dailyMsgLimit == null ? null : Math.max(0, dailyMsgLimit - Number(usage.messages_count ?? 0));
+
+    const uploads_used = Number(usage.uploads_count ?? 0);
+    const uploads_limit = dailyUploadLimit; // null => unlimited
+    const uploads_remaining = uploads_limit == null ? null : Math.max(0, uploads_limit - uploads_used);
 
     const docsRow = (await db.get(
       `SELECT COUNT(1) as c
@@ -249,6 +232,7 @@ export async function GET(req: NextRequest) {
         stripe_current_period_end: agency?.stripe_current_period_end ?? null,
         trial_used,
         trial_days_left,
+        timezone: agencyTz,
       },
 
       user: {
@@ -260,21 +244,21 @@ export async function GET(req: NextRequest) {
         has_completed_onboarding: Number((user as any)?.has_completed_onboarding ?? 0) === 1 ? 1 : 0,
       },
 
-      // ✅ Used by UI (Bots/Billing/Docs)
       plan,
       limits,
+
       tier_switcher_enabled: isTierSwitcherEnabledFor({ userId: ctx.userId, agencyId: ctx.agencyId }),
 
       documents_count: Number(docsRow?.c ?? 0),
 
-      // ✅ Docs page expects these
-      uploads_used,
-      uploads_limit, // null => unlimited
-      uploads_remaining, // null => unlimited
-
-      // ✅ Chat page expects these
-      daily_remaining, // null => unlimited
+      daily_remaining,
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
+
+      // ✅ Docs page reads these
+      uploads_used,
+      uploads_limit,
+      uploads_remaining,
+      usage_day: dateKey,
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
