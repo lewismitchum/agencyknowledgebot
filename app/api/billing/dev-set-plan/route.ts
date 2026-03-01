@@ -1,3 +1,4 @@
+// app/api/billing/dev-set-plan/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
@@ -11,18 +12,16 @@ type Body = {
   plan?: string;
 };
 
-// Only allow when explicitly enabled via env var.
-// This works on localhost AND Vercel Preview without exposing it in Production.
-function devOverrideEnabled() {
+const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
+
+function isOverrideEnabled() {
   return String(process.env.BILLING_DEV_OVERRIDE_ENABLED || "").trim() === "1";
 }
 
-const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
-
 export async function POST(req: NextRequest) {
-  // 🔒 Hard lock: require explicit enable flag.
-  // Return 404 (not 403) to avoid advertising the endpoint.
-  if (!devOverrideEnabled()) {
+  // 🔒 In production: only allow if explicitly enabled by env var.
+  // Otherwise return 404 (do not advertise this endpoint).
+  if (process.env.NODE_ENV === "production" && !isOverrideEnabled()) {
     return new Response("Not Found", { status: 404 });
   }
 
