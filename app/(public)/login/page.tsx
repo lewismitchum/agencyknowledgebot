@@ -5,25 +5,6 @@ import Link from "next/link";
 import Script from "next/script";
 import { useEffect, useRef, useState } from "react";
 
-declare global {
-  interface Window {
-    turnstile?: {
-      render: (
-        el: HTMLElement,
-        opts: {
-          sitekey: string;
-          theme?: "light" | "dark" | "auto";
-          callback?: (token: string) => void;
-          "error-callback"?: () => void;
-          "expired-callback"?: () => void;
-        }
-      ) => string;
-      reset: (widgetId: string) => void;
-      remove?: (widgetId: string) => void;
-    };
-  }
-}
-
 function looksLikeNotVerified(msg: string) {
   const s = (msg || "").toLowerCase();
   return (
@@ -54,16 +35,16 @@ export default function LoginPage() {
   const [ok, setOk] = useState("");
 
   const [tsToken, setTsToken] = useState<string>("");
+  const [tsReady, setTsReady] = useState(false);
 
   const [lastEmail, setLastEmail] = useState<string>("");
-
-  const [scriptReady, setScriptReady] = useState(false);
 
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!siteKey) return;
+    if (!tsReady) return;
     if (!widgetRef.current) return;
     if (!window.turnstile) return;
     if (widgetIdRef.current) return;
@@ -75,7 +56,7 @@ export default function LoginPage() {
       "error-callback": () => setTsToken(""),
       "expired-callback": () => setTsToken(""),
     });
-  }, [siteKey, scriptReady]);
+  }, [siteKey, tsReady]);
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
@@ -138,6 +119,11 @@ export default function LoginPage() {
 
     if (!siteKey) {
       setErr("Turnstile misconfigured (missing site key).");
+      return;
+    }
+
+    if (!tsReady) {
+      setErr("Captcha is still loading. Please wait a moment and try again.");
       return;
     }
 
@@ -222,7 +208,7 @@ export default function LoginPage() {
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
           strategy="afterInteractive"
-          onLoad={() => setScriptReady(true)}
+          onLoad={() => setTsReady(true)}
         />
       ) : null}
 
@@ -294,6 +280,11 @@ export default function LoginPage() {
                 <label className="text-sm font-medium">Human verification</label>
                 <div className="rounded-2xl border bg-background p-3">
                   <div ref={widgetRef} />
+                  {!siteKey ? (
+                    <div className="mt-2 text-xs text-muted-foreground">Missing NEXT_PUBLIC_TURNSTILE_SITE_KEY</div>
+                  ) : !tsReady ? (
+                    <div className="mt-2 text-xs text-muted-foreground">Loading captcha…</div>
+                  ) : null}
                 </div>
               </div>
 

@@ -1,3 +1,4 @@
+// types/turnstile.d.ts
 export {};
 
 declare global {

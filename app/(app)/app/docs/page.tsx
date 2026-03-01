@@ -423,7 +423,7 @@ export default function DocsPage() {
       <UpgradeGate
         title="Extraction is a paid feature"
         message="Upgrade your plan to unlock schedule/to-do extraction from documents."
-        ctaHref="/app/settings/billing"
+        ctaHref="/app/billing"
         ctaLabel="Upgrade Plan"
       />
     );
@@ -477,10 +477,7 @@ export default function DocsPage() {
             Refresh
           </button>
 
-          <a
-            href="/app/settings/billing"
-            className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
-          >
+          <a href="/app/billing" className="rounded-md border px-3 py-2 text-sm hover:bg-muted">
             Billing
           </a>
         </div>
@@ -511,8 +508,7 @@ export default function DocsPage() {
         <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           <div className="font-medium">This bot can’t accept uploads yet.</div>
           <div className="mt-1">
-            Vector store is missing for <span className="font-medium">{selectedBot?.name}</span>.
-            Repair it, then upload.
+            Vector store is missing for <span className="font-medium">{selectedBot?.name}</span>. Repair it, then upload.
           </div>
           <div className="mt-3">
             <button
@@ -528,14 +524,10 @@ export default function DocsPage() {
       ) : null}
 
       {error ? (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
-        </div>
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
       ) : null}
 
-      {extractMsg ? (
-        <div className="mb-4 rounded-md border bg-muted/40 p-3 text-sm">{extractMsg}</div>
-      ) : null}
+      {extractMsg ? <div className="mb-4 rounded-md border bg-muted/40 p-3 text-sm">{extractMsg}</div> : null}
 
       <div className="mb-4 rounded-lg border p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -554,7 +546,7 @@ export default function DocsPage() {
             {uploadsBlocked ? (
               <div className="mt-2 text-xs text-muted-foreground">
                 Daily upload limit reached.{" "}
-                <a href="/app/settings/billing" className="underline">
+                <a href="/app/billing" className="underline">
                   Upgrade
                 </a>{" "}
                 for more uploads.
@@ -572,9 +564,7 @@ export default function DocsPage() {
           </button>
         </div>
 
-        {uploadMsg ? (
-          <div className="mt-3 rounded-md border bg-muted/40 p-3 text-sm">{uploadMsg}</div>
-        ) : null}
+        {uploadMsg ? <div className="mt-3 rounded-md border bg-muted/40 p-3 text-sm">{uploadMsg}</div> : null}
       </div>
 
       <div className="rounded-lg border">
@@ -609,9 +599,7 @@ export default function DocsPage() {
                     <td className="px-4 py-3">
                       <div className="font-medium">{doc.filename}</div>
                       {doc.openai_file_id ? (
-                        <div className="text-xs text-muted-foreground">
-                          OpenAI file: {doc.openai_file_id}
-                        </div>
+                        <div className="text-xs text-muted-foreground">OpenAI file: {doc.openai_file_id}</div>
                       ) : null}
                     </td>
 

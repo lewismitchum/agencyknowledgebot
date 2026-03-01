@@ -4,7 +4,6 @@ import Link from "next/link";
 import Script from "next/script";
 import { useEffect, useRef, useState } from "react";
 
-
 export default function SignupPage() {
   const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 
@@ -21,13 +20,13 @@ export default function SignupPage() {
     if (!siteKey) return;
     if (!tsReady) return;
     if (!widgetRef.current) return;
-    if (!(window as any).turnstile) return;
+    if (!window.turnstile) return;
     if (widgetIdRef.current) return;
 
-    widgetIdRef.current = (window as any).turnstile.render(widgetRef.current, {
+    widgetIdRef.current = window.turnstile.render(widgetRef.current, {
       sitekey: siteKey,
       theme: "auto",
-      callback: (token: string) => setTsToken(token || ""),
+      callback: (token) => setTsToken(token || ""),
       "error-callback": () => setTsToken(""),
       "expired-callback": () => setTsToken(""),
     });
@@ -35,9 +34,9 @@ export default function SignupPage() {
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
-    if (id && (window as any).turnstile) {
+    if (id && window.turnstile) {
       try {
-        (window as any).turnstile.reset(id);
+        window.turnstile.reset(id);
       } catch {}
     }
     setTsToken("");
@@ -123,8 +122,7 @@ export default function SignupPage() {
       {siteKey ? (
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
-          async
-          defer
+          strategy="afterInteractive"
           onLoad={() => setTsReady(true)}
         />
       ) : null}
@@ -134,11 +132,10 @@ export default function SignupPage() {
           <div className="hidden md:block">
             <div className="rounded-3xl border bg-card p-8 shadow-sm">
               <div className="text-sm font-semibold">Start Free</div>
-              <div className="mt-2 text-2xl font-semibold tracking-tight">
-                Your agency’s docs, instantly searchable.
-              </div>
+              <div className="mt-2 text-2xl font-semibold tracking-tight">Your agency’s docs, instantly searchable.</div>
               <p className="mt-3 text-sm text-muted-foreground">
-                Upload SOPs, onboarding, pricing, and brand docs. Louis answers from what you upload—no guessing for internal info.
+                Upload SOPs, onboarding, pricing, and brand docs. Louis answers from what you upload—no guessing for
+                internal info.
               </p>
 
               <div className="mt-6 grid gap-3">
@@ -151,9 +148,7 @@ export default function SignupPage() {
 
           <div className="rounded-3xl border bg-card p-8 shadow-sm">
             <h1 className="text-2xl font-semibold tracking-tight">Create your workspace</h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Free tier includes one agency bot and a daily message limit.
-            </p>
+            <p className="mt-2 text-sm text-muted-foreground">Free tier includes one agency bot and a daily message limit.</p>
 
             {err ? (
               <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">

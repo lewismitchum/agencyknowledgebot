@@ -1,6 +1,7 @@
 // app/api/bots/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
@@ -26,13 +27,7 @@ type BotRow = {
 };
 
 function pickMaxAgencyBotsFromLimits(limits: any): number | null {
-  const raw =
-    limits?.max_agency_bots ??
-    limits?.agency_bots ??
-    limits?.max_bots ??
-    limits?.bots ??
-    null;
-
+  const raw = limits?.max_agency_bots ?? limits?.agency_bots ?? limits?.max_bots ?? limits?.bots ?? null;
   if (raw == null) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
@@ -61,12 +56,59 @@ function getRowsAffected(info: any): number {
   return Number.isFinite(num) ? num : 0;
 }
 
+async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
+  // Idempotent:
+  // - If no agency bot exists, create one + vector store.
+  // - If agency bot exists but vector_store_id is NULL/empty, repair by creating VS + updating row.
+  const existing = (await db.get(
+    `SELECT id, name, vector_store_id
+     FROM bots
+     WHERE agency_id = ? AND owner_user_id IS NULL
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    agencyId
+  )) as { id: string; name: string | null; vector_store_id: string | null } | undefined;
+
+  if (existing?.id) {
+    const vsId = String(existing.vector_store_id ?? "").trim();
+    if (vsId) return;
+
+    const vs = await openai.vectorStores.create({ name: existing.name ?? "Agency Bot" });
+    await db.run(`UPDATE bots SET vector_store_id = ? WHERE id = ? AND agency_id = ?`, vs.id, existing.id, agencyId);
+    return;
+  }
+
+  const botId = randomUUID();
+  const botName = "Agency Bot";
+  const vs = await openai.vectorStores.create({ name: botName });
+
+  try {
+    await db.run(
+      `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
+       VALUES (?, ?, ?, NULL, ?, ?)`,
+      botId,
+      agencyId,
+      botName,
+      vs.id,
+      new Date().toISOString()
+    );
+  } catch (e) {
+    try {
+      await openai.vectorStores.delete(vs.id);
+    } catch {}
+    throw e;
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const ctx = (await requireActiveMember(req)) as Ctx;
 
     const db: Db = await getDb();
     await ensureSchema(db);
+
+    // ✅ Never return empty bots / never reintroduce NULL vector_store_id landmine
+    await ensureDefaultAgencyBot(db, ctx.agencyId);
 
     const bots = (await db.all(
       `SELECT id, agency_id, name, owner_user_id, vector_store_id, created_at
@@ -228,10 +270,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
     }
     if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
-      return NextResponse.json(
-        { ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" },
-        { status: 403 }
-      );
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
     }
     if (msg === "FORBIDDEN_NOT_OWNER") {
       return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });

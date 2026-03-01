@@ -1,11 +1,13 @@
 // app/api/me/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { normalizeUserRole, normalizeUserStatus } from "@/lib/users";
+import { openai } from "@/lib/openai";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,11 +38,56 @@ async function ensureUserColumns(db: Db) {
   await db.run(`ALTER TABLE users ADD COLUMN role TEXT`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN status TEXT`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN email_verified INTEGER`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER`).catch(() => {});
 }
 
 async function ensureUsageDailyColumns(db: Db) {
   await db.run(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN uploads_count INTEGER`).catch(() => {});
+}
+
+async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
+  // Idempotent:
+  // - If no agency bot exists, create one + vector store.
+  // - If agency bot exists but vector_store_id is NULL/empty, repair by creating VS + updating row.
+  const existing = (await db.get(
+    `SELECT id, name, vector_store_id
+     FROM bots
+     WHERE agency_id = ? AND owner_user_id IS NULL
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    agencyId
+  )) as { id: string; name: string | null; vector_store_id: string | null } | undefined;
+
+  if (existing?.id) {
+    const vsId = String(existing.vector_store_id ?? "").trim();
+    if (vsId) return;
+
+    const vs = await openai.vectorStores.create({ name: existing.name ?? "Agency Bot" });
+    await db.run(`UPDATE bots SET vector_store_id = ? WHERE id = ? AND agency_id = ?`, vs.id, existing.id, agencyId);
+    return;
+  }
+
+  const botId = randomUUID();
+  const botName = "Agency Bot";
+  const vs = await openai.vectorStores.create({ name: botName });
+
+  try {
+    await db.run(
+      `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
+       VALUES (?, ?, ?, NULL, ?, ?)`,
+      botId,
+      agencyId,
+      botName,
+      vs.id,
+      new Date().toISOString()
+    );
+  } catch (e) {
+    try {
+      await openai.vectorStores.delete(vs.id);
+    } catch {}
+    throw e;
+  }
 }
 
 async function getDailyUsage(db: Db, agencyId: string, date: string) {
@@ -68,6 +115,19 @@ function toUiDailyLimit(raw: unknown): number | null {
   return Math.floor(n);
 }
 
+function pickUploadsLimit(limits: any): number | null {
+  // Accept a few names to avoid “limits drift”
+  return toUiDailyLimit(
+    limits?.daily_uploads ??
+      limits?.dailyUploads ??
+      limits?.uploads_daily ??
+      limits?.daily_upload_limit ??
+      limits?.daily_uploads_limit ??
+      limits?.daily_upload ??
+      null
+  );
+}
+
 function daysLeftFromPeriodEnd(iso: string | null | undefined) {
   if (!iso) return null;
   const end = new Date(String(iso));
@@ -79,10 +139,6 @@ function daysLeftFromPeriodEnd(iso: string | null | undefined) {
 }
 
 function isTierSwitcherEnabledFor(ctx: { userId: string; agencyId: string }) {
-  // 🔒 Only show tier switcher for YOUR account/agency in non-prod.
-  // Set one (or both) of these:
-  // - TIER_SWITCHER_USER_ID=...
-  // - TIER_SWITCHER_AGENCY_ID=...
   if (process.env.NODE_ENV === "production") return false;
 
   const allowUser = String(process.env.TIER_SWITCHER_USER_ID ?? "").trim();
@@ -104,6 +160,9 @@ export async function GET(req: NextRequest) {
     await ensureAgencyBillingColumns(db);
     await ensureUserColumns(db);
     await ensureUsageDailyColumns(db);
+
+    // ✅ Ensure agency always has a shared bot with a vector store
+    await ensureDefaultAgencyBot(db, ctx.agencyId);
 
     const agency = (await db.get(
       `SELECT id, name, email, plan,
@@ -128,7 +187,7 @@ export async function GET(req: NextRequest) {
       | undefined;
 
     const user = (await db.get(
-      `SELECT id, email, email_verified, role, status
+      `SELECT id, email, email_verified, role, status, has_completed_onboarding
        FROM users
        WHERE agency_id = ? AND id = ?
        LIMIT 1`,
@@ -141,6 +200,7 @@ export async function GET(req: NextRequest) {
           email_verified: number | null;
           role: string | null;
           status: string | null;
+          has_completed_onboarding: number | null;
         }
       | undefined;
 
@@ -148,12 +208,19 @@ export async function GET(req: NextRequest) {
     const plan = normalizePlan(rawPlan);
     const limits = getPlanLimits(plan);
 
-    const dailyLimit = toUiDailyLimit((limits as any)?.daily_messages);
-
     const date = todayYmd();
     const usage = await getDailyUsage(db, ctx.agencyId, date);
 
-    const daily_remaining = dailyLimit == null ? null : Math.max(0, dailyLimit - Number(usage.messages_count));
+    // Messages (chat)
+    const dailyMsgLimit = toUiDailyLimit((limits as any)?.daily_messages);
+    const daily_remaining =
+      dailyMsgLimit == null ? null : Math.max(0, dailyMsgLimit - Number(usage.messages_count));
+
+    // Uploads (docs)
+    const uploads_limit = pickUploadsLimit(limits);
+    const uploads_used = Math.max(0, Number(usage.uploads_count ?? 0));
+    const uploads_remaining =
+      uploads_limit == null ? null : Math.max(0, uploads_limit - uploads_used);
 
     const docsRow = (await db.get(
       `SELECT COUNT(1) as c
@@ -190,18 +257,22 @@ export async function GET(req: NextRequest) {
         email_verified: Number((user as any)?.email_verified ?? 0),
         role,
         status,
+        has_completed_onboarding: Number((user as any)?.has_completed_onboarding ?? 0) === 1 ? 1 : 0,
       },
 
-      // ✅ Bots page reads these (optional fields but makes UI accurate)
+      // ✅ Used by UI (Bots/Billing/Docs)
       plan,
       limits,
-
-      // ✅ Billing page uses this to show dev tier switcher ONLY for you
       tier_switcher_enabled: isTierSwitcherEnabledFor({ userId: ctx.userId, agencyId: ctx.agencyId }),
 
       documents_count: Number(docsRow?.c ?? 0),
 
-      // Chat page expects these
+      // ✅ Docs page expects these
+      uploads_used,
+      uploads_limit, // null => unlimited
+      uploads_remaining, // null => unlimited
+
+      // ✅ Chat page expects these
       daily_remaining, // null => unlimited
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
     });

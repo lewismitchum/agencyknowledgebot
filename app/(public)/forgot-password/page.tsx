@@ -4,25 +4,6 @@ import Link from "next/link";
 import Script from "next/script";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-declare global {
-  interface Window {
-    turnstile?: {
-      render: (
-        el: HTMLElement,
-        opts: {
-          sitekey: string;
-          theme?: "light" | "dark" | "auto";
-          callback?: (token: string) => void;
-          "error-callback"?: () => void;
-          "expired-callback"?: () => void;
-        }
-      ) => string;
-      reset: (widgetId: string) => void;
-      remove?: (widgetId: string) => void;
-    };
-  }
-}
-
 export default function ForgotPasswordPage() {
   const siteKey = useMemo(() => String(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "").trim(), []);
 

@@ -36,6 +36,7 @@ async function ensureUserColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
 }
 
 async function verifyTurnstile(token: string, ip: string | null) {
@@ -96,6 +97,7 @@ async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
        SET role = 'owner',
            status = 'active',
            email_verified = 1,
+           has_completed_onboarding = COALESCE(has_completed_onboarding, 0),
            updated_at = ?
        WHERE id = ? AND agency_id = ?`,
       t,
@@ -107,8 +109,8 @@ async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
 
   const id = crypto.randomUUID();
   await db.run(
-    `INSERT INTO users (id, agency_id, email, email_verified, role, status, created_at, updated_at)
-     VALUES (?, ?, ?, 1, 'owner', 'active', ?, ?)`,
+    `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at)
+     VALUES (?, ?, ?, 1, 'owner', 'active', 0, ?, ?)`,
     id,
     agency.id,
     normalizedEmail,
@@ -185,14 +187,21 @@ export async function POST(req: NextRequest) {
 
     // Find the user row for THIS email in this agency
     let user = (await db.get(
-      `SELECT id, email, email_verified, role, status
+      `SELECT id, email, email_verified, role, status, has_completed_onboarding
        FROM users
        WHERE agency_id = ? AND lower(email) = ?
        LIMIT 1`,
       agency.id,
       normalizedEmail
     )) as
-      | { id: string; email: string; email_verified: number; role: string | null; status: string | null }
+      | {
+          id: string;
+          email: string;
+          email_verified: number;
+          role: string | null;
+          status: string | null;
+          has_completed_onboarding: number | null;
+        }
       | undefined;
 
     // If missing, create as MEMBER + PENDING (BUT do not log them in)
@@ -200,15 +209,35 @@ export async function POST(req: NextRequest) {
       const id = crypto.randomUUID();
       const t = nowIso();
       await db.run(
-        `INSERT INTO users (id, agency_id, email, email_verified, role, status, created_at, updated_at)
-         VALUES (?, ?, ?, 1, 'member', 'pending', ?, ?)`,
+        `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at)
+         VALUES (?, ?, ?, 1, 'member', 'pending', 0, ?, ?)`,
         id,
         agency.id,
         normalizedEmail,
         t,
         t
       );
-      user = { id, email: normalizedEmail, email_verified: 1, role: "member", status: "pending" };
+      user = {
+        id,
+        email: normalizedEmail,
+        email_verified: 1,
+        role: "member",
+        status: "pending",
+        has_completed_onboarding: 0,
+      };
+    } else {
+      // Deterministic default for legacy rows: NULL => 0
+      if (user.has_completed_onboarding == null) {
+        await db.run(
+          `UPDATE users
+           SET has_completed_onboarding = 0,
+               updated_at = COALESCE(updated_at, datetime('now'))
+           WHERE agency_id = ? AND id = ?`,
+          agency.id,
+          user.id
+        );
+        user.has_completed_onboarding = 0;
+      }
     }
 
     const role = normRole(user.role);

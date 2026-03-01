@@ -283,6 +283,7 @@ async function ensureCoreTables(db: Db) {
       email_verified INTEGER NOT NULL DEFAULT 0,
       role TEXT NOT NULL DEFAULT 'member',
       status TEXT NOT NULL DEFAULT 'active',
+      has_completed_onboarding INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT,
       UNIQUE(agency_id, email)
@@ -433,6 +434,9 @@ async function ensureCoreTables(db: Db) {
 
   // Agency timezone (used for daily usage keys + schedule default tz)
   await addColumnIfMissing(db, "agencies", "timezone", "TEXT");
+
+  // Users onboarding drift (older DBs)
+  await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
 }
 
 /**

@@ -188,7 +188,11 @@ function AssistantMarkdown({ text }: { text: string }) {
       const level = h[1].length;
       const content = h[2].trim();
       const cls =
-        level === 1 ? "text-base font-semibold" : level === 2 ? "text-sm font-semibold" : "text-sm font-medium";
+        level === 1
+          ? "text-base font-semibold"
+          : level === 2
+          ? "text-sm font-semibold"
+          : "text-sm font-medium";
       const Tag: any = level === 1 ? "h3" : "h4";
       blocks.push(
         <Tag key={`h-${blocks.length}`} className={cls}>
@@ -275,6 +279,8 @@ export default function ChatPage() {
     () => bots.find((b: BotRow) => b.id === selectedBotId)?.name ?? "",
     [bots, selectedBotId]
   );
+
+  const docsEmpty = documentsCount <= 0;
 
   useEffect(() => {
     const initialFromUrl = getBotIdFromUrl();
@@ -463,6 +469,7 @@ export default function ChatPage() {
     if (!selectedBotId) return;
     if (!input.trim() || loading) return;
     if (accessBlocked) return;
+    if (docsEmpty) return;
 
     if (dailyRemaining !== null && dailyRemaining === 0 && dailyResetsInSeconds > 0) return;
 
@@ -563,7 +570,8 @@ export default function ChatPage() {
   const dailyKnown = usageLoaded;
   const dailyBlocked = dailyRemaining !== null && dailyResetsInSeconds > 0 && dailyRemaining === 0;
 
-  const canSend = !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0;
+  const canSend =
+    !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && !docsEmpty && input.trim().length > 0;
 
   if (accessBlocked) {
     const title = accessBlocked === "blocked" ? "Access blocked" : "Pending approval";
@@ -683,9 +691,37 @@ export default function ChatPage() {
 
         <CardContent className="grid gap-4">
           <div className="h-[460px] overflow-y-auto rounded-[28px] border border-white/10 bg-background/50 p-4 shadow-sm backdrop-blur-xl">
-            {messages.length === 0 ? (
+            {docsEmpty ? (
+              <div className="flex h-full items-center justify-center">
+                <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-background/60 p-5 shadow-sm">
+                  <div className="text-base font-semibold">Upload your first document</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Louis works best with at least one internal doc (SOP, onboarding, pricing, process docs).
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button asChild className="rounded-full">
+                      <Link href="/app/docs">Go to Docs</Link>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="rounded-full"
+                      onClick={() => window.location.reload()}
+                    >
+                      I already uploaded — Refresh
+                    </Button>
+                  </div>
+
+                  <div className="mt-4 text-xs text-muted-foreground">
+                    Once a doc is uploaded, come back here and ask a question.
+                  </div>
+                </div>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="text-sm text-muted-foreground">
-                {selectedBotId ? "Ask anything. Louis will use your docs when relevant." : "Select a bot to start chatting."}
+                {selectedBotId
+                  ? "Ask anything. Louis will use your docs when relevant."
+                  : "Select a bot to start chatting."}
               </div>
             ) : (
               <div className="grid gap-3">
@@ -696,7 +732,11 @@ export default function ChatPage() {
                         m.role === "user" ? "bg-foreground text-background" : "bg-background/60 text-foreground"
                       }`}
                     >
-                      {m.role === "assistant" ? <AssistantMarkdown text={m.text} /> : <span className="whitespace-pre-wrap">{m.text}</span>}
+                      {m.role === "assistant" ? (
+                        <AssistantMarkdown text={m.text} />
+                      ) : (
+                        <span className="whitespace-pre-wrap">{m.text}</span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -714,18 +754,20 @@ export default function ChatPage() {
             placeholder={
               !selectedBotId
                 ? "Select a bot first…"
+                : docsEmpty
+                ? "Upload a document first…"
                 : dailyBlocked
                 ? "Daily limit reached…"
                 : "Ask a question… (Ctrl/⌘ + Enter to send)"
             }
-            disabled={!selectedBotId || dailyBlocked}
+            disabled={!selectedBotId || dailyBlocked || docsEmpty}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send();
             }}
           />
 
           <Button onClick={send} disabled={!canSend}>
-            {loading ? "Sending…" : dailyBlocked ? "Daily limit reached" : "Send"}
+            {loading ? "Sending…" : docsEmpty ? "Upload a document first" : dailyBlocked ? "Daily limit reached" : "Send"}
           </Button>
         </CardContent>
       </Card>

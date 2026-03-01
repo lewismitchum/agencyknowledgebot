@@ -8,10 +8,30 @@ import { ModeToggle } from "@/components/mode-toggle";
 
 type GateState = "checking" | "ok" | "redirecting";
 
+type MeResponse = {
+  ok: boolean;
+  user?: {
+    id: string;
+    email: string;
+    email_verified: number;
+    role: string;
+    status: string;
+    has_completed_onboarding?: number;
+  };
+  agency?: {
+    id: string;
+    name: string | null;
+    plan?: string | null;
+  };
+};
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
   const [gate, setGate] = useState<GateState>("checking");
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
 
   // allow these inside /app without forcing a redirect loop
   const gateBypass = useMemo(() => {
@@ -54,7 +74,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         }
 
         // if /api/me returns other errors, do not brick the app shell
-        setGate("ok");
+        const j = (await r.json().catch(() => null)) as MeResponse | null;
+        if (!cancelled) {
+          setMe(j);
+          const completed = Number(j?.user?.has_completed_onboarding ?? 0) === 1;
+          setShowOnboarding(!completed);
+          setGate("ok");
+        }
       } catch {
         if (!cancelled) setGate("ok");
       }
@@ -67,6 +93,28 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [gateBypass]);
+
+  async function completeOnboarding(mode: "upload" | "skip") {
+    if (onboardingBusy) return;
+    setOnboardingBusy(true);
+
+    try {
+      await fetch("/api/onboarding/complete", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      }).catch(() => {});
+
+      setShowOnboarding(false);
+
+      if (mode === "upload") {
+        window.location.href = "/app/docs";
+      }
+    } finally {
+      setOnboardingBusy(false);
+    }
+  }
 
   // Minimal gate UI — prevents random 403 flashes on first paint
   if (gate !== "ok") {
@@ -95,6 +143,56 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom,rgba(255,255,255,0.05),transparent_50%)]" />
       </div>
+
+      {showOnboarding ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur">
+          <div className="w-full max-w-xl rounded-3xl border bg-card p-6 shadow-xl">
+            <div className="text-xl font-semibold tracking-tight">Welcome to Louis.Ai</div>
+            <div className="mt-2 text-sm text-muted-foreground">
+              Your workspace is ready. Start by giving Louis one important internal document — then ask it a question.
+            </div>
+
+            <div className="mt-5 space-y-3 rounded-2xl border border-white/10 bg-background/40 p-4">
+              <Step n="1" title="Upload your most important internal doc">
+                SOPs, onboarding, pricing sheet, process docs — anything that defines how you work.
+              </Step>
+              <Step n="2" title="Ask a business question">
+                Louis will search docs first, and only falls back when the docs can’t support an answer.
+              </Step>
+              <Step n="3" title="Turn docs into action">
+                Starter+ can extract schedule items and tasks automatically from your documents.
+              </Step>
+            </div>
+
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                onClick={() => completeOnboarding("skip")}
+                disabled={onboardingBusy}
+                className="rounded-full border border-white/10 bg-background/60 px-4 py-2 text-sm shadow-sm hover:bg-accent disabled:opacity-60"
+              >
+                Skip for now
+              </button>
+              <button
+                onClick={() => completeOnboarding("upload")}
+                disabled={onboardingBusy}
+                className="rounded-full border border-white/10 bg-foreground px-4 py-2 text-sm font-medium text-background shadow-sm hover:opacity-90 disabled:opacity-60"
+              >
+                Upload first document
+              </button>
+            </div>
+
+            <div className="mt-4 text-xs text-muted-foreground">
+              Logged in as <span className="font-mono">{me?.user?.email ?? ""}</span>
+              {me?.agency?.name ? (
+                <>
+                  {" "}
+                  • Workspace: <span className="font-mono">{me.agency.name}</span>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mx-auto flex max-w-7xl">
         <aside className="hidden min-h-screen w-72 border-r border-white/10 bg-background/40 p-6 backdrop-blur md:block">
@@ -185,6 +283,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <MobileItem href="/app/support" label="Help" active={pathname?.startsWith("/app/support")} />
           <MobileItem href="/app/settings" label="Settings" active={pathname === "/app/settings"} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function Step({ n, title, children }: { n: string; title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-3">
+      <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-background/60 text-xs font-semibold">
+        {n}
+      </div>
+      <div>
+        <div className="text-sm font-medium">{title}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">{children}</div>
       </div>
     </div>
   );

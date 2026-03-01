@@ -41,6 +41,7 @@ async function ensureUserRoleColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
 }
 
 function resendConfigured() {
@@ -160,9 +161,10 @@ export async function POST(req: NextRequest) {
     );
 
     // Owner user: always active if no email verification, otherwise pending until verified.
+    // Onboarding: explicitly start as NOT completed (0).
     await db.run(
-      `INSERT INTO users (id, agency_id, email, email_verified, role, status, created_at, updated_at, password_hash)
-       VALUES (?, ?, ?, ?, 'owner', ?, ?, ?, ?)`,
+      `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at, password_hash)
+       VALUES (?, ?, ?, ?, 'owner', ?, 0, ?, ?, ?)`,
       ownerUserId,
       agencyId,
       normalizedEmail,
@@ -224,9 +226,6 @@ export async function POST(req: NextRequest) {
     return res;
   } catch (err: any) {
     console.error("SIGNUP_ERROR", err);
-    return NextResponse.json(
-      { error: "Server error", message: String(err?.message ?? err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
