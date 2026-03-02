@@ -23,12 +23,10 @@ function safeString(v: any) {
 }
 
 function sanitizeError(err: any) {
-  // DO NOT include tokens, SQL, raw stack, or full response bodies.
   const message = String(err?.message || "");
   const name = String(err?.name || "");
   const code = (err?.code ?? err?.response?.data?.error?.status ?? err?.response?.status ?? undefined) as any;
 
-  // Gmail/googleapis often puts useful info in err.response.data.error
   const googleReason =
     err?.response?.data?.error?.errors?.[0]?.reason ??
     err?.response?.data?.error?.status ??
@@ -48,9 +46,8 @@ function sanitizeError(err: any) {
 
 /**
  * Turso/libSQL wrappers vary:
- * - some expect db.get(sql, ...args)
- * - others expect db.get(sql, argsArray)
- * This adapter supports both.
+ * - some expect db.get(sql, ...args) / db.run(sql, ...args) / db.all(sql, ...args)
+ * - others expect db.get(sql, argsArray) / ...
  */
 async function dbGet(db: any, sql: string, args: any[]) {
   try {
@@ -62,6 +59,59 @@ async function dbGet(db: any, sql: string, args: any[]) {
     }
     throw err;
   }
+}
+
+async function dbAll(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.all(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.all(sql, args);
+    }
+    throw err;
+  }
+}
+
+async function ensureEmailAccountsSchema(db: any) {
+  // Create base table (may already exist with fewer columns)
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS email_accounts (
+      id TEXT PRIMARY KEY,
+      agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      email TEXT,
+      access_token TEXT,
+      refresh_token TEXT,
+      expiry_date INTEGER,
+      scope TEXT,
+      token_type TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+
+  // Unique index may or may not exist
+  await db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user
+      ON email_accounts(agency_id, user_id);
+  `);
+
+  // Drift-safe add missing columns
+  const cols = await dbAll(db, `PRAGMA table_info(email_accounts)`);
+  const have = new Set((cols || []).map((c: any) => String(c?.name || "")));
+
+  if (!have.has("email")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN email TEXT;`);
+  if (!have.has("access_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN access_token TEXT;`);
+  if (!have.has("refresh_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN refresh_token TEXT;`);
+  if (!have.has("expiry_date")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN expiry_date INTEGER;`);
+  if (!have.has("scope")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN scope TEXT;`);
+  if (!have.has("token_type")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN token_type TEXT;`);
+
+  // created_at / updated_at sometimes missing in old prototypes
+  if (!have.has("created_at")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;`);
+  if (!have.has("updated_at")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;`);
 }
 
 export async function GET(req: NextRequest) {
@@ -117,24 +167,7 @@ export async function GET(req: NextRequest) {
     const db = await getDb();
 
     where = "db_ensure_email_accounts";
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS email_accounts (
-        id TEXT PRIMARY KEY,
-        agency_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        email TEXT,
-        access_token TEXT,
-        refresh_token TEXT,
-        expiry_date INTEGER,
-        scope TEXT,
-        token_type TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user
-        ON email_accounts(agency_id, user_id);
-    `);
+    await ensureEmailAccountsSchema(db);
 
     where = "db_select_account";
     const account = await dbGet(
@@ -207,7 +240,6 @@ export async function GET(req: NextRequest) {
 
           return { id, subject, from, date, snippet };
         } catch {
-          // Keep list stable even if a single thread fails
           return { id, subject: "", from: "", date: "", snippet: "" };
         }
       }),
@@ -225,8 +257,6 @@ export async function GET(req: NextRequest) {
     }
 
     console.error("Email threads error:", err);
-
-    // Always return a sanitized payload so you can see the real failure point.
     return NextResponse.json(
       { ok: false, error: "Internal server error", code: "internal", where, details: sanitizeError(err) },
       { status: 500 },
