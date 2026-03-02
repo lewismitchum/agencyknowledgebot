@@ -31,15 +31,25 @@ export default function SpreadsheetsPage() {
   const [plan, setPlan] = useState<string | undefined>(undefined);
   const [upsell, setUpsell] = useState<Upsell | null>(null);
 
+  const [canApply, setCanApply] = useState(false);
+
   const [csv, setCsv] = useState("");
   const [instruction, setInstruction] = useState("");
   const [proposing, setProposing] = useState(false);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [proposalId, setProposalId] = useState<string | null>(null);
   const [proposalError, setProposalError] = useState<string>("");
+
+  const [applying, setApplying] = useState(false);
+  const [applyMsg, setApplyMsg] = useState<string>("");
 
   const canPropose = useMemo(() => {
     return csv.trim().length > 0 && instruction.trim().length > 0 && !proposing;
   }, [csv, instruction, proposing]);
+
+  const canApplyNow = useMemo(() => {
+    return Boolean(canApply && proposalId && proposal && proposal.updates.length > 0 && !applying);
+  }, [canApply, proposalId, proposal, applying]);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +66,7 @@ export default function SpreadsheetsPage() {
 
         setPlan(typeof j?.plan === "string" ? j.plan : undefined);
         setUpsell(j?.upsell ?? null);
+        setCanApply(Boolean(j?.can_apply));
 
         const allowed = Boolean(j?.ok) && !j?.upsell?.code;
         setGated(!allowed);
@@ -84,7 +95,9 @@ export default function SpreadsheetsPage() {
 
     setProposing(true);
     setProposal(null);
+    setProposalId(null);
     setProposalError("");
+    setApplyMsg("");
 
     try {
       const j = await fetchJson<any>("/api/spreadsheets", {
@@ -96,10 +109,14 @@ export default function SpreadsheetsPage() {
 
       const p = j?.proposal ?? null;
       const updates = Array.isArray(p?.updates) ? p.updates : [];
+
       setProposal({
         updates: updates as ProposalUpdate[],
         notes: typeof p?.notes === "string" ? p.notes : "",
       });
+
+      const pid = typeof j?.proposal_id === "string" ? j.proposal_id : null;
+      setProposalId(pid);
     } catch (e: any) {
       if (isFetchJsonError(e)) {
         if (e.status === 401) {
@@ -114,6 +131,50 @@ export default function SpreadsheetsPage() {
       setProposalError(e?.message ?? "Failed to generate proposal");
     } finally {
       setProposing(false);
+    }
+  }
+
+  async function onApply() {
+    if (!canApplyNow || !proposalId) return;
+
+    const ok = window.confirm("Apply this proposal?\n\nThis will write an immutable audit entry.");
+    if (!ok) return;
+
+    setApplying(true);
+    setApplyMsg("");
+    setProposalError("");
+
+    try {
+      const j = await fetchJson<any>("/api/spreadsheets/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proposal_id: proposalId, action: "APPLY" }),
+      });
+
+      if (j?.ok) {
+        setApplyMsg("Applied (audit log recorded). Real sheet writes are coming next.");
+      } else {
+        setApplyMsg("Applied.");
+      }
+    } catch (e: any) {
+      if (isFetchJsonError(e)) {
+        if (e.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (e.status === 403) {
+          setApplyMsg("Only owner/admin can apply proposals.");
+          return;
+        }
+        if (e.status === 409) {
+          setApplyMsg("This proposal is no longer pending.");
+          return;
+        }
+      }
+      setApplyMsg(e?.message ?? "Failed to apply proposal");
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -161,7 +222,7 @@ export default function SpreadsheetsPage() {
             placeholder="Paste CSV here (export from Google Sheets for now)."
           />
           <div className="mt-2 text-xs text-muted-foreground">
-            This is proposal-only. No updates are applied yet.
+            This is proposal-only. No updates are applied to an external sheet yet.
           </div>
         </div>
 
@@ -187,7 +248,7 @@ export default function SpreadsheetsPage() {
           </button>
 
           <div className="text-xs text-muted-foreground">
-            Apply is coming next (with approvals + audit log).
+            {canApply ? "Owner/Admin can apply proposals." : "Apply requires owner/admin."}
           </div>
         </div>
 
@@ -203,18 +264,27 @@ export default function SpreadsheetsPage() {
               <div className="text-base font-semibold">Proposed edits</div>
               <div className="text-xs text-muted-foreground">
                 {proposal.updates.length} change{proposal.updates.length === 1 ? "" : "s"}
+                {proposalId ? (
+                  <>
+                    {" "}
+                    • Proposal: <span className="font-mono">{proposalId}</span>
+                  </>
+                ) : null}
               </div>
             </div>
 
             <button
               type="button"
-              disabled
-              className="rounded-xl border px-4 py-2 text-sm text-muted-foreground opacity-60 cursor-not-allowed"
-              title="Coming next: approvals + apply + audit log"
+              onClick={onApply}
+              disabled={!canApplyNow}
+              className="rounded-xl border px-4 py-2 text-sm hover:bg-muted disabled:opacity-60"
+              title={!canApply ? "Owner/admin only" : proposal?.updates?.length ? "" : "No changes proposed"}
             >
-              Apply (coming soon)
+              {applying ? "Applying..." : "Apply (audit only)"}
             </button>
           </div>
+
+          {applyMsg ? <div className="rounded-xl border bg-muted/40 p-3 text-sm">{applyMsg}</div> : null}
 
           {proposal.notes ? (
             <div className="rounded-xl border bg-background/40 p-3 text-sm">{proposal.notes}</div>
@@ -251,6 +321,10 @@ export default function SpreadsheetsPage() {
                 )}
               </tbody>
             </table>
+          </div>
+
+          <div className="text-xs text-muted-foreground">
+            Next: connect Google Sheets, then “Apply” will write to the sheet + keep this audit trail.
           </div>
         </div>
       ) : null}

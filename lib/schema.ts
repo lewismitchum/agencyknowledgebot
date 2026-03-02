@@ -424,6 +424,31 @@ async function ensureCoreTables(db: Db) {
       type TEXT,
       created_at TEXT
     );
+
+    -- Spreadsheet proposals (proposal-first workflow)
+    CREATE TABLE IF NOT EXISTS spreadsheet_proposals (
+      id TEXT PRIMARY KEY,
+      agency_id TEXT NOT NULL,
+      created_by_user_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'proposed', -- proposed|applied|rejected
+      instruction TEXT,
+      csv_snapshot TEXT, -- optional snapshot (for now)
+      proposal_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      applied_at TEXT,
+      applied_by_user_id TEXT
+    );
+
+    -- Immutable audit log of approved/apply actions (even before real OAuth integration)
+    CREATE TABLE IF NOT EXISTS spreadsheet_audit_log (
+      id TEXT PRIMARY KEY,
+      agency_id TEXT NOT NULL,
+      proposal_id TEXT,
+      action TEXT NOT NULL, -- APPLY|REJECT
+      actor_user_id TEXT NOT NULL,
+      details_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Stripe/billing columns (idempotent)
@@ -437,6 +462,18 @@ async function ensureCoreTables(db: Db) {
 
   // Users onboarding drift (older DBs)
   await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
+
+  // Drift-safe spreadsheet columns in case older DBs created the tables without them
+  if (await tableExists(db, "spreadsheet_proposals")) {
+    await addColumnIfMissing(db, "spreadsheet_proposals", "instruction", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_proposals", "csv_snapshot", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_proposals", "applied_at", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_proposals", "applied_by_user_id", "TEXT");
+  }
+  if (await tableExists(db, "spreadsheet_audit_log")) {
+    await addColumnIfMissing(db, "spreadsheet_audit_log", "proposal_id", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_audit_log", "details_json", "TEXT");
+  }
 }
 
 /**

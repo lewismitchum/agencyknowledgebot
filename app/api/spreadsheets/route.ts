@@ -31,18 +31,15 @@ function extractJsonFromText(text: string): any | null {
   const t = String(text || "").trim();
   if (!t) return null;
 
-  // 1) raw JSON
   const raw = safeJsonParse(t);
   if (raw) return raw;
 
-  // 2) fenced ```json ... ```
   const m = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (m?.[1]) {
     const inner = safeJsonParse(m[1].trim());
     if (inner) return inner;
   }
 
-  // 3) first {...} block
   const start = t.indexOf("{");
   const end = t.lastIndexOf("}");
   if (start >= 0 && end > start) {
@@ -60,8 +57,7 @@ function normalizeProposal(obj: any) {
       const row = Number(u?.row);
       const col = String(u?.col ?? "");
       const value_new = String(u?.new ?? u?.value_new ?? "");
-      const value_old =
-        u?.old == null ? null : typeof u?.old === "string" ? u.old : String(u.old);
+      const value_old = u?.old == null ? null : typeof u?.old === "string" ? u.old : String(u.old);
       const reason = String(u?.reason ?? "");
       if (!Number.isFinite(row) || row < 1) return null;
       if (!col.trim()) return null;
@@ -80,6 +76,14 @@ function normalizeProposal(obj: any) {
   const notes = clampString(obj?.notes ?? "", 800);
 
   return { updates, notes };
+}
+
+function makeId(prefix: string) {
+  const uuid =
+    globalThis.crypto && "randomUUID" in globalThis.crypto
+      ? (globalThis.crypto as any).randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}_${uuid}`;
 }
 
 export async function OPTIONS() {
@@ -101,6 +105,7 @@ export async function GET(req: NextRequest) {
         {
           ok: true,
           plan: planKey,
+          can_apply: false,
           upsell: {
             code: "PLAN_REQUIRED",
             message: "Upgrade to unlock spreadsheet AI proposals and updates.",
@@ -110,11 +115,14 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const canApply = ctx.role === "owner" || ctx.role === "admin";
+
     return Response.json({
       ok: true,
       plan: planKey,
+      can_apply: canApply,
       propose_enabled: true,
-      apply_enabled: false,
+      apply_enabled: true,
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
@@ -189,9 +197,24 @@ ${instruction}
     const parsed = extractJsonFromText(text) ?? {};
     const proposal = normalizeProposal(parsed);
 
+    const proposalId = makeId("sprop");
+
+    await db.run(
+      `INSERT INTO spreadsheet_proposals
+       (id, agency_id, created_by_user_id, status, instruction, csv_snapshot, proposal_json, created_at)
+       VALUES (?, ?, ?, 'proposed', ?, ?, ?, datetime('now'))`,
+      proposalId,
+      ctx.agencyId,
+      ctx.userId,
+      instruction || null,
+      csv || null,
+      JSON.stringify(proposal)
+    );
+
     return Response.json({
       ok: true,
       plan: planKey,
+      proposal_id: proposalId,
       proposal,
     });
   } catch (err: any) {
