@@ -1,8 +1,11 @@
+// app/api/email/send/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { getDb } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { enforceRateLimit } from "@/lib/rate-limit";
+import { decrypt, encrypt } from "@/lib/crypto";
+import crypto from "crypto";
 
 export const runtime = "nodejs";
 
@@ -29,6 +32,30 @@ function pickReplyTo(headers: any[] | undefined) {
 
 function sanitizeBody(text: string) {
   return String(text || "").replace(/\r\n/g, "\n").trim();
+}
+
+function looksEncryptedToken(s: string) {
+  const parts = String(s || "").split(".");
+  return parts.length === 3 && parts.every((p) => p && p.length >= 8);
+}
+
+async function maybePersistRefreshedTokens(db: any, userId: string, agencyId: string, oauth2Client: any) {
+  const cred = oauth2Client.credentials || {};
+  const accessToken = cred.access_token ? String(cred.access_token) : null;
+  const expiryDate = typeof cred.expiry_date === "number" ? cred.expiry_date : null;
+
+  if (!accessToken && !expiryDate) return;
+
+  const accessToStore = accessToken ? encrypt(accessToken) : null;
+
+  await db.run(
+    `UPDATE email_accounts
+     SET access_token = COALESCE(?, access_token),
+         expiry_date = COALESCE(?, expiry_date),
+         updated_at = ?
+     WHERE user_id = ? AND agency_id = ?`,
+    [accessToStore, expiryDate, Date.now(), userId, agencyId],
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -93,7 +120,7 @@ export async function POST(req: NextRequest) {
       `SELECT id, body, thread_id
        FROM email_drafts
        WHERE id = ? AND agency_id = ? AND user_id = ?`,
-      [draftId, session.agencyId, session.userId]
+      [draftId, session.agencyId, session.userId],
     );
 
     if (!draft) {
@@ -104,27 +131,55 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Draft thread mismatch" }, { status: 400 });
     }
 
+    // Drift-safe email_accounts table (in case)
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS email_accounts (
+        id TEXT PRIMARY KEY,
+        agency_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        email TEXT,
+        access_token TEXT,
+        refresh_token TEXT,
+        expiry_date INTEGER,
+        scope TEXT,
+        token_type TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user
+        ON email_accounts(agency_id, user_id);
+    `);
+
     const account = await db.get(
       `SELECT access_token, refresh_token, expiry_date
        FROM email_accounts
        WHERE user_id = ? AND agency_id = ?`,
-      [session.userId, session.agencyId]
+      [session.userId, session.agencyId],
     );
 
     if (!account) {
       return NextResponse.json({ error: "No Gmail account connected" }, { status: 400 });
     }
 
+    // ✅ decrypt tokens (plaintext still works via decrypt fallback)
+    const accessToken = decrypt(String(account.access_token || "")) || "";
+    const refreshToken = decrypt(String(account.refresh_token || "")) || "";
+
+    if (!accessToken && !refreshToken) {
+      return NextResponse.json({ error: "Gmail tokens missing. Reconnect Gmail." }, { status: 400 });
+    }
+
     const oauth2Client = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI
+      process.env.GOOGLE_REDIRECT_URI,
     );
 
     oauth2Client.setCredentials({
-      access_token: account.access_token,
-      refresh_token: account.refresh_token,
-      expiry_date: account.expiry_date,
+      access_token: accessToken || undefined,
+      refresh_token: refreshToken || undefined,
+      expiry_date: account.expiry_date ?? undefined,
     });
 
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
@@ -183,6 +238,20 @@ export async function POST(req: NextRequest) {
       requestBody: { raw, threadId },
     });
 
+    // ✅ persist refreshed access token encrypted (Google may refresh during send)
+    await maybePersistRefreshedTokens(db, session.userId, session.agencyId, oauth2Client);
+
+    // ✅ one-time refresh_token migration (lazy)
+    const storedRefresh = String(account.refresh_token || "");
+    if (storedRefresh && !looksEncryptedToken(storedRefresh)) {
+      await db.run(
+        `UPDATE email_accounts
+         SET refresh_token = ?, updated_at = ?
+         WHERE user_id = ? AND agency_id = ?`,
+        [encrypt(storedRefresh), Date.now(), session.userId, session.agencyId],
+      );
+    }
+
     const gmailMessageId = String(sendRes.data.id || "") || null;
 
     const eventId = crypto.randomUUID();
@@ -203,7 +272,7 @@ export async function POST(req: NextRequest) {
         usedOverride ? 1 : 0,
         Date.now(),
         JSON.stringify(sendRes.data || {}),
-      ]
+      ],
     );
 
     return NextResponse.json({
