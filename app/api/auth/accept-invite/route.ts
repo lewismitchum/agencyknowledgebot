@@ -1,4 +1,3 @@
-// app/api/auth/accept-invite/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
@@ -8,7 +7,7 @@ import { hashToken, nowIso } from "@/lib/tokens";
 import { setSessionCookie } from "@/lib/session";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
-import { rateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit } from "@/lib/rate-limit";
 import { sendWelcomeEmailSafe } from "@/lib/email";
 
 export const runtime = "nodejs";
@@ -65,9 +64,16 @@ export async function POST(req: NextRequest) {
       req.headers.get("x-real-ip") ||
       "unknown";
 
-    // ✅ Rate limit BEFORE DB work
-    const rl = rateLimit(`accept_invite:${ip}`, 10, 60_000); // 10/min per IP
-    if (!rl.allowed) {
+    // ✅ Rate limit BEFORE DB work (per IP)
+    try {
+      await enforceRateLimit({
+        userId: `ip:${ip}`,
+        agencyId: "public",
+        key: "accept_invite",
+        perMinute: 10,
+        perHour: 200,
+      });
+    } catch (e: any) {
       return NextResponse.json({ ok: false, error: "TOO_MANY_ATTEMPTS" }, { status: 429 });
     }
 

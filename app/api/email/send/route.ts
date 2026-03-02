@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { getDb } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -38,6 +39,15 @@ export async function POST(req: NextRequest) {
     if (session.plan !== "corporation") {
       return NextResponse.json({ error: "Upgrade required." }, { status: 403 });
     }
+
+    // Rate limit sends
+    await enforceRateLimit({
+      userId: session.userId,
+      agencyId: session.agencyId,
+      key: "email_send",
+      perMinute: 5,
+      perHour: 100,
+    });
 
     const body = await req.json();
     const draftId = String(body?.draftId || "").trim();
@@ -119,7 +129,6 @@ export async function POST(req: NextRequest) {
 
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-    // Fetch thread metadata for recipient + subject + threading
     const threadRes = await gmail.users.threads.get({
       userId: "me",
       id: threadId,
@@ -206,6 +215,10 @@ export async function POST(req: NextRequest) {
       usedOverride,
     });
   } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
+      return NextResponse.json({ error: msg }, { status: 429 });
+    }
     console.error("Send email error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }

@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 import { getDb, type Db } from "@/lib/db";
 import { setSessionCookie } from "@/lib/session";
 import { ensureSchema } from "@/lib/schema";
-import { rateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -146,9 +146,16 @@ export async function POST(req: NextRequest) {
       req.headers.get("x-real-ip") ||
       "unknown";
 
-    // ✅ Rate limit BEFORE captcha + DB work
-    const rl = rateLimit(`login:${ip}`, 10, 60_000); // 10/min per IP
-    if (!rl.allowed) {
+    // ✅ Rate limit BEFORE captcha + DB work (per IP)
+    try {
+      await enforceRateLimit({
+        userId: `ip:${ip}`,
+        agencyId: "public",
+        key: "login",
+        perMinute: 10,
+        perHour: 200,
+      });
+    } catch (e: any) {
       return NextResponse.json({ error: "Too many attempts. Try again shortly." }, { status: 429 });
     }
 

@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { nowIso } from "@/lib/tokens";
-import { rateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -81,9 +81,16 @@ export async function POST(req: NextRequest) {
       req.headers.get("x-real-ip") ||
       "unknown";
 
-    // ✅ Rate limit BEFORE captcha + DB work
-    const rl = rateLimit(`request_join:${ip}`, 5, 60_000); // 5/min per IP
-    if (!rl.allowed) {
+    // ✅ Rate limit BEFORE captcha + DB work (per IP)
+    try {
+      await enforceRateLimit({
+        userId: `ip:${ip}`,
+        agencyId: "public",
+        key: "request_join",
+        perMinute: 5,
+        perHour: 60,
+      });
+    } catch {
       return NextResponse.json({ ok: false, error: "TOO_MANY_ATTEMPTS" }, { status: 429 });
     }
 

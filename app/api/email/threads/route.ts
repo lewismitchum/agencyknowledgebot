@@ -1,8 +1,8 @@
-// app/api/email/threads/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { getDb } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -40,10 +40,19 @@ export async function GET(req: NextRequest) {
   try {
     const session = await requireActiveMember(req);
 
-    // Corp only (no requireFeature helper in this repo)
+    // Corp only
     if (session.plan !== "corporation") {
       return NextResponse.json({ error: "Upgrade required." }, { status: 403 });
     }
+
+    // Rate limit reads
+    await enforceRateLimit({
+      userId: session.userId,
+      agencyId: session.agencyId,
+      key: "email_read",
+      perMinute: 30,
+      perHour: 500,
+    });
 
     const db = await getDb();
 
@@ -121,6 +130,10 @@ export async function GET(req: NextRequest) {
       nextPageToken: listRes.data.nextPageToken || null,
     });
   } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
+      return NextResponse.json({ error: msg }, { status: 429 });
+    }
     console.error("Email threads error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
