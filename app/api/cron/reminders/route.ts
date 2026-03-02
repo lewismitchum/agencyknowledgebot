@@ -34,16 +34,15 @@ function pickFirst(cols: Set<string>, options: string[]): string | null {
 }
 
 async function ensureNotificationsTables(db: Db) {
-  // Drift-safe: doesn't require schema.ts edits
   await db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
       user_id TEXT,
-      kind TEXT NOT NULL,          -- "event" | "task"
-      ref_id TEXT NOT NULL,        -- schedule_events.id or schedule_tasks.id
+      kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
       title TEXT NOT NULL,
-      scheduled_for TEXT NOT NULL, -- ISO timestamp (event start / task due)
+      scheduled_for TEXT NOT NULL,
       created_at TEXT NOT NULL,
       seen_at TEXT,
       sent_at TEXT
@@ -62,38 +61,37 @@ async function ensureNotificationsTables(db: Db) {
 async function runReminderTickForAgency(db: Db, agencyId: string, userId?: string | null) {
   await ensureNotificationsTables(db);
 
-  // Throttle per-agency (15 min)
+  // 15 min throttle
   const tick = (await db.get(
     `SELECT last_run_at FROM notifications_ticks WHERE agency_id = ? LIMIT 1`,
     agencyId
   )) as { last_run_at?: string | null } | undefined;
 
-  const now = Date.now();
-  const last = tick?.last_run_at ? new Date(tick.last_run_at).getTime() : 0;
-  if (last && Number.isFinite(last) && now - last < 15 * 60 * 1000) {
+  const nowMs = Date.now();
+  const lastMs = tick?.last_run_at ? new Date(tick.last_run_at).getTime() : 0;
+
+  if (lastMs && nowMs - lastMs < 15 * 60 * 1000) {
     return { ok: true, skipped: true, created: 0 };
   }
 
-  const nowIso = new Date(now).toISOString();
-  const horizonIso = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+  const nowIso = new Date(nowMs).toISOString();
+  const horizonIso = new Date(nowMs + 24 * 60 * 60 * 1000).toISOString();
 
-  // Drift-safe schedule columns
   const evCols = await tableColumns(db, "schedule_events");
   const taskCols = await tableColumns(db, "schedule_tasks");
 
   const evTitleCol = pickFirst(evCols, ["title", "name", "summary"]) ?? "id";
   const evStartCol =
-    pickFirst(evCols, ["start_at", "start_time", "starts_at", "start_datetime", "start", "startsOn"]) ??
-    pickFirst(evCols, ["date", "event_time", "begins_at"]);
+    pickFirst(evCols, ["start_at", "start_time", "starts_at", "start_datetime", "start"]) ??
+    pickFirst(evCols, ["date"]);
 
   const taskTitleCol = pickFirst(taskCols, ["title", "name", "summary"]) ?? "id";
   const taskDueCol =
-    pickFirst(taskCols, ["due_at", "due_date", "due_datetime", "deadline", "due"]) ??
-    null;
+    pickFirst(taskCols, ["due_at", "due_date", "due_datetime", "deadline"]) ?? null;
 
   let created = 0;
 
-  // EVENTS -> notifications
+  // EVENTS
   if (evStartCol) {
     const rows = (await db.all(
       `SELECT id, ${evTitleCol} as title, ${evStartCol} as when_at
@@ -129,7 +127,7 @@ async function runReminderTickForAgency(db: Db, agencyId: string, userId?: strin
     }
   }
 
-  // TASKS -> notifications (due within 24h, if due column exists)
+  // TASKS
   if (taskDueCol) {
     const rows = (await db.all(
       `SELECT id, ${taskTitleCol} as title, ${taskDueCol} as when_at
@@ -168,7 +166,8 @@ async function runReminderTickForAgency(db: Db, agencyId: string, userId?: strin
   await db.run(
     `INSERT INTO notifications_ticks (agency_id, last_run_at)
      VALUES (?, ?)
-     ON CONFLICT(agency_id) DO UPDATE SET last_run_at = excluded.last_run_at`,
+     ON CONFLICT(agency_id)
+     DO UPDATE SET last_run_at = excluded.last_run_at`,
     agencyId,
     nowIso
   );
@@ -179,34 +178,36 @@ async function runReminderTickForAgency(db: Db, agencyId: string, userId?: strin
 export async function GET(req: NextRequest) {
   try {
     const secret = asString(process.env.CRON_SECRET || "").trim();
-    const got = asString(req.nextUrl.searchParams.get("secret") || "").trim();
+    const provided = asString(req.nextUrl.searchParams.get("secret") || "").trim();
 
-    // If CRON_SECRET is set, require it.
-    if (secret && got !== secret) {
+    if (secret && provided !== secret) {
       return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
     }
 
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    // Run for all agencies (backstop job)
     const agencies = (await db.all(`SELECT id FROM agencies`)) as Array<{ id: string }>;
     let totalCreated = 0;
 
     for (const a of agencies ?? []) {
       if (!a?.id) continue;
-      const r = await runReminderTickForAgency(db, a.id, null);
-      totalCreated += (r as any)?.created ? Number((r as any).created) : 0;
+      const result = await runReminderTickForAgency(db, a.id, null);
+      totalCreated += result.created;
     }
 
     return NextResponse.json({ ok: true, totalCreated });
-  } catch (err: any) {
+  } catch (err) {
     console.error("CRON_REMINDERS_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR" }, { status: 500 });
   }
 }
 
-// Exported for internal use (notifications page tick)
-export async function _runReminderTickForAgency(db: Db, agencyId: string, userId?: string | null) {
+// internal export (used by notifications page tick)
+export async function _runReminderTickForAgency(
+  db: Db,
+  agencyId: string,
+  userId?: string | null
+) {
   return runReminderTickForAgency(db, agencyId, userId);
 }
