@@ -74,7 +74,6 @@ async function getAgencyTimezone(db: Db, agencyId: string) {
 }
 
 function ymdInTz(tz: string) {
-  // en-CA -> YYYY-MM-DD
   try {
     return new Intl.DateTimeFormat("en-CA", {
       timeZone: tz,
@@ -160,27 +159,9 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
   }));
 }
 
-async function shouldSummarize(plan: string, messageCount: number) {
-  const threshold = summarizeThresholdForPlan(plan);
-  return messageCount >= threshold;
-}
-
-async function summarizeConversation(openaiInput: string) {
-  const resp = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    input: `Summarize the conversation as compact memory for future turns. Keep it factual, short, and action-oriented.\n\n${openaiInput}`,
-  });
-
-  const text =
-    typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
-
-  return text.slice(0, 4000);
-}
-
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
-  // fast allow-list for clearly general questions
   const generalStarters = [
     "what time",
     "what day",
@@ -201,7 +182,6 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (generalStarters.some((s) => t.startsWith(s) || t.includes(s))) return false;
 
-  // internal/business signals
   const internalHints = [
     "our ",
     "we ",
@@ -269,6 +249,46 @@ function toUiDailyLimit(raw: unknown): number | null {
   return Math.floor(n);
 }
 
+function buildMemoryInput(args: { priorSummary: string | null; messages: Array<{ role: string; content: string }> }) {
+  const head = args.priorSummary
+    ? `[Conversation Memory Summary]\n${args.priorSummary.trim()}\n\n`
+    : "";
+  const body = args.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
+  return head + body;
+}
+
+async function summarizeForMemory(input: string) {
+  const resp = await openai.responses.create({
+    model: "gpt-4.1-mini",
+    input: `
+You are producing durable conversation memory for a future assistant.
+
+Rules:
+- Be factual. Do not invent details.
+- Keep it compact and useful.
+- Preserve: key facts, user preferences, decisions, ongoing tasks, names, URLs, constraints, and open questions.
+- If unsure about something, say it's unknown.
+- Output plain text only.
+
+Write as sections:
+FACTS:
+PREFERENCES:
+DECISIONS:
+OPEN ITEMS:
+CONTEXT:
+
+Conversation:
+${input}
+`.trim(),
+  });
+
+  const text =
+    typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
+
+  // Hard cap (prevents summary bloat)
+  return text.slice(0, 4000);
+}
+
 export async function GET() {
   return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
@@ -290,7 +310,6 @@ export async function POST(req: NextRequest) {
     if (!bot_id) return Response.json({ error: "Missing bot_id" }, { status: 400 });
     if (!message) return Response.json({ error: "Missing message" }, { status: 400 });
 
-    // Always read plan from DB as source of truth
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
 
     const gate = await enforceDailyMessages(db, ctx.agencyId, dateKey, plan);
@@ -315,17 +334,16 @@ export async function POST(req: NextRequest) {
       botId: bot_id,
     });
 
+    // Insert user message
     await insertMessage(db, convo.id, "user", message);
 
+    // Build input for model (summary + last 20 for response generation)
     const recent = await loadRecentMessages(db, convo.id, 20);
-
     const tools = bot.vector_store_id
       ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }]
       : [];
 
-    const openaiInput =
-      (convo.summary ? `Conversation memory:\n${convo.summary}\n\n` : "") +
-      recent.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
+    const openaiInput = buildMemoryInput({ priorSummary: convo.summary, messages: recent });
 
     let answer: string;
 
@@ -334,9 +352,6 @@ export async function POST(req: NextRequest) {
     } else {
       const internal = looksInternalBusinessQuestion(message);
 
-      // If files exist but the question is explicitly about images/video, avoid hallucination:
-      // - do NOT fallback for internal unless no evidence (handled below)
-      // - but for media, warn the model it may not be able to read pixels/audio
       const mediaHint =
         "If the user asks about the contents of an image/video file, be honest: you may not be able to see pixels/audio. " +
         "Use file_search evidence only. If the docs don't contain the answer, say you don't have it in the docs yet.";
@@ -347,7 +362,7 @@ export async function POST(req: NextRequest) {
 You are Louis.Ai.
 
 Behavior:
-- Docs-first: for internal/business questions, prioritize the user's uploaded docs via file_search.
+- Docs-first: for internal/business questions, prioritize uploaded docs via file_search.
 - General questions (non-internal): answer normally using general knowledge/reasoning.
 - Never fabricate internal/company-specific details.
 - ${mediaHint}
@@ -373,28 +388,68 @@ Do not add extra words before or after the fallback.
       }
     }
 
+    // Insert assistant message
     await insertMessage(db, convo.id, "assistant", answer);
 
-    // ✅ Count 1 user message per call (billing)
+    // Count usage (1 user msg per call)
     const usageRow = await incrementUsage(db, ctx.agencyId, dateKey, "messages", 1);
 
-    // auto-summarize + compact memory (plan-aware)
+    // ===== Memory refresh (transactional, safe) =====
     const planKey = normalizePlan(plan);
+    const threshold = summarizeThresholdForPlan(planKey);
+
+    // We add 2 per call (user+assistant)
     const newCount = Number(convo.message_count ?? 0) + 2;
 
-    if (await shouldSummarize(planKey, newCount)) {
-      const summary = await summarizeConversation(openaiInput + `\nASSISTANT: ${answer}`);
+    if (newCount >= threshold) {
+      // Build a stronger summary input: prior summary + last 120 messages (after inserting assistant)
+      const msgsForSummary = await loadRecentMessages(db, convo.id, 120);
+      const memoryInput = buildMemoryInput({ priorSummary: convo.summary, messages: msgsForSummary });
 
-      await db.run(
-        `UPDATE conversations
-         SET summary = ?, message_count = 0, updated_at = ?
-         WHERE id = ?`,
-        summary || null,
-        nowIso(),
-        convo.id
-      );
+      let nextSummary = "";
+      try {
+        nextSummary = await summarizeForMemory(memoryInput);
+      } catch {
+        nextSummary = "";
+      }
 
-      await db.run(`DELETE FROM conversation_messages WHERE conversation_id = ?`, convo.id);
+      if (nextSummary && nextSummary.trim().length) {
+        // Transaction prevents partial state (summary saved but messages not cleared, etc.)
+        await db.exec("BEGIN");
+        try {
+          await db.run(
+            `UPDATE conversations
+             SET summary = ?, message_count = 0, updated_at = ?
+             WHERE id = ?`,
+            nextSummary.trim(),
+            nowIso(),
+            convo.id
+          );
+
+          await db.run(`DELETE FROM conversation_messages WHERE conversation_id = ?`, convo.id);
+
+          await db.exec("COMMIT");
+        } catch (e) {
+          await db.exec("ROLLBACK");
+          // If rollback happens, we keep messages + count below
+          await db.run(
+            `UPDATE conversations
+             SET message_count = message_count + 2, updated_at = ?
+             WHERE id = ?`,
+            nowIso(),
+            convo.id
+          );
+        }
+      } else {
+        // Summarization failed — never wipe messages.
+        await db.run(
+          `UPDATE conversations
+           SET message_count = message_count + 2, updated_at = ?
+           WHERE id = ?`,
+          nowIso(),
+          convo.id
+        );
+      }
     } else {
       await db.run(
         `UPDATE conversations
