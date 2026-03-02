@@ -27,6 +27,14 @@ function makeId(prefix: string) {
   return `${prefix}_${uuid}`;
 }
 
+function safeJsonParse(s: string): any | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -70,27 +78,28 @@ export async function POST(req: NextRequest) {
 
     const status = String(row.status ?? "proposed").toLowerCase();
     if (status !== "proposed") {
-      return Response.json(
-        { ok: false, error: "PROPOSAL_NOT_PENDING", status },
-        { status: 409 }
-      );
+      return Response.json({ ok: false, error: "PROPOSAL_NOT_PENDING", status }, { status: 409 });
     }
+
+    const parsedProposal = row.proposal_json ? safeJsonParse(row.proposal_json) : null;
 
     const auditId = makeId("saudit");
     const details = {
       note: note || null,
-      proposal: row.proposal_json ? JSON.parse(row.proposal_json) : null,
+      proposal: parsedProposal,
     };
 
+    // Write canonical user_id AND legacy actor_user_id for compatibility
     await db.run(
       `INSERT INTO spreadsheet_audit_log
-       (id, agency_id, proposal_id, action, actor_user_id, details_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+       (id, agency_id, user_id, actor_user_id, proposal_id, action, details_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
       auditId,
       ctx.agencyId,
+      ctx.userId,
+      ctx.userId,
       proposalId,
       action,
-      ctx.userId,
       JSON.stringify(details)
     );
 

@@ -7,6 +7,12 @@ import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 
 type Upsell = { code?: string; message?: string };
 
+type Bot = {
+  id: string;
+  name: string;
+  owner_user_id?: string | null;
+};
+
 type ProposalUpdate = {
   row: number;
   col: string;
@@ -27,6 +33,12 @@ type GeneratedTable = {
   notes?: string;
 };
 
+type GenColumn = {
+  key: string;
+  label?: string;
+  type?: "text" | "number" | "date" | "currency" | "boolean" | string;
+};
+
 function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
 }
@@ -43,6 +55,19 @@ function downloadTextFile(filename: string, text: string, mime = "text/plain") {
   URL.revokeObjectURL(url);
 }
 
+function slugifyFilename(s: string) {
+  return (s || "spreadsheet")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+function toRowArrays(columns: GenColumn[], rows: Array<Record<string, any>>): string[][] {
+  const keys = columns.map((c) => String(c.key || "").trim()).filter(Boolean);
+  return (rows || []).map((r) => keys.map((k) => (r?.[k] === null || r?.[k] === undefined ? "" : String(r[k]))));
+}
+
 export default function SpreadsheetsPage() {
   const [loading, setLoading] = useState(true);
   const [gated, setGated] = useState(false);
@@ -52,15 +77,20 @@ export default function SpreadsheetsPage() {
 
   const [canApply, setCanApply] = useState(false);
 
-  // --- NEW: docs -> spreadsheet generation ---
+  // Bots (needed for docs-based generation)
+  const [bots, setBots] = useState<Bot[]>([]);
+  const [botId, setBotId] = useState<string>("");
+
+  // --- docs -> spreadsheet generation ---
   const [genPrompt, setGenPrompt] = useState("");
-  const [genColumns, setGenColumns] = useState(""); // comma-separated
+  const [genColumns, setGenColumns] = useState(""); // comma-separated (optional)
   const [genMaxRows, setGenMaxRows] = useState<number>(200);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
   const [genFallback, setGenFallback] = useState<string | null>(null);
   const [genTable, setGenTable] = useState<GeneratedTable | null>(null);
   const [genCsv, setGenCsv] = useState<string>("");
+  const [genProposalId, setGenProposalId] = useState<string | null>(null);
 
   // --- existing: CSV proposal edits ---
   const [csv, setCsv] = useState("");
@@ -73,8 +103,8 @@ export default function SpreadsheetsPage() {
   const [applyMsg, setApplyMsg] = useState<string>("");
 
   const canGenerate = useMemo(() => {
-    return genPrompt.trim().length > 0 && !generating;
-  }, [genPrompt, generating]);
+    return botId.trim().length > 0 && genPrompt.trim().length > 0 && !generating;
+  }, [botId, genPrompt, generating]);
 
   const canPropose = useMemo(() => {
     return csv.trim().length > 0 && instruction.trim().length > 0 && !proposing;
@@ -94,7 +124,6 @@ export default function SpreadsheetsPage() {
 
       try {
         const j = await fetchJson<any>("/api/spreadsheets", { credentials: "include", cache: "no-store" });
-
         if (cancelled) return;
 
         setPlan(typeof j?.plan === "string" ? j.plan : undefined);
@@ -103,6 +132,34 @@ export default function SpreadsheetsPage() {
 
         const allowed = Boolean(j?.ok) && !j?.upsell?.code;
         setGated(!allowed);
+
+        // Load bots for generation UI (only if not gated)
+        if (allowed) {
+          try {
+            const b = await fetchJson<any>("/api/bots", { credentials: "include", cache: "no-store" });
+            const list = Array.isArray(b?.bots) ? b.bots : Array.isArray(b) ? b : [];
+            const parsed: Bot[] = list
+              .map((x: any) => ({
+                id: String(x?.id || ""),
+                name: String(x?.name || "Bot"),
+                owner_user_id: x?.owner_user_id ?? null,
+              }))
+              .filter((x: Bot) => x.id);
+
+            if (cancelled) return;
+
+            setBots(parsed);
+
+            // default bot: first agency bot if present, otherwise first bot
+            if (!botId) {
+              const agency = parsed.find((x) => !x.owner_user_id) ?? parsed[0];
+              if (agency?.id) setBotId(agency.id);
+            }
+          } catch {
+            // Non-fatal: generation just won't work without a bot
+            if (!cancelled) setBots([]);
+          }
+        }
       } catch (e: any) {
         if (cancelled) return;
 
@@ -121,6 +178,7 @@ export default function SpreadsheetsPage() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function onGenerate() {
@@ -131,6 +189,7 @@ export default function SpreadsheetsPage() {
     setGenFallback(null);
     setGenTable(null);
     setGenCsv("");
+    setGenProposalId(null);
 
     try {
       const cols = genColumns
@@ -140,6 +199,7 @@ export default function SpreadsheetsPage() {
         .slice(0, 40);
 
       const payload: any = {
+        bot_id: botId,
         prompt: genPrompt,
         max_rows: Number.isFinite(genMaxRows) ? Math.max(1, Math.min(500, genMaxRows)) : 200,
       };
@@ -153,25 +213,31 @@ export default function SpreadsheetsPage() {
         body: JSON.stringify(payload),
       });
 
-      if (j?.fallback) {
-        setGenFallback(String(j?.message || "I don’t have that information in the docs yet."));
+      if (j?.fallback || j?.insufficient_evidence) {
+        setGenFallback(String(j?.fallback || "I don’t have that information in the docs yet."));
         return;
       }
 
-      const t = j?.table ?? null;
-      if (!t || !Array.isArray(t?.columns) || !Array.isArray(t?.rows)) {
+      const colsObj = Array.isArray(j?.columns) ? (j.columns as GenColumn[]) : null;
+      const rowsObj = Array.isArray(j?.rows) ? (j.rows as Array<Record<string, any>>) : null;
+
+      if (!colsObj || !rowsObj || colsObj.length === 0) {
         setGenFallback("I don’t have that information in the docs yet.");
         return;
       }
 
+      const displayCols = colsObj.map((c) => String(c?.label || c?.key || "").trim()).filter(Boolean);
+      const rowArrays = toRowArrays(colsObj, rowsObj);
+
       setGenTable({
-        title: typeof t?.title === "string" ? t.title : "Spreadsheet",
-        columns: t.columns as string[],
-        rows: t.rows as string[][],
-        notes: typeof t?.notes === "string" ? t.notes : "",
+        title: typeof j?.title === "string" && j.title.trim() ? j.title : "Generated Spreadsheet",
+        columns: displayCols.length ? displayCols : colsObj.map((c) => String(c.key)),
+        rows: rowArrays,
+        notes: typeof j?.notes === "string" ? j.notes : "",
       });
 
       setGenCsv(typeof j?.csv === "string" ? j.csv : "");
+      setGenProposalId(typeof j?.proposal_id === "string" ? j.proposal_id : null);
     } catch (e: any) {
       if (isFetchJsonError(e)) {
         if (e.status === 401) {
@@ -180,6 +246,10 @@ export default function SpreadsheetsPage() {
         }
         if (e.status === 403) {
           setGenError("Upgrade required to generate spreadsheets from docs.");
+          return;
+        }
+        if (e.status === 409) {
+          setGenError("This bot is missing a vector store. Repair it in Bots first.");
           return;
         }
       }
@@ -311,7 +381,7 @@ export default function SpreadsheetsPage() {
         </p>
       </div>
 
-      {/* NEW: Generate from docs */}
+      {/* Generate from docs */}
       <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
         <div className="flex items-baseline justify-between gap-3">
           <div>
@@ -322,27 +392,23 @@ export default function SpreadsheetsPage() {
           </div>
         </div>
 
-        <div>
-          <div className="text-sm font-medium">What spreadsheet do you want?</div>
-          <textarea
-            value={genPrompt}
-            onChange={(e) => setGenPrompt(e.target.value)}
-            rows={4}
-            className="mt-2 w-full rounded-xl border bg-background/40 p-3 text-sm"
-            placeholder='Example: "Make a client onboarding checklist table with columns: Step, Owner, SLA, Link, Notes. Use our SOP docs."'
-          />
-        </div>
-
         <div className="grid gap-3 md:grid-cols-2">
           <div>
-            <div className="text-sm font-medium">Optional required columns (comma-separated)</div>
-            <input
-              value={genColumns}
-              onChange={(e) => setGenColumns(e.target.value)}
+            <div className="text-sm font-medium">Bot</div>
+            <select
+              value={botId}
+              onChange={(e) => setBotId(e.target.value)}
               className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
-              placeholder="Step, Owner, SLA, Link, Notes"
-            />
-            <div className="mt-2 text-xs text-muted-foreground">If set, output will match these columns.</div>
+            >
+              {bots.length === 0 ? <option value="">No bots found</option> : null}
+              {bots.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                  {b.owner_user_id ? " (Private)" : " (Agency)"}
+                </option>
+              ))}
+            </select>
+            <div className="mt-2 text-xs text-muted-foreground">Generation uses this bot’s vector store.</div>
           </div>
 
           <div>
@@ -359,6 +425,28 @@ export default function SpreadsheetsPage() {
           </div>
         </div>
 
+        <div>
+          <div className="text-sm font-medium">What spreadsheet do you want?</div>
+          <textarea
+            value={genPrompt}
+            onChange={(e) => setGenPrompt(e.target.value)}
+            rows={4}
+            className="mt-2 w-full rounded-xl border bg-background/40 p-3 text-sm"
+            placeholder='Example: "Make a client onboarding checklist table with columns: Step, Owner, SLA, Link, Notes. Use our SOP docs."'
+          />
+        </div>
+
+        <div>
+          <div className="text-sm font-medium">Optional required columns (comma-separated)</div>
+          <input
+            value={genColumns}
+            onChange={(e) => setGenColumns(e.target.value)}
+            className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+            placeholder="Step, Owner, SLA, Link, Notes"
+          />
+          <div className="mt-2 text-xs text-muted-foreground">If set, the model should conform to these columns.</div>
+        </div>
+
         <div className="flex items-center justify-between gap-3">
           <button
             type="button"
@@ -369,7 +457,15 @@ export default function SpreadsheetsPage() {
             {generating ? "Generating..." : "Generate spreadsheet"}
           </button>
 
-          <div className="text-xs text-muted-foreground">Uses your bot’s vector store (docs).</div>
+          <div className="text-xs text-muted-foreground">
+            {genProposalId ? (
+              <>
+                Proposal: <span className="font-mono">{genProposalId}</span>
+              </>
+            ) : (
+              "Creates an auditable proposal record."
+            )}
+          </div>
         </div>
 
         {genError ? (
@@ -394,7 +490,7 @@ export default function SpreadsheetsPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-muted disabled:opacity-60"
                   onClick={() => {
                     if (!genCsv) return;
                     navigator.clipboard?.writeText(genCsv).catch(() => {});
@@ -406,14 +502,10 @@ export default function SpreadsheetsPage() {
                 </button>
                 <button
                   type="button"
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-muted disabled:opacity-60"
                   onClick={() => {
                     if (!genCsv) return;
-                    const safe = (genTable.title || "spreadsheet")
-                      .toLowerCase()
-                      .replace(/[^a-z0-9]+/g, "-")
-                      .replace(/^-+|-+$/g, "")
-                      .slice(0, 60);
+                    const safe = slugifyFilename(genTable.title || "spreadsheet");
                     downloadTextFile(`${safe || "spreadsheet"}.csv`, genCsv, "text/csv");
                   }}
                   disabled={!genCsv}
@@ -460,7 +552,7 @@ export default function SpreadsheetsPage() {
             </div>
 
             <div className="text-xs text-muted-foreground">
-              Next: “Create Google Sheet” + “Write CSV to sheet” (OAuth) so this becomes one-click.
+              Next: connect Google Sheets, then “Apply” will write to the sheet + keep this audit trail.
             </div>
           </div>
         ) : null}

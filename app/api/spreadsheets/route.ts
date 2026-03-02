@@ -12,6 +12,7 @@ export const runtime = "nodejs";
 type ProposeBody = {
   csv?: string;
   instruction?: string;
+  bot_id?: string; // optional: allows tying proposals to a bot
 };
 
 function safeJsonParse(s: string): any | null {
@@ -149,6 +150,7 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => null)) as ProposeBody | null;
     const csv = clampString(body?.csv ?? "", 200_000);
     const instruction = clampString(body?.instruction ?? "", 2000);
+    const botId = clampString(body?.bot_id ?? "", 200);
 
     if (!csv.trim()) return Response.json({ ok: false, error: "MISSING_CSV" }, { status: 400 });
     if (!instruction.trim()) return Response.json({ ok: false, error: "MISSING_INSTRUCTION" }, { status: 400 });
@@ -201,11 +203,13 @@ ${instruction}
 
     await db.run(
       `INSERT INTO spreadsheet_proposals
-       (id, agency_id, created_by_user_id, status, instruction, csv_snapshot, proposal_json, created_at)
-       VALUES (?, ?, ?, 'proposed', ?, ?, ?, datetime('now'))`,
+       (id, agency_id, user_id, created_by_user_id, bot_id, status, instruction, csv_snapshot, proposal_json, created_at)
+       VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, datetime('now'))`,
       proposalId,
       ctx.agencyId,
       ctx.userId,
+      ctx.userId,
+      botId || null,
       instruction || null,
       csv || null,
       JSON.stringify(proposal)

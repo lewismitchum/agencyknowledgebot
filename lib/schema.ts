@@ -148,8 +148,6 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
 
   const hasAgencyOnly = has(cols, "agency_id") && !has(cols, "user_id");
 
-  const tzExpr = has(cols, "timezone") ? `timezone` : `NULL`;
-
   let weekExpr = `'mon'`;
   if (has(cols, "week_starts_on")) {
     weekExpr = `CASE
@@ -177,6 +175,8 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
   `);
 
   if (hasAgencyOnly) {
+    const tzSelect = has(cols, "timezone") ? `sp.timezone` : `NULL`;
+
     await db.exec(`
       INSERT OR REPLACE INTO schedule_prefs_new (
         agency_id, user_id,
@@ -187,7 +187,7 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
       SELECT
         u.agency_id AS agency_id,
         u.id AS user_id,
-        sp.${tzExpr} AS timezone,
+        ${tzSelect} AS timezone,
         ${weekExpr} AS week_starts_on,
         'week' AS default_view,
         1 AS show_tasks,
@@ -201,6 +201,17 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
     `);
   } else {
     const userIdExpr = has(cols, "user_id") ? `user_id` : `''`;
+    const tzSelect = has(cols, "timezone") ? `timezone` : `NULL`;
+    const defaultViewExpr = has(cols, "default_view") ? "CAST(default_view AS TEXT)" : "'week'";
+    const showTasksExpr = has(cols, "show_tasks")
+      ? "CASE WHEN show_tasks IS NULL THEN 1 ELSE CAST(show_tasks AS INTEGER) END"
+      : "1";
+    const showEventsExpr = has(cols, "show_events")
+      ? "CASE WHEN show_events IS NULL THEN 1 ELSE CAST(show_events AS INTEGER) END"
+      : "1";
+    const showDoneExpr = has(cols, "show_done_tasks")
+      ? "CASE WHEN show_done_tasks IS NULL THEN 0 ELSE CAST(show_done_tasks AS INTEGER) END"
+      : "0";
 
     await db.exec(`
       INSERT OR REPLACE INTO schedule_prefs_new (
@@ -212,16 +223,16 @@ async function rebuildSchedulePrefsIfNeeded(db: Db) {
       SELECT
         agency_id AS agency_id,
         ${userIdExpr} AS user_id,
-        ${tzExpr} AS timezone,
+        ${tzSelect} AS timezone,
         ${weekExpr} AS week_starts_on,
         CASE
-          WHEN ${has(cols, "default_view") ? "CAST(default_view AS TEXT)" : "'week'"} IN ('day','week','month')
-            THEN ${has(cols, "default_view") ? "CAST(default_view AS TEXT)" : "'week'"}
+          WHEN ${defaultViewExpr} IN ('day','week','month')
+            THEN ${defaultViewExpr}
           ELSE 'week'
         END AS default_view,
-        ${has(cols, "show_tasks") ? "CASE WHEN show_tasks IS NULL THEN 1 ELSE CAST(show_tasks AS INTEGER) END" : "1"} AS show_tasks,
-        ${has(cols, "show_events") ? "CASE WHEN show_events IS NULL THEN 1 ELSE CAST(show_events AS INTEGER) END" : "1"} AS show_events,
-        ${has(cols, "show_done_tasks") ? "CASE WHEN show_done_tasks IS NULL THEN 0 ELSE CAST(show_done_tasks AS INTEGER) END" : "0"} AS show_done_tasks,
+        ${showTasksExpr} AS show_tasks,
+        ${showEventsExpr} AS show_events,
+        ${showDoneExpr} AS show_done_tasks,
         datetime('now') AS created_at,
         datetime('now') AS updated_at
       FROM schedule_prefs;
@@ -423,10 +434,14 @@ async function ensureCoreTables(db: Db) {
     );
 
     -- Spreadsheets (proposal + audit trail)
+    -- NOTE: Keep created_by_user_id / actor_user_id for backwards compatibility,
+    -- but ALSO store user_id (canonical).
     CREATE TABLE IF NOT EXISTS spreadsheet_proposals (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
-      created_by_user_id TEXT NOT NULL,
+      user_id TEXT, -- canonical
+      created_by_user_id TEXT, -- legacy alias
+      bot_id TEXT, -- optional
       status TEXT NOT NULL DEFAULT 'proposed', -- proposed|applied|rejected
       instruction TEXT,
       csv_snapshot TEXT,
@@ -439,24 +454,41 @@ async function ensureCoreTables(db: Db) {
     CREATE TABLE IF NOT EXISTS spreadsheet_audit_log (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
+      user_id TEXT, -- canonical actor
+      actor_user_id TEXT, -- legacy alias
       proposal_id TEXT NOT NULL,
       action TEXT NOT NULL, -- APPLY|REJECT
-      actor_user_id TEXT NOT NULL,
       details_json TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     -- Email drafts (docs-backed)
+    -- NOTE: Keep created_by_user_id for backwards compatibility, but ALSO store user_id (canonical).
     CREATE TABLE IF NOT EXISTS email_drafts (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
+      user_id TEXT, -- canonical
+      created_by_user_id TEXT, -- legacy alias
       bot_id TEXT NOT NULL,
-      created_by_user_id TEXT NOT NULL,
       prompt TEXT,
       subject TEXT NOT NULL,
       body TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- Helpful indexes
+    CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);
+    CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);
+    CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);
+    CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
+    CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
+
+    CREATE INDEX IF NOT EXISTS idx_sp_proposals_agency_user ON spreadsheet_proposals(agency_id, user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sp_audit_agency_user ON spreadsheet_audit_log(agency_id, user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user ON email_drafts(agency_id, user_id, created_at);
   `);
 
   // Stripe/billing columns (idempotent)
@@ -471,10 +503,48 @@ async function ensureCoreTables(db: Db) {
   // Users onboarding drift
   await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
 
-  // Spreadsheet proposal drift (older DBs created without apply columns)
+  // Spreadsheets canonical user_id drift + backfill from legacy columns
   if (await tableExists(db, "spreadsheet_proposals")) {
+    await addColumnIfMissing(db, "spreadsheet_proposals", "user_id", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_proposals", "created_by_user_id", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_proposals", "bot_id", "TEXT");
     await addColumnIfMissing(db, "spreadsheet_proposals", "applied_at", "TEXT");
     await addColumnIfMissing(db, "spreadsheet_proposals", "applied_by_user_id", "TEXT");
+
+    await db.exec(`
+      UPDATE spreadsheet_proposals
+      SET user_id = created_by_user_id
+      WHERE (user_id IS NULL OR user_id = '')
+        AND created_by_user_id IS NOT NULL
+        AND created_by_user_id <> '';
+    `);
+  }
+
+  if (await tableExists(db, "spreadsheet_audit_log")) {
+    await addColumnIfMissing(db, "spreadsheet_audit_log", "user_id", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_audit_log", "actor_user_id", "TEXT");
+
+    await db.exec(`
+      UPDATE spreadsheet_audit_log
+      SET user_id = actor_user_id
+      WHERE (user_id IS NULL OR user_id = '')
+        AND actor_user_id IS NOT NULL
+        AND actor_user_id <> '';
+    `);
+  }
+
+  // Email drafts canonical user_id drift + backfill from legacy columns
+  if (await tableExists(db, "email_drafts")) {
+    await addColumnIfMissing(db, "email_drafts", "user_id", "TEXT");
+    await addColumnIfMissing(db, "email_drafts", "created_by_user_id", "TEXT");
+
+    await db.exec(`
+      UPDATE email_drafts
+      SET user_id = created_by_user_id
+      WHERE (user_id IS NULL OR user_id = '')
+        AND created_by_user_id IS NOT NULL
+        AND created_by_user_id <> '';
+    `);
   }
 }
 
