@@ -375,7 +375,6 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- Canonical per-user schedule prefs (route expects this)
     CREATE TABLE IF NOT EXISTS schedule_prefs (
       agency_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -390,7 +389,6 @@ async function ensureCoreTables(db: Db) {
       PRIMARY KEY (agency_id, user_id)
     );
 
-    -- Keep legacy table around if anything old still references it
     CREATE TABLE IF NOT EXISTS schedule_preferences (
       agency_id TEXT NOT NULL PRIMARY KEY,
       week_starts_on INTEGER NOT NULL DEFAULT 0,
@@ -418,7 +416,6 @@ async function ensureCoreTables(db: Db) {
       email_error TEXT
     );
 
-    -- Stripe webhook idempotency
     CREATE TABLE IF NOT EXISTS stripe_events (
       id TEXT PRIMARY KEY,
       type TEXT,
@@ -434,6 +431,18 @@ async function ensureCoreTables(db: Db) {
       instruction TEXT,
       csv_snapshot TEXT,
       proposal_json TEXT,
+      applied_at TEXT,
+      applied_by_user_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS spreadsheet_audit_log (
+      id TEXT PRIMARY KEY,
+      agency_id TEXT NOT NULL,
+      proposal_id TEXT NOT NULL,
+      action TEXT NOT NULL, -- APPLY|REJECT
+      actor_user_id TEXT NOT NULL,
+      details_json TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -456,11 +465,17 @@ async function ensureCoreTables(db: Db) {
   await addColumnIfMissing(db, "agencies", "stripe_price_id", "TEXT");
   await addColumnIfMissing(db, "agencies", "stripe_current_period_end", "TEXT");
 
-  // Agency timezone (used for daily usage keys + schedule default tz)
+  // Agency timezone
   await addColumnIfMissing(db, "agencies", "timezone", "TEXT");
 
-  // Users onboarding drift (older DBs)
+  // Users onboarding drift
   await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
+
+  // Spreadsheet proposal drift (older DBs created without apply columns)
+  if (await tableExists(db, "spreadsheet_proposals")) {
+    await addColumnIfMissing(db, "spreadsheet_proposals", "applied_at", "TEXT");
+    await addColumnIfMissing(db, "spreadsheet_proposals", "applied_by_user_id", "TEXT");
+  }
 }
 
 /**
