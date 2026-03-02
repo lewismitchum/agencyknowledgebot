@@ -1,29 +1,54 @@
 // app/api/email/send/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { google } from "googleapis";
 import { getDb } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { decrypt, encrypt } from "@/lib/crypto";
+import { getValidGmailClient } from "@/lib/email-google";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
 
-function b64urlEncode(input: string) {
+function safeString(v: any) {
+  return String(v ?? "").trim();
+}
+
+function sanitizeError(err: any) {
+  const message = String(err?.message || "");
+  const name = String(err?.name || "");
+  const code = (err?.code ?? err?.response?.data?.error?.status ?? err?.response?.status ?? undefined) as any;
+
+  const googleReason =
+    err?.response?.data?.error?.errors?.[0]?.reason ??
+    err?.response?.data?.error?.status ??
+    err?.errors?.[0]?.reason ??
+    undefined;
+
+  const status = (err?.response?.status ?? undefined) as any;
+
+  return {
+    name: name || undefined,
+    message: message || undefined,
+    code: code || undefined,
+    status: status || undefined,
+    googleReason: googleReason || undefined,
+  };
+}
+
+function b64urlEncodeUtf8(input: string) {
   const b64 = Buffer.from(input, "utf8").toString("base64");
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function normalizeSubject(subject: string) {
-  const s = (subject || "").trim();
+  const s = safeString(subject);
   if (!s) return "Re:";
   if (/^re:/i.test(s)) return s;
   return `Re: ${s}`;
 }
 
 function extractHeader(headers: any[] | undefined, key: string) {
-  const hit = headers?.find((h) => (h.name || "").toLowerCase() === key.toLowerCase());
-  return String(hit?.value || "").trim();
+  const hit = headers?.find((h) => String(h?.name || "").toLowerCase() === key.toLowerCase());
+  return safeString(hit?.value || "");
 }
 
 function pickReplyTo(headers: any[] | undefined) {
@@ -31,43 +56,63 @@ function pickReplyTo(headers: any[] | undefined) {
 }
 
 function sanitizeBody(text: string) {
-  return String(text || "").replace(/\r\n/g, "\n").trim();
+  return safeString(String(text || "").replace(/\r\n/g, "\n"));
 }
 
-function looksEncryptedToken(s: string) {
-  const parts = String(s || "").split(".");
-  return parts.length === 3 && parts.every((p) => p && p.length >= 8);
+/**
+ * Turso/libSQL wrappers vary:
+ * - some expect db.get(sql, ...args) / db.run(sql, ...args)
+ * - others expect db.get(sql, argsArray) / ...
+ */
+async function dbGet(db: any, sql: string, args: any[]) {
+  try {
+    return await db.get(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.get(sql, args);
+    }
+    throw err;
+  }
 }
 
-async function maybePersistRefreshedTokens(db: any, userId: string, agencyId: string, oauth2Client: any) {
-  const cred = oauth2Client.credentials || {};
-  const accessToken = cred.access_token ? String(cred.access_token) : null;
-  const expiryDate = typeof cred.expiry_date === "number" ? cred.expiry_date : null;
-
-  if (!accessToken && !expiryDate) return;
-
-  const accessToStore = accessToken ? encrypt(accessToken) : null;
-
-  await db.run(
-    `UPDATE email_accounts
-     SET access_token = COALESCE(?, access_token),
-         expiry_date = COALESCE(?, expiry_date),
-         updated_at = ?
-     WHERE user_id = ? AND agency_id = ?`,
-    [accessToStore, expiryDate, Date.now(), userId, agencyId],
-  );
+async function dbRun(db: any, sql: string, args: any[]) {
+  try {
+    return await db.run(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.run(sql, args);
+    }
+    throw err;
+  }
 }
+
+type Body = {
+  draftId?: string;
+  threadId?: string;
+  confirm?: boolean;
+
+  // optional override for final body
+  bodyOverride?: string | null;
+};
 
 export async function POST(req: NextRequest) {
+  let where = "start";
+
   try {
+    where = "requireActiveMember";
     const session = await requireActiveMember(req);
 
     // Corp only
     if (session.plan !== "corporation") {
-      return NextResponse.json({ error: "Upgrade required." }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: "Email inbox is available on Corporation.", code: "upgrade_required" },
+        { status: 403 },
+      );
     }
 
-    // Rate limit sends
+    where = "rate_limit";
     await enforceRateLimit({
       userId: session.userId,
       agencyId: session.agencyId,
@@ -76,24 +121,48 @@ export async function POST(req: NextRequest) {
       perHour: 100,
     });
 
-    const body = await req.json();
-    const draftId = String(body?.draftId || "").trim();
-    const threadId = String(body?.threadId || "").trim();
+    where = "body";
+    const body = (await req.json().catch(() => ({}))) as Body;
+
+    const draftId = safeString(body?.draftId || "");
+    const threadId = safeString(body?.threadId || "");
     const confirm = body?.confirm === true;
     const bodyOverride = body?.bodyOverride != null ? String(body.bodyOverride) : null;
 
     if (!confirm) {
-      return NextResponse.json({ error: "Missing explicit confirmation. Send requires { confirm: true }." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Send requires { confirm: true }.", code: "confirm_required" },
+        { status: 400 },
+      );
     }
 
     if (!draftId || !threadId) {
-      return NextResponse.json({ error: "Missing draftId or threadId" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Missing draftId or threadId", code: "missing_params" },
+        { status: 400 },
+      );
     }
 
+    where = "db";
     const db = await getDb();
 
-    // Drift-safe audit table
+    // Drift-safe: email_drafts + email_send_events
+    where = "db_schema";
     await db.exec(`
+      CREATE TABLE IF NOT EXISTS email_drafts (
+        id TEXT PRIMARY KEY,
+        agency_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user_created
+        ON email_drafts(agency_id, user_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_email_drafts_thread
+        ON email_drafts(thread_id);
+
       CREATE TABLE IF NOT EXISTS email_send_events (
         id TEXT PRIMARY KEY,
         agency_id TEXT NOT NULL,
@@ -116,79 +185,67 @@ export async function POST(req: NextRequest) {
         ON email_send_events(thread_id);
     `);
 
-    const draft = await db.get(
+    where = "db_get_draft";
+    const draft = await dbGet(
+      db,
       `SELECT id, body, thread_id
        FROM email_drafts
-       WHERE id = ? AND agency_id = ? AND user_id = ?`,
+       WHERE id = ? AND agency_id = ? AND user_id = ?
+       LIMIT 1`,
       [draftId, session.agencyId, session.userId],
     );
 
-    if (!draft) {
-      return NextResponse.json({ error: "Draft not found" }, { status: 404 });
+    if (!draft?.id) {
+      return NextResponse.json({ ok: false, error: "Draft not found", code: "draft_not_found" }, { status: 404 });
     }
 
-    if (String(draft.thread_id || "") !== threadId) {
-      return NextResponse.json({ error: "Draft thread mismatch" }, { status: 400 });
-    }
-
-    // Drift-safe email_accounts table (in case)
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS email_accounts (
-        id TEXT PRIMARY KEY,
-        agency_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        email TEXT,
-        access_token TEXT,
-        refresh_token TEXT,
-        expiry_date INTEGER,
-        scope TEXT,
-        token_type TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+    if (safeString(draft.thread_id || "") !== threadId) {
+      return NextResponse.json(
+        { ok: false, error: "Draft thread mismatch", code: "thread_mismatch" },
+        { status: 400 },
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user
-        ON email_accounts(agency_id, user_id);
-    `);
-
-    const account = await db.get(
-      `SELECT access_token, refresh_token, expiry_date
-       FROM email_accounts
-       WHERE user_id = ? AND agency_id = ?`,
-      [session.userId, session.agencyId],
-    );
-
-    if (!account) {
-      return NextResponse.json({ error: "No Gmail account connected" }, { status: 400 });
     }
 
-    // ✅ decrypt tokens (plaintext still works via decrypt fallback)
-    const accessToken = decrypt(String(account.access_token || "")) || "";
-    const refreshToken = decrypt(String(account.refresh_token || "")) || "";
+    where = "gmail_auth_refresh";
+    const gmailRes = await getValidGmailClient({ agencyId: session.agencyId, userId: session.userId });
 
-    if (!accessToken && !refreshToken) {
-      return NextResponse.json({ error: "Gmail tokens missing. Reconnect Gmail." }, { status: 400 });
+    if (!gmailRes.ok) {
+      const code =
+        gmailRes.error === "NOT_CONNECTED"
+          ? "not_connected"
+          : gmailRes.error === "MISSING_TOKENS" || gmailRes.error === "MISSING_REFRESH_TOKEN"
+            ? "missing_tokens"
+            : gmailRes.error === "MISSING_GOOGLE_OAUTH_ENV"
+              ? "missing_google_env"
+              : "gmail_auth_error";
+
+      const status = gmailRes.error === "NOT_CONNECTED" || gmailRes.error === "MISSING_TOKENS" ? 409 : 500;
+
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            gmailRes.error === "NOT_CONNECTED"
+              ? "Not connected. Click Connect Gmail."
+              : gmailRes.error === "MISSING_TOKENS" || gmailRes.error === "MISSING_REFRESH_TOKEN"
+                ? "Gmail tokens missing. Reconnect Gmail."
+                : "Gmail auth error.",
+          code,
+          where,
+          details: gmailRes,
+        },
+        { status },
+      );
     }
 
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI,
-    );
+    const gmail = gmailRes.gmail;
 
-    oauth2Client.setCredentials({
-      access_token: accessToken || undefined,
-      refresh_token: refreshToken || undefined,
-      expiry_date: account.expiry_date ?? undefined,
-    });
-
-    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-
+    where = "gmail_thread_metadata";
     const threadRes = await gmail.users.threads.get({
       userId: "me",
       id: threadId,
       format: "metadata",
-      metadataHeaders: ["From", "Reply-To", "Subject", "Message-Id", "References", "In-Reply-To"],
+      metadataHeaders: ["From", "Reply-To", "Subject", "Message-Id", "Message-ID", "References", "In-Reply-To"],
     });
 
     const msgs = threadRes.data.messages || [];
@@ -196,29 +253,34 @@ export async function POST(req: NextRequest) {
     const headers = last?.payload?.headers || [];
 
     const toEmail = pickReplyTo(headers);
-    const subject = normalizeSubject(extractHeader(headers, "Subject"));
-    const messageId = extractHeader(headers, "Message-Id");
+    const baseSubject = extractHeader(headers, "Subject");
+    const subject = normalizeSubject(baseSubject);
+
+    const messageId = extractHeader(headers, "Message-Id") || extractHeader(headers, "Message-ID");
     const references = extractHeader(headers, "References");
     const inReplyTo = extractHeader(headers, "In-Reply-To");
 
     if (!toEmail) {
-      return NextResponse.json({ error: "Could not determine recipient from thread" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Could not determine recipient from thread", code: "missing_recipient" },
+        { status: 400 },
+      );
     }
 
-    const usedOverride = bodyOverride != null && bodyOverride.trim().length > 0;
-    const finalBody = sanitizeBody(usedOverride ? bodyOverride! : draft.body);
+    const usedOverride = bodyOverride != null && safeString(bodyOverride).length > 0;
+    const finalBody = sanitizeBody(usedOverride ? String(bodyOverride) : String(draft.body || ""));
 
     if (!finalBody) {
-      return NextResponse.json({ error: "Empty email body" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "Empty email body", code: "empty_body" }, { status: 400 });
     }
 
+    // Build RFC822
     const lines: string[] = [];
     lines.push(`To: ${toEmail}`);
+    if (gmailRes.email) lines.push(`From: ${gmailRes.email}`);
     lines.push(`Subject: ${subject}`);
-    lines.push(`MIME-Version: 1.0`);
-    lines.push(`Content-Type: text/plain; charset="UTF-8"`);
-    lines.push(`Content-Transfer-Encoding: 7bit`);
 
+    // Threading headers BEFORE MIME block (safer)
     if (messageId) lines.push(`In-Reply-To: ${messageId}`);
     if (references || messageId) {
       const refs = `${references ? references + " " : ""}${messageId || ""}`.trim();
@@ -227,35 +289,29 @@ export async function POST(req: NextRequest) {
       lines.push(`In-Reply-To: ${inReplyTo}`);
     }
 
+    lines.push(`MIME-Version: 1.0`);
+    lines.push(`Content-Type: text/plain; charset="UTF-8"`);
+    lines.push(`Content-Transfer-Encoding: 7bit`);
     lines.push("");
     lines.push(finalBody);
     lines.push("");
 
-    const raw = b64urlEncode(lines.join("\r\n"));
+    const raw = b64urlEncodeUtf8(lines.join("\r\n"));
 
+    where = "gmail_send";
     const sendRes = await gmail.users.messages.send({
       userId: "me",
       requestBody: { raw, threadId },
     });
 
-    // ✅ persist refreshed access token encrypted (Google may refresh during send)
-    await maybePersistRefreshedTokens(db, session.userId, session.agencyId, oauth2Client);
+    const gmailMessageId = safeString(sendRes?.data?.id || "") || null;
 
-    // ✅ one-time refresh_token migration (lazy)
-    const storedRefresh = String(account.refresh_token || "");
-    if (storedRefresh && !looksEncryptedToken(storedRefresh)) {
-      await db.run(
-        `UPDATE email_accounts
-         SET refresh_token = ?, updated_at = ?
-         WHERE user_id = ? AND agency_id = ?`,
-        [encrypt(storedRefresh), Date.now(), session.userId, session.agencyId],
-      );
-    }
-
-    const gmailMessageId = String(sendRes.data.id || "") || null;
-
+    // Audit
+    where = "db_insert_event";
     const eventId = crypto.randomUUID();
-    await db.run(
+
+    await dbRun(
+      db,
       `INSERT INTO email_send_events
        (id, agency_id, user_id, draft_id, thread_id, gmail_message_id, to_email, subject, sent_body, used_override, created_at, raw_response)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -271,7 +327,7 @@ export async function POST(req: NextRequest) {
         finalBody,
         usedOverride ? 1 : 0,
         Date.now(),
-        JSON.stringify(sendRes.data || {}),
+        JSON.stringify(sendRes?.data || {}),
       ],
     );
 
@@ -286,9 +342,13 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     const msg = String(err?.message || "");
     if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
-      return NextResponse.json({ error: msg }, { status: 429 });
+      return NextResponse.json({ ok: false, error: msg, code: "rate_limited", where: "rate_limit" }, { status: 429 });
     }
-    console.error("Send email error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+
+    console.error("Email send error:", err);
+    return NextResponse.json(
+      { ok: false, error: "Internal server error", code: "internal", where, details: sanitizeError(err) },
+      { status: 500 },
+    );
   }
 }

@@ -1,5 +1,6 @@
 // app/api/agency/invites/accept/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { nowIso, hashToken } from "@/lib/tokens";
@@ -65,11 +66,11 @@ export async function GET(req: NextRequest) {
 
   // Proxy into POST logic
   return POST(
-    new NextRequest(req.url, {
+    new Request(req.url, {
       method: "POST",
       headers: req.headers,
       body: JSON.stringify({ token }),
-    } as any),
+    }) as unknown as NextRequest,
   );
 }
 

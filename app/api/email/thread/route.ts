@@ -1,20 +1,10 @@
-// app/api/email/threads/route.ts
+// app/api/email/thread/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { requireActiveMember } from "@/lib/authz";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { getValidGmailClient } from "@/lib/email-google";
 
 export const runtime = "nodejs";
-
-function extractHeader(headers: any[] | undefined, key: string) {
-  const hit = headers?.find((h) => String(h?.name || "").toLowerCase() === key.toLowerCase());
-  return String(hit?.value || "").trim();
-}
-
-function safeInt(v: any, fallback: number) {
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
 
 function safeString(v: any) {
   return String(v ?? "").trim();
@@ -42,8 +32,50 @@ function sanitizeError(err: any) {
   };
 }
 
+function extractHeader(headers: any[] | undefined, key: string) {
+  const hit = headers?.find((h) => String(h?.name || "").toLowerCase() === key.toLowerCase());
+  return safeString(hit?.value || "");
+}
+
+function b64UrlDecodeToUtf8(data: string) {
+  try {
+    const s = String(data || "").replace(/-/g, "+").replace(/_/g, "/");
+    const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
+    const base64 = s + pad;
+    return Buffer.from(base64, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function walkPartsForBodies(part: any, out: { text: string; html: string }) {
+  if (!part) return;
+
+  const mime = safeString(part.mimeType || "");
+  const bodyData = safeString(part?.body?.data || "");
+
+  if (bodyData) {
+    const decoded = b64UrlDecodeToUtf8(bodyData);
+
+    if (mime === "text/plain") {
+      if (!out.text) out.text = decoded;
+    } else if (mime === "text/html") {
+      if (!out.html) out.html = decoded;
+    }
+  }
+
+  const parts = Array.isArray(part.parts) ? part.parts : [];
+  for (const p of parts) walkPartsForBodies(p, out);
+}
+
+function pickPreview(text: string, maxLen = 240) {
+  const t = safeString(text).replace(/\s+/g, " ");
+  if (!t) return "";
+  return t.length > maxLen ? t.slice(0, maxLen).trim() + "…" : t;
+}
+
 export async function GET(req: NextRequest) {
-  let where: string = "start";
+  let where = "start";
 
   try {
     where = "requireActiveMember";
@@ -61,14 +93,16 @@ export async function GET(req: NextRequest) {
     await enforceRateLimit({
       userId: session.userId,
       agencyId: session.agencyId,
-      key: "email_threads",
-      perMinute: 30,
-      perHour: 1500,
+      key: "email_thread",
+      perMinute: 60,
+      perHour: 3000,
     });
 
     const url = new URL(req.url);
-    const max = Math.min(50, Math.max(1, safeInt(url.searchParams.get("max"), 30)));
-    const q = safeString(url.searchParams.get("q") || "");
+    const id = safeString(url.searchParams.get("id") || "");
+    if (!id) {
+      return NextResponse.json({ ok: false, error: "Missing thread id", code: "missing_id" }, { status: 400 });
+    }
 
     where = "gmail_auth_refresh";
     const gmailRes = await getValidGmailClient({ agencyId: session.agencyId, userId: session.userId });
@@ -104,48 +138,52 @@ export async function GET(req: NextRequest) {
 
     const gmail = gmailRes.gmail;
 
-    where = "gmail_list";
-    const listRes = await gmail.users.threads.list({
+    where = "gmail_thread_get";
+    const tr = await gmail.users.threads.get({
       userId: "me",
-      maxResults: max,
-      q: q || undefined,
+      id,
+      format: "full",
     });
 
-    const threadIds = (listRes.data.threads || [])
-      .map((t: any) => String(t?.id || "").trim())
-      .filter(Boolean);
+    const messages = (tr?.data?.messages || []).map((m: any) => {
+      const headers = m?.payload?.headers || [];
+      const subject = extractHeader(headers, "Subject");
+      const from = extractHeader(headers, "From");
+      const to = extractHeader(headers, "To");
+      const cc = extractHeader(headers, "Cc");
+      const date = extractHeader(headers, "Date");
+      const messageId = safeString(extractHeader(headers, "Message-Id") || extractHeader(headers, "Message-ID"));
+      const snippet = safeString(m?.snippet || tr?.data?.snippet || "");
 
-    where = "gmail_get_threads";
-    const threads = await Promise.all(
-      threadIds.map(async (id: string) => {
-        try {
-          const tr = await gmail.users.threads.get({
-            userId: "me",
-            id,
-            format: "metadata",
-            metadataHeaders: ["From", "Subject", "Date"],
-          });
+      const bodies = { text: "", html: "" };
+      walkPartsForBodies(m?.payload, bodies);
 
-          const msgs = tr.data.messages || [];
-          const last = msgs[msgs.length - 1];
-          const headers = last?.payload?.headers || [];
+      const text = safeString(bodies.text);
+      const html = safeString(bodies.html);
 
-          const subject = extractHeader(headers, "Subject");
-          const from = extractHeader(headers, "From");
-          const date = extractHeader(headers, "Date");
-          const snippet = safeString(tr.data.snippet || last?.snippet || "");
-
-          return { id, subject, from, date, snippet };
-        } catch {
-          return { id, subject: "", from: "", date: "", snippet: "" };
-        }
-      }),
-    );
+      return {
+        id: safeString(m?.id || ""),
+        thread_id: safeString(m?.threadId || id),
+        internal_date: safeString(m?.internalDate || ""),
+        headers: { subject, from, to, cc, date, message_id: messageId },
+        snippet,
+        preview: pickPreview(text || snippet),
+        body: {
+          text: text || null,
+          html: html || null,
+        },
+      };
+    });
 
     return NextResponse.json({
       ok: true,
       email: gmailRes.email ?? null,
-      threads: threads.filter((t) => t.id),
+      thread: {
+        id: safeString(tr?.data?.id || id),
+        history_id: safeString(tr?.data?.historyId || ""),
+        snippet: safeString(tr?.data?.snippet || ""),
+        messages,
+      },
     });
   } catch (err: any) {
     const msg = String(err?.message || "");
@@ -153,7 +191,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: msg, code: "rate_limited", where: "rate_limit" }, { status: 429 });
     }
 
-    console.error("Email threads error:", err);
+    console.error("Email thread error:", err);
     return NextResponse.json(
       { ok: false, error: "Internal server error", code: "internal", where, details: sanitizeError(err) },
       { status: 500 },
