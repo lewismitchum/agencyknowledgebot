@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/mode-toggle";
 import { Badge } from "@/components/ui/badge";
+import { hasFeature } from "@/lib/plans";
 
 type MeResponse =
   | { user: null }
@@ -16,6 +17,7 @@ type MeResponse =
         name?: string;
         email_verified?: boolean;
       };
+      plan?: string;
     };
 
 type BotRow = {
@@ -63,6 +65,8 @@ export default function Navbar() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const isAuthed = Boolean(me && (me as any)?.user?.email);
 
+  const [plan, setPlan] = useState<string>("free");
+
   // --- Docs-in-nav state ---
   const botFromUrl = String(searchParams.get("bot_id") || "").trim();
   const [bots, setBots] = useState<BotRow[]>([]);
@@ -105,15 +109,21 @@ export default function Navbar() {
         const r = await fetch("/api/me", { credentials: "include" });
         if (!r.ok) {
           setMe({ user: null });
+          setPlan("free");
           return;
         }
         const j = (await r.json().catch(() => ({ user: null }))) as MeResponse;
         setMe(j);
+        setPlan(typeof (j as any)?.plan === "string" ? String((j as any).plan) : "free");
       } catch {
         setMe({ user: null });
+        setPlan("free");
       }
     })();
   }, []);
+
+  const showSpreadsheets = useMemo(() => (isAuthed ? hasFeature(plan, "spreadsheets") : false), [isAuthed, plan]);
+  const showEmail = useMemo(() => (isAuthed ? hasFeature(plan, "email") : false), [isAuthed, plan]);
 
   // Load bots (for docs panel)
   useEffect(() => {
@@ -312,8 +322,8 @@ export default function Navbar() {
           </div>
 
           <NavLink href="/app/schedule">Schedule</NavLink>
-          <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
-          <NavLink href="/app/email">Email</NavLink>
+          {showSpreadsheets ? <NavLink href="/app/spreadsheets">Spreadsheets</NavLink> : null}
+          {showEmail ? <NavLink href="/app/email">Email</NavLink> : null}
           <NavLink href="/app/bots">Bots</NavLink>
           <NavLink href="/app/support">Support</NavLink>
           <NavLink href="/launch">Launch</NavLink>
@@ -334,12 +344,16 @@ export default function Navbar() {
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/schedule">Schedule</Link>
             </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/spreadsheets">Sheets</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/email">Email</Link>
-            </Button>
+            {showSpreadsheets ? (
+              <Button asChild variant="ghost" size="sm" className="rounded-full">
+                <Link href="/app/spreadsheets">Sheets</Link>
+              </Button>
+            ) : null}
+            {showEmail ? (
+              <Button asChild variant="ghost" size="sm" className="rounded-full">
+                <Link href="/app/email">Email</Link>
+              </Button>
+            ) : null}
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/bots">Bots</Link>
             </Button>
