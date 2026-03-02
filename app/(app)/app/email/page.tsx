@@ -1,4 +1,3 @@
-// app/(app)/app/email/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -141,7 +140,6 @@ export default function EmailPage() {
         setGated(!allowed);
 
         if (allowed) {
-          // Bots
           try {
             const b = await fetchJson<any>("/api/bots", { credentials: "include", cache: "no-store" });
             const list = Array.isArray(b?.bots) ? b.bots : Array.isArray(b) ? b : [];
@@ -165,7 +163,6 @@ export default function EmailPage() {
             if (!cancelled) setBots([]);
           }
 
-          // Recent drafts list
           try {
             setDraftsLoading(true);
             setDraftsError("");
@@ -181,7 +178,7 @@ export default function EmailPage() {
             if (!cancelled) setDraftsLoading(false);
           }
 
-          // Inbox threads (best-effort)
+          // inbox list
           try {
             setThreadsLoading(true);
             setThreadsError("");
@@ -199,10 +196,10 @@ export default function EmailPage() {
                 }))
               : [];
 
-            setThreads(rows.filter((r) => r.id));
-            if (!selectedThreadId && rows[0]?.id) setSelectedThreadId(rows[0].id);
+            const cleaned = rows.filter((r) => r.id);
+            setThreads(cleaned);
+            if (!selectedThreadId && cleaned[0]?.id) setSelectedThreadId(cleaned[0].id);
           } catch (e: any) {
-            // If inbox endpoints aren't present yet, don't block the page.
             if (!cancelled) setThreadsError(e?.message ?? "Failed to load inbox threads");
           } finally {
             if (!cancelled) setThreadsLoading(false);
@@ -252,8 +249,9 @@ export default function EmailPage() {
             date: String(x?.date || x?.internalDate || x?.timestamp || ""),
           }))
         : [];
-      setThreads(rows.filter((r) => r.id));
-      if (!selectedThreadId && rows[0]?.id) setSelectedThreadId(rows[0].id);
+      const cleaned = rows.filter((r) => r.id);
+      setThreads(cleaned);
+      if (!selectedThreadId && cleaned[0]?.id) setSelectedThreadId(cleaned[0].id);
     } catch (e: any) {
       setThreadsError(e?.message ?? "Failed to load inbox threads");
     } finally {
@@ -355,12 +353,8 @@ export default function EmailPage() {
           setReplyDraftError("Upgrade required to use Email inbox + replies.");
           return;
         }
-        if (e.status === 400) {
-          setReplyDraftError(e?.message ?? "Bad request.");
-          return;
-        }
-        if (e.status === 404) {
-          setReplyDraftError("Thread or bot not found.");
+        if (e.status === 409) {
+          setReplyDraftError("This bot is missing a vector store. Repair it in Bots first.");
           return;
         }
       }
@@ -372,6 +366,7 @@ export default function EmailPage() {
 
   async function onSend() {
     if (!replyDraftId || !selectedThreadId) return;
+
     if (!confirmSend) {
       setSendError("Confirm send to continue.");
       return;
@@ -390,6 +385,7 @@ export default function EmailPage() {
           draftId: replyDraftId,
           threadId: selectedThreadId,
           confirm: true,
+          bodyOverride: replyDraftBody, // ✅ send exactly what’s in the textarea
         }),
       });
 
@@ -401,7 +397,6 @@ export default function EmailPage() {
       setSendOk(`Sent to ${String(j?.toEmail || "recipient")}`);
       setConfirmSend(false);
 
-      // Refresh thread + threads list
       await loadThread(selectedThreadId);
       await refreshThreads();
     } catch (e: any) {
@@ -412,10 +407,6 @@ export default function EmailPage() {
         }
         if (e.status === 403) {
           setSendError("Upgrade required to send.");
-          return;
-        }
-        if (e.status === 400) {
-          setSendError(e?.message ?? "Send blocked.");
           return;
         }
       }
@@ -524,7 +515,6 @@ export default function EmailPage() {
 
   useEffect(() => {
     if (!gated && selectedThreadId && tab === "inbox") {
-      // best-effort load selected thread when tab is inbox
       loadThread(selectedThreadId).catch(() => {});
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }
@@ -588,7 +578,6 @@ export default function EmailPage() {
         </div>
       </div>
 
-      {/* Shared: bot selector */}
       <div className="rounded-3xl border bg-card p-5 shadow-sm">
         <div className="grid gap-3 md:grid-cols-2">
           <div>
@@ -628,7 +617,6 @@ export default function EmailPage() {
 
       {tab === "inbox" ? (
         <div className="grid gap-6 lg:grid-cols-3">
-          {/* Threads list */}
           <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="text-base font-semibold">Inbox</div>
@@ -646,9 +634,7 @@ export default function EmailPage() {
             ) : threadsError ? (
               <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{threadsError}</div>
             ) : threads.length === 0 ? (
-              <div className="text-sm text-muted-foreground">
-                No threads found (or inbox endpoints not wired).
-              </div>
+              <div className="text-sm text-muted-foreground">No threads found.</div>
             ) : (
               <div className="space-y-2">
                 {threads.slice(0, 30).map((t) => {
@@ -676,14 +662,13 @@ export default function EmailPage() {
             )}
           </div>
 
-          {/* Thread view + reply */}
           <div className="lg:col-span-2 space-y-6">
             <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-base font-semibold">Thread</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    Reply drafting uses thread context + file_search (bot docs). Strict fallback only when internal + no evidence.
+                    Reply drafting uses thread context + docs (file_search). You can edit before sending.
                   </div>
                 </div>
                 <button
@@ -725,9 +710,7 @@ export default function EmailPage() {
                           {m.snippet ? (
                             <div className="mt-2 text-sm text-muted-foreground">{shortText(m.snippet, 180)}</div>
                           ) : null}
-                          {m.body ? (
-                            <div className="mt-3 whitespace-pre-wrap text-sm">{m.body}</div>
-                          ) : null}
+                          {m.body ? <div className="mt-3 whitespace-pre-wrap text-sm">{m.body}</div> : null}
                           <div className="mt-3 text-[11px] text-muted-foreground font-mono">{m.id}</div>
                         </div>
                       ))
@@ -744,7 +727,7 @@ export default function EmailPage() {
                 <div>
                   <div className="text-base font-semibold">Reply with AI</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    Generates a reply draft from thread context + docs. You can edit before sending.
+                    Generates a reply draft from thread context + docs. Edit, then send with explicit confirmation.
                   </div>
                 </div>
                 <button
@@ -817,9 +800,7 @@ export default function EmailPage() {
                     <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{sendError}</div>
                   ) : null}
 
-                  {sendOk ? (
-                    <div className="rounded-xl border bg-muted/40 p-3 text-sm">{sendOk}</div>
-                  ) : null}
+                  {sendOk ? <div className="rounded-xl border bg-muted/40 p-3 text-sm">{sendOk}</div> : null}
 
                   <div className="text-[11px] text-muted-foreground font-mono">
                     draft_id: {replyDraftId}
@@ -827,9 +808,7 @@ export default function EmailPage() {
                   </div>
                 </div>
               ) : (
-                <div className="text-sm text-muted-foreground">
-                  Generate a reply draft first. Sending requires explicit confirmation.
-                </div>
+                <div className="text-sm text-muted-foreground">Generate a reply draft first.</div>
               )}
             </div>
           </div>
@@ -841,7 +820,7 @@ export default function EmailPage() {
               <div>
                 <div className="text-base font-semibold">Draft from docs</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  Louis will only draft internal facts from docs. If file_search finds no evidence for an internal claim, you get the fallback.
+                  Louis will only draft if file_search finds evidence. Otherwise you get the fallback.
                 </div>
               </div>
 
@@ -903,7 +882,7 @@ export default function EmailPage() {
                   {drafting ? "Drafting..." : "Draft email"}
                 </button>
 
-                <div className="text-xs text-muted-foreground">Strict docs-backed for internal facts.</div>
+                <div className="text-xs text-muted-foreground">Strict docs-only for internal facts.</div>
               </div>
 
               {draftError ? (
@@ -995,7 +974,7 @@ export default function EmailPage() {
               )}
 
               <div className="text-xs text-muted-foreground">
-                Inbox replies: thread context + docs (file_search) + strict fallback only for internal/no-evidence.
+                Inbox replies: thread context + docs (file_search) + explicit confirm to send.
               </div>
             </div>
           </div>
