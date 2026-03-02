@@ -1,10 +1,10 @@
-// app/api/notifications/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
 import { hasFeature, normalizePlan } from "@/lib/plans";
+import { _runReminderTickForAgency } from "@/app/api/cron/reminders/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,61 +26,12 @@ function pickFirst(cols: Set<string>, options: string[]): string | null {
   return null;
 }
 
-async function ensureNotificationsTables(db: Db) {
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS notifications (
-      id TEXT PRIMARY KEY,
-      agency_id TEXT NOT NULL,
-      user_id TEXT,
-      type TEXT,
-      title TEXT,
-      body TEXT,
-      url TEXT,
-      created_at TEXT NOT NULL,
-      read_at TEXT
-    );
-  `);
-
-  const cols = await tableColumns(db, "notifications");
-  async function add(col: string, ddl: string) {
-    if (cols.has(col)) return;
-    try {
-      await db.exec(`ALTER TABLE notifications ADD COLUMN ${ddl};`);
-    } catch {
-      // ignore
-    }
-  }
-
-  await add("agency_id", "agency_id TEXT NOT NULL DEFAULT ''");
-  await add("user_id", "user_id TEXT");
-  await add("type", "type TEXT");
-  await add("title", "title TEXT");
-  await add("body", "body TEXT");
-  await add("url", "url TEXT");
-  await add("created_at", "created_at TEXT NOT NULL DEFAULT ''");
-  await add("read_at", "read_at TEXT");
-
-  try {
-    await db.exec(`CREATE INDEX IF NOT EXISTS idx_notifications_agency_created ON notifications (agency_id, created_at DESC);`);
-  } catch {}
-  try {
-    await db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_notifications_agency_user_created ON notifications (agency_id, user_id, created_at DESC);`
-    );
-  } catch {}
-}
-
-function asString(v: any) {
-  return typeof v === "string" ? v : String(v ?? "");
-}
-
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
-    await ensureNotificationsTables(db);
 
     const agency = (await db.get(
       `SELECT plan
@@ -91,7 +42,6 @@ export async function GET(req: NextRequest) {
     )) as { plan: string | null } | undefined;
 
     const plan = normalizePlan(agency?.plan ?? (ctx as any)?.plan ?? "free");
-
     const scheduleEnabled = hasFeature(plan, "schedule");
 
     const upsell: Upsell | null = scheduleEnabled
@@ -101,46 +51,23 @@ export async function GET(req: NextRequest) {
           message: "Upgrade to unlock schedule + task notifications (auto-extracted from docs).",
         };
 
-    // Notifications are visible for all plans (Corp email is separate). Free plans will just see fewer items.
-    let notifications: Array<{
-      id: string;
-      type: string | null;
-      title: string | null;
-      body: string | null;
-      url: string | null;
-      created_at: string;
-      read_at: string | null;
-    }> = [];
-
-    try {
-      // user-scoped OR agency-wide (user_id null)
-      notifications = (await db.all(
-        `SELECT id, type, title, body, url, created_at, read_at
-         FROM notifications
-         WHERE agency_id = ?
-           AND (user_id IS NULL OR user_id = ?)
-         ORDER BY created_at DESC
-         LIMIT 50`,
-        ctx.agencyId,
-        ctx.userId
-      )) as any;
-      notifications = Array.isArray(notifications) ? notifications : [];
-    } catch {
-      notifications = [];
-    }
-
-    // If schedule not enabled, still return notifications (could include general notices),
-    // but return empty schedule-derived sections.
+    // Free plans still see the page; just return empty data + upsell.
     if (!scheduleEnabled) {
       return NextResponse.json({
         ok: true,
         plan,
         upsell,
-        notifications,
         events: [],
         tasks: [],
         extractions: [],
       });
+    }
+
+    // ✅ Hobby-safe “cron”: run reminder tick when user visits notifications
+    try {
+      await _runReminderTickForAgency(db, ctx.agencyId, ctx.userId);
+    } catch {
+      // never break page load
     }
 
     // --- Drift-safe column detection ---
@@ -238,7 +165,6 @@ export async function GET(req: NextRequest) {
       ok: true,
       plan,
       upsell,
-      notifications,
       events,
       tasks,
       extractions,
@@ -266,57 +192,5 @@ export async function GET(req: NextRequest) {
     }
     console.error("NOTIFICATIONS_GET_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: String(err?.message ?? err) }, { status: 500 });
-  }
-}
-
-export async function PATCH(req: NextRequest) {
-  try {
-    const ctx = await requireActiveMember(req);
-
-    const db: Db = await getDb();
-    await ensureSchema(db);
-    await ensureNotificationsTables(db);
-
-    const body = (await req.json().catch(() => null)) as { id?: string; all?: boolean } | null;
-    const id = asString(body?.id).trim();
-    const all = Boolean(body?.all);
-
-    const nowIso = new Date().toISOString();
-
-    if (all) {
-      await db.run(
-        `UPDATE notifications
-         SET read_at = ?
-         WHERE agency_id = ?
-           AND (user_id IS NULL OR user_id = ?)
-           AND read_at IS NULL`,
-        nowIso,
-        ctx.agencyId,
-        ctx.userId
-      );
-      return NextResponse.json({ ok: true });
-    }
-
-    if (!id) return NextResponse.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
-
-    await db.run(
-      `UPDATE notifications
-       SET read_at = ?
-       WHERE id = ?
-         AND agency_id = ?
-         AND (user_id IS NULL OR user_id = ?)`,
-      nowIso,
-      id,
-      ctx.agencyId,
-      ctx.userId
-    );
-
-    return NextResponse.json({ ok: true });
-  } catch (err: any) {
-    const code = String(err?.code ?? err?.message ?? err);
-    if (code === "UNAUTHENTICATED") return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
-    console.error("NOTIFICATIONS_PATCH_ERROR", err);
-    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR" }, { status: 500 });
   }
 }

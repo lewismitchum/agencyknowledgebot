@@ -1,4 +1,3 @@
-// app/api/cron/reminders/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
@@ -6,6 +5,10 @@ import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function asString(v: any) {
+  return typeof v === "string" ? v : String(v ?? "");
+}
 
 function makeId(prefix: string) {
   const uuid =
@@ -30,244 +33,180 @@ function pickFirst(cols: Set<string>, options: string[]): string | null {
   return null;
 }
 
-function asString(v: any) {
-  return typeof v === "string" ? v : String(v ?? "");
-}
-
 async function ensureNotificationsTables(db: Db) {
+  // Drift-safe: doesn't require schema.ts edits
   await db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
       user_id TEXT,
-      type TEXT,
-      title TEXT,
-      body TEXT,
-      url TEXT,
+      kind TEXT NOT NULL,          -- "event" | "task"
+      ref_id TEXT NOT NULL,        -- schedule_events.id or schedule_tasks.id
+      title TEXT NOT NULL,
+      scheduled_for TEXT NOT NULL, -- ISO timestamp (event start / task due)
       created_at TEXT NOT NULL,
-      read_at TEXT
+      seen_at TEXT,
+      sent_at TEXT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS notifications_uniq
+      ON notifications(agency_id, user_id, kind, ref_id);
+
+    CREATE TABLE IF NOT EXISTS notifications_ticks (
+      agency_id TEXT PRIMARY KEY,
+      last_run_at TEXT
     );
   `);
-
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS notification_dedup (
-      id TEXT PRIMARY KEY,
-      agency_id TEXT NOT NULL,
-      dedup_key TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-  `);
-
-  try {
-    await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_dedup_key ON notification_dedup (agency_id, dedup_key);`);
-  } catch {}
-
-  try {
-    await db.exec(`CREATE INDEX IF NOT EXISTS idx_notifications_agency_created ON notifications (agency_id, created_at DESC);`);
-  } catch {}
 }
 
-function requireCronSecret(req: NextRequest) {
-  const want = process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET || "";
-  if (!want) return null; // allow if not configured (dev)
-  const got =
-    req.headers.get("x-cron-secret") ||
-    req.headers.get("x-vercel-cron-secret") ||
-    req.headers.get("authorization") ||
-    "";
-  const token = got.startsWith("Bearer ") ? got.slice("Bearer ".length) : got;
-  if (token !== want) return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
-  return null;
-}
-
-function isoPlusMinutes(d: Date, minutes: number) {
-  return new Date(d.getTime() + minutes * 60 * 1000).toISOString();
-}
-
-function isoPlusHours(d: Date, hours: number) {
-  return new Date(d.getTime() + hours * 60 * 60 * 1000).toISOString();
-}
-
-async function insertDedupOnce(db: Db, agencyId: string, dedupKey: string) {
-  try {
-    await db.run(
-      `INSERT INTO notification_dedup (id, agency_id, dedup_key, created_at)
-       VALUES (?, ?, ?, ?)`,
-      makeId("nd"),
-      agencyId,
-      dedupKey,
-      new Date().toISOString()
-    );
-    return true;
-  } catch {
-    return false; // already exists or table drift
-  }
-}
-
-export async function GET(req: NextRequest) {
-  const secretGate = requireCronSecret(req);
-  if (secretGate) return secretGate;
-
-  const startedAt = Date.now();
-
-  const db: Db = await getDb();
-  await ensureSchema(db);
+async function runReminderTickForAgency(db: Db, agencyId: string, userId?: string | null) {
   await ensureNotificationsTables(db);
 
-  // Find columns drift
+  // Throttle per-agency (15 min)
+  const tick = (await db.get(
+    `SELECT last_run_at FROM notifications_ticks WHERE agency_id = ? LIMIT 1`,
+    agencyId
+  )) as { last_run_at?: string | null } | undefined;
+
+  const now = Date.now();
+  const last = tick?.last_run_at ? new Date(tick.last_run_at).getTime() : 0;
+  if (last && Number.isFinite(last) && now - last < 15 * 60 * 1000) {
+    return { ok: true, skipped: true, created: 0 };
+  }
+
+  const nowIso = new Date(now).toISOString();
+  const horizonIso = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+
+  // Drift-safe schedule columns
   const evCols = await tableColumns(db, "schedule_events");
   const taskCols = await tableColumns(db, "schedule_tasks");
 
-  const evTitleCol = pickFirst(evCols, ["title", "name", "summary"]) ?? null;
+  const evTitleCol = pickFirst(evCols, ["title", "name", "summary"]) ?? "id";
   const evStartCol =
-    pickFirst(evCols, ["start_time", "starts_at", "start_at", "start", "startsOn", "start_datetime"]) ??
-    pickFirst(evCols, ["date", "event_time", "begins_at"]) ??
+    pickFirst(evCols, ["start_at", "start_time", "starts_at", "start_datetime", "start", "startsOn"]) ??
+    pickFirst(evCols, ["date", "event_time", "begins_at"]);
+
+  const taskTitleCol = pickFirst(taskCols, ["title", "name", "summary"]) ?? "id";
+  const taskDueCol =
+    pickFirst(taskCols, ["due_at", "due_date", "due_datetime", "deadline", "due"]) ??
     null;
 
-  const taskTitleCol = pickFirst(taskCols, ["title", "name", "summary"]) ?? null;
-  const taskDueCol = pickFirst(taskCols, ["due_date", "due_at", "due", "due_datetime", "deadline"]) ?? null;
+  let created = 0;
 
-  // Open-ness drift
-  const taskStatusCol = pickFirst(taskCols, ["status"]) ?? null;
-  const taskCompletedAtCol = pickFirst(taskCols, ["completed_at", "done_at"]) ?? null;
-  const taskIsDoneCol = pickFirst(taskCols, ["is_done", "done"]) ?? null;
+  // EVENTS -> notifications
+  if (evStartCol) {
+    const rows = (await db.all(
+      `SELECT id, ${evTitleCol} as title, ${evStartCol} as when_at
+       FROM schedule_events
+       WHERE agency_id = ?
+         AND ${evStartCol} IS NOT NULL
+         AND ${evStartCol} >= ?
+         AND ${evStartCol} <= ?
+       ORDER BY ${evStartCol} ASC
+       LIMIT 50`,
+      agencyId,
+      nowIso,
+      horizonIso
+    )) as Array<{ id: string; title: string; when_at: string }>;
 
-  let whereOpen = "1=1";
-  if (taskStatusCol) whereOpen = `( ${taskStatusCol} IS NULL OR lower(${taskStatusCol}) != 'done' )`;
-  else if (taskCompletedAtCol) whereOpen = `${taskCompletedAtCol} IS NULL`;
-  else if (taskIsDoneCol) whereOpen = `( ${taskIsDoneCol} IS NULL OR ${taskIsDoneCol} = 0 )`;
+    for (const r of rows ?? []) {
+      if (!r?.id || !r?.when_at) continue;
 
-  // Agencies with schedule enabled (plan != free typically), but we keep it permissive:
-  // if they have schedule tables populated, this will work. You can tighten later.
-  const agencies = (await db.all(`SELECT id, plan FROM agencies`)) as Array<{ id: string; plan: string | null }>;
-  const now = new Date();
+      const res = await db.run(
+        `INSERT OR IGNORE INTO notifications
+         (id, agency_id, user_id, kind, ref_id, title, scheduled_for, created_at)
+         VALUES (?, ?, ?, 'event', ?, ?, ?, ?)`,
+        makeId("ntf"),
+        agencyId,
+        userId ?? null,
+        r.id,
+        asString(r.title || "Event"),
+        asString(r.when_at),
+        nowIso
+      );
 
-  const windowStart = now.toISOString();
-  const windowEventEnd = isoPlusMinutes(now, 30); // upcoming events in next 30 min
-  const windowTaskEnd = isoPlusHours(now, 24); // tasks due in next 24 hours
-
-  let eventsNotified = 0;
-  let tasksNotified = 0;
-
-  for (const a of agencies ?? []) {
-    const agencyId = asString(a?.id).trim();
-    if (!agencyId) continue;
-
-    // EVENTS
-    if (evStartCol) {
-      const titleSelect = evTitleCol ? `${evTitleCol} as title` : `id as title`;
-
-      let rows: Array<{ id: string; title: string; start_time: string; bot_id?: string | null }> = [];
-      try {
-        rows = (await db.all(
-          `SELECT id,
-                  ${titleSelect},
-                  ${evStartCol} as start_time,
-                  bot_id
-           FROM schedule_events
-           WHERE agency_id = ?
-             AND ${evStartCol} >= ?
-             AND ${evStartCol} <= ?
-           ORDER BY ${evStartCol} ASC
-           LIMIT 50`,
-          agencyId,
-          windowStart,
-          windowEventEnd
-        )) as any;
-      } catch {
-        rows = [];
-      }
-
-      for (const r of rows ?? []) {
-        const eventId = asString(r?.id).trim();
-        const title = asString(r?.title).trim() || "Upcoming event";
-        const startTime = asString(r?.start_time).trim();
-        if (!eventId || !startTime) continue;
-
-        const dedupKey = `event:${eventId}:${startTime.slice(0, 16)}`; // minute-level
-        const ok = await insertDedupOnce(db, agencyId, dedupKey);
-        if (!ok) continue;
-
-        await db.run(
-          `INSERT INTO notifications (id, agency_id, user_id, type, title, body, url, created_at, read_at)
-           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL)`,
-          makeId("ntf"),
-          agencyId,
-          "event_upcoming",
-          title,
-          `Starts at ${new Date(startTime).toLocaleString()}`,
-          "/app/schedule",
-          new Date().toISOString()
-        );
-
-        eventsNotified++;
-      }
-    }
-
-    // TASKS
-    if (taskDueCol) {
-      const titleSelect = taskTitleCol ? `${taskTitleCol} as title` : `id as title`;
-
-      let rows: Array<{ id: string; title: string; due_time: string | null; bot_id?: string | null }> = [];
-      try {
-        rows = (await db.all(
-          `SELECT id,
-                  ${titleSelect},
-                  ${taskDueCol} as due_time,
-                  bot_id
-           FROM schedule_tasks
-           WHERE agency_id = ?
-             AND ${whereOpen}
-             AND ${taskDueCol} IS NOT NULL
-             AND ${taskDueCol} >= ?
-             AND ${taskDueCol} <= ?
-           ORDER BY ${taskDueCol} ASC
-           LIMIT 100`,
-          agencyId,
-          windowStart,
-          windowTaskEnd
-        )) as any;
-      } catch {
-        rows = [];
-      }
-
-      for (const r of rows ?? []) {
-        const taskId = asString(r?.id).trim();
-        const title = asString(r?.title).trim() || "Task due soon";
-        const dueTime = r?.due_time ? asString(r.due_time).trim() : "";
-        if (!taskId || !dueTime) continue;
-
-        const dedupKey = `task:${taskId}:${dueTime.slice(0, 13)}`; // hour-level
-        const ok = await insertDedupOnce(db, agencyId, dedupKey);
-        if (!ok) continue;
-
-        await db.run(
-          `INSERT INTO notifications (id, agency_id, user_id, type, title, body, url, created_at, read_at)
-           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL)`,
-          makeId("ntf"),
-          agencyId,
-          "task_due",
-          title,
-          `Due by ${new Date(dueTime).toLocaleString()}`,
-          "/app/schedule",
-          new Date().toISOString()
-        );
-
-        tasksNotified++;
-      }
+      if ((res as any)?.changes) created += Number((res as any).changes) || 0;
     }
   }
 
-  return NextResponse.json({
-    ok: true,
-    eventsNotified,
-    tasksNotified,
-    ms: Date.now() - startedAt,
-    _debug: {
-      schedule_events_start_col: evStartCol,
-      schedule_events_title_col: evTitleCol ?? "id",
-      schedule_tasks_due_col: taskDueCol,
-      schedule_tasks_title_col: taskTitleCol ?? "id",
-    },
-  });
+  // TASKS -> notifications (due within 24h, if due column exists)
+  if (taskDueCol) {
+    const rows = (await db.all(
+      `SELECT id, ${taskTitleCol} as title, ${taskDueCol} as when_at
+       FROM schedule_tasks
+       WHERE agency_id = ?
+         AND ${taskDueCol} IS NOT NULL
+         AND ${taskDueCol} >= ?
+         AND ${taskDueCol} <= ?
+       ORDER BY ${taskDueCol} ASC
+       LIMIT 50`,
+      agencyId,
+      nowIso,
+      horizonIso
+    )) as Array<{ id: string; title: string; when_at: string }>;
+
+    for (const r of rows ?? []) {
+      if (!r?.id || !r?.when_at) continue;
+
+      const res = await db.run(
+        `INSERT OR IGNORE INTO notifications
+         (id, agency_id, user_id, kind, ref_id, title, scheduled_for, created_at)
+         VALUES (?, ?, ?, 'task', ?, ?, ?, ?)`,
+        makeId("ntf"),
+        agencyId,
+        userId ?? null,
+        r.id,
+        asString(r.title || "Task"),
+        asString(r.when_at),
+        nowIso
+      );
+
+      if ((res as any)?.changes) created += Number((res as any).changes) || 0;
+    }
+  }
+
+  await db.run(
+    `INSERT INTO notifications_ticks (agency_id, last_run_at)
+     VALUES (?, ?)
+     ON CONFLICT(agency_id) DO UPDATE SET last_run_at = excluded.last_run_at`,
+    agencyId,
+    nowIso
+  );
+
+  return { ok: true, skipped: false, created };
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const secret = asString(process.env.CRON_SECRET || "").trim();
+    const got = asString(req.nextUrl.searchParams.get("secret") || "").trim();
+
+    // If CRON_SECRET is set, require it.
+    if (secret && got !== secret) {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
+    }
+
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
+    // Run for all agencies (backstop job)
+    const agencies = (await db.all(`SELECT id FROM agencies`)) as Array<{ id: string }>;
+    let totalCreated = 0;
+
+    for (const a of agencies ?? []) {
+      if (!a?.id) continue;
+      const r = await runReminderTickForAgency(db, a.id, null);
+      totalCreated += (r as any)?.created ? Number((r as any).created) : 0;
+    }
+
+    return NextResponse.json({ ok: true, totalCreated });
+  } catch (err: any) {
+    console.error("CRON_REMINDERS_ERROR", err);
+    return NextResponse.json({ ok: false, error: "INTERNAL_ERROR" }, { status: 500 });
+  }
+}
+
+// Exported for internal use (notifications page tick)
+export async function _runReminderTickForAgency(db: Db, agencyId: string, userId?: string | null) {
+  return runReminderTickForAgency(db, agencyId, userId);
 }
