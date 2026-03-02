@@ -272,6 +272,7 @@ async function ensureSchedulePrefs(db: Db) {
  * Core tables — canonical shape
  */
 async function ensureCoreTables(db: Db) {
+  // IMPORTANT: don't create indexes that reference drift columns until AFTER we repair columns.
   await db.exec(`
     CREATE TABLE IF NOT EXISTS agencies (
       id TEXT PRIMARY KEY,
@@ -433,9 +434,7 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT
     );
 
-    -- Spreadsheets (proposal + audit trail)
-    -- NOTE: Keep created_by_user_id / actor_user_id for backwards compatibility,
-    -- but ALSO store user_id (canonical).
+    -- Spreadsheets
     CREATE TABLE IF NOT EXISTS spreadsheet_proposals (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -454,7 +453,7 @@ async function ensureCoreTables(db: Db) {
     CREATE TABLE IF NOT EXISTS spreadsheet_audit_log (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
-      user_id TEXT, -- canonical actor
+      user_id TEXT, -- canonical
       actor_user_id TEXT, -- legacy alias
       proposal_id TEXT NOT NULL,
       action TEXT NOT NULL, -- APPLY|REJECT
@@ -462,8 +461,7 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- Email drafts (docs-backed)
-    -- NOTE: Keep created_by_user_id for backwards compatibility, but ALSO store user_id (canonical).
+    -- Email drafts
     CREATE TABLE IF NOT EXISTS email_drafts (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -475,20 +473,6 @@ async function ensureCoreTables(db: Db) {
       body TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-
-    -- Helpful indexes
-    CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);
-    CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);
-    CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);
-    CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
-    CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
-    CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
-
-    CREATE INDEX IF NOT EXISTS idx_sp_proposals_agency_user ON spreadsheet_proposals(agency_id, user_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_sp_audit_agency_user ON spreadsheet_audit_log(agency_id, user_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user ON email_drafts(agency_id, user_id, created_at);
   `);
 
   // Stripe/billing columns (idempotent)
@@ -503,7 +487,7 @@ async function ensureCoreTables(db: Db) {
   // Users onboarding drift
   await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
 
-  // Spreadsheets canonical user_id drift + backfill from legacy columns
+  // ---- Drift repair for spreadsheets/email tables BEFORE any indexes that reference new cols ----
   if (await tableExists(db, "spreadsheet_proposals")) {
     await addColumnIfMissing(db, "spreadsheet_proposals", "user_id", "TEXT");
     await addColumnIfMissing(db, "spreadsheet_proposals", "created_by_user_id", "TEXT");
@@ -533,7 +517,6 @@ async function ensureCoreTables(db: Db) {
     `);
   }
 
-  // Email drafts canonical user_id drift + backfill from legacy columns
   if (await tableExists(db, "email_drafts")) {
     await addColumnIfMissing(db, "email_drafts", "user_id", "TEXT");
     await addColumnIfMissing(db, "email_drafts", "created_by_user_id", "TEXT");
@@ -545,6 +528,47 @@ async function ensureCoreTables(db: Db) {
         AND created_by_user_id IS NOT NULL
         AND created_by_user_id <> '';
     `);
+  }
+
+  // ---- Base indexes (safe) ----
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);
+    CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);
+    CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);
+    CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
+    CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
+  `);
+
+  // ---- Conditional indexes that reference drift columns ----
+  // (prevents "no such column: user_id" on older DBs)
+  if (await tableExists(db, "spreadsheet_proposals")) {
+    const cols = await getTableColumns(db, "spreadsheet_proposals");
+    if (has(cols, "agency_id") && has(cols, "user_id") && has(cols, "created_at")) {
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_sp_proposals_agency_user ON spreadsheet_proposals(agency_id, user_id, created_at);`
+      );
+    }
+  }
+
+  if (await tableExists(db, "spreadsheet_audit_log")) {
+    const cols = await getTableColumns(db, "spreadsheet_audit_log");
+    if (has(cols, "agency_id") && has(cols, "user_id") && has(cols, "created_at")) {
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_sp_audit_agency_user ON spreadsheet_audit_log(agency_id, user_id, created_at);`
+      );
+    }
+  }
+
+  if (await tableExists(db, "email_drafts")) {
+    const cols = await getTableColumns(db, "email_drafts");
+    if (has(cols, "agency_id") && has(cols, "user_id") && has(cols, "created_at")) {
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user ON email_drafts(agency_id, user_id, created_at);`
+      );
+    }
   }
 }
 
