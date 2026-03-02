@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { getDb } from "@/lib/db";
-import { requireActiveMember, requireFeature } from "@/lib/authz";
+import { requireActiveMember } from "@/lib/authz";
 
 export const runtime = "nodejs";
 
@@ -37,6 +37,7 @@ function pickPlainText(payload: any): string {
   const parts: any[] = Array.isArray(payload?.parts) ? payload.parts : [];
   if (parts.length === 0) return direct || "";
 
+  // Prefer text/plain
   for (const p of parts) {
     const pm = safeStr(p?.mimeType).toLowerCase();
     if (pm.startsWith("text/plain") && p?.body?.data) {
@@ -44,6 +45,7 @@ function pickPlainText(payload: any): string {
     }
   }
 
+  // Recurse multipart
   for (const p of parts) {
     const pm = safeStr(p?.mimeType).toLowerCase();
     if (pm.startsWith("multipart/")) {
@@ -72,16 +74,18 @@ async function maybePersistRefreshedTokens(db: any, userId: string, agencyId: st
   );
 }
 
-export async function GET(
-  req: NextRequest,
-  ctx: { params: Promise<{ threadId: string }> }
-) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ threadId: string }> }) {
   try {
     const session = await requireActiveMember(req);
-    await requireFeature(session.agencyId, "email");
+
+    // Corp only (no requireFeature helper in this repo)
+    if (session.plan !== "corporation") {
+      return NextResponse.json({ error: "Upgrade required." }, { status: 403 });
+    }
 
     const { threadId: raw } = await ctx.params;
     const threadId = safeStr(raw);
+
     if (!threadId) {
       return NextResponse.json({ error: "Missing threadId" }, { status: 400 });
     }
@@ -143,7 +147,8 @@ export async function GET(
       .filter((x: any) => x.id);
 
     const lastHeaders = messages[messages.length - 1]?.payload?.headers || [];
-    const threadSubject = safeStr(extractHeader(lastHeaders, "Subject")) || safeStr(outMsgs[outMsgs.length - 1]?.subject) || "";
+    const threadSubject =
+      safeStr(extractHeader(lastHeaders, "Subject")) || safeStr(outMsgs[outMsgs.length - 1]?.subject) || "";
 
     await maybePersistRefreshedTokens(db, session.userId, session.agencyId, oauth2Client);
 
