@@ -22,17 +22,27 @@ function safeString(v: any) {
   return String(v ?? "").trim();
 }
 
-function devDetails(err: any) {
-  const isProd = process.env.NODE_ENV === "production";
-  if (isProd) return undefined;
+function sanitizeError(err: any) {
+  // DO NOT include tokens, SQL, raw stack, or full response bodies.
+  const message = String(err?.message || "");
+  const name = String(err?.name || "");
+  const code = (err?.code ?? err?.response?.data?.error?.status ?? err?.response?.status ?? undefined) as any;
+
+  // Gmail/googleapis often puts useful info in err.response.data.error
+  const googleReason =
+    err?.response?.data?.error?.errors?.[0]?.reason ??
+    err?.response?.data?.error?.status ??
+    err?.errors?.[0]?.reason ??
+    undefined;
+
+  const status = (err?.response?.status ?? undefined) as any;
 
   return {
-    message: String(err?.message || ""),
-    name: String(err?.name || ""),
-    code: (err?.code ?? err?.response?.data?.error?.code ?? undefined) as any,
-    status: (err?.response?.status ?? undefined) as any,
-    responseData: err?.response?.data ?? undefined,
-    stack: String(err?.stack || ""),
+    name: name || undefined,
+    message: message || undefined,
+    code: code || undefined,
+    status: status || undefined,
+    googleReason: googleReason || undefined,
   };
 }
 
@@ -40,8 +50,7 @@ function devDetails(err: any) {
  * Turso/libSQL wrappers vary:
  * - some expect db.get(sql, ...args)
  * - others expect db.get(sql, argsArray)
- *
- * This adapter supports both without touching your global db wrapper.
+ * This adapter supports both.
  */
 async function dbGet(db: any, sql: string, args: any[]) {
   try {
@@ -56,17 +65,21 @@ async function dbGet(db: any, sql: string, args: any[]) {
 }
 
 export async function GET(req: NextRequest) {
+  let where: string = "start";
+
   try {
+    where = "requireActiveMember";
     const session = await requireActiveMember(req);
 
     // Corp only
     if (session.plan !== "corporation") {
       return NextResponse.json(
-        { ok: false, upsell: { code: "upgrade_required", message: "Email inbox is available on Corporation." } },
+        { ok: false, error: "Email inbox is available on Corporation.", code: "upgrade_required" },
         { status: 403 },
       );
     }
 
+    where = "rate_limit";
     await enforceRateLimit({
       userId: session.userId,
       agencyId: session.agencyId,
@@ -79,7 +92,6 @@ export async function GET(req: NextRequest) {
     const max = Math.min(50, Math.max(1, safeInt(url.searchParams.get("max"), 30)));
     const q = safeString(url.searchParams.get("q") || "");
 
-    // Env checks (common cause of 500s on Vercel)
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
     const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "";
@@ -90,6 +102,7 @@ export async function GET(req: NextRequest) {
           ok: false,
           error: "Missing Google OAuth env vars.",
           code: "missing_google_env",
+          where: "env",
           missing: {
             GOOGLE_CLIENT_ID: !GOOGLE_CLIENT_ID,
             GOOGLE_CLIENT_SECRET: !GOOGLE_CLIENT_SECRET,
@@ -100,9 +113,10 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    where = "db_getDb";
     const db = await getDb();
 
-    // Drift-safe email_accounts table (in case this route is hit before callback created it)
+    where = "db_ensure_email_accounts";
     await db.exec(`
       CREATE TABLE IF NOT EXISTS email_accounts (
         id TEXT PRIMARY KEY,
@@ -122,6 +136,7 @@ export async function GET(req: NextRequest) {
         ON email_accounts(agency_id, user_id);
     `);
 
+    where = "db_select_account";
     const account = await dbGet(
       db,
       `SELECT access_token, refresh_token, expiry_date, email
@@ -132,7 +147,7 @@ export async function GET(req: NextRequest) {
 
     if (!account) {
       return NextResponse.json(
-        { ok: false, error: "Not connected. Click Connect Gmail.", code: "not_connected" },
+        { ok: false, error: "Not connected. Click Connect Gmail.", code: "not_connected", where: "account" },
         { status: 409 },
       );
     }
@@ -143,11 +158,12 @@ export async function GET(req: NextRequest) {
 
     if (!accessToken && !refreshToken) {
       return NextResponse.json(
-        { ok: false, error: "Gmail tokens missing. Reconnect Gmail.", code: "missing_tokens" },
+        { ok: false, error: "Gmail tokens missing. Reconnect Gmail.", code: "missing_tokens", where: "tokens" },
         { status: 409 },
       );
     }
 
+    where = "oauth_client";
     const oauth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
 
     oauth2Client.setCredentials({
@@ -158,29 +174,18 @@ export async function GET(req: NextRequest) {
 
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-    let listRes: any;
-    try {
-      listRes = await gmail.users.threads.list({
-        userId: "me",
-        maxResults: max,
-        q: q || undefined,
-      });
-    } catch (err: any) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "Gmail list threads failed.",
-          code: "gmail_list_failed",
-          details: devDetails(err),
-        },
-        { status: 502 },
-      );
-    }
+    where = "gmail_list";
+    const listRes = await gmail.users.threads.list({
+      userId: "me",
+      maxResults: max,
+      q: q || undefined,
+    });
 
     const threadIds = (listRes.data.threads || [])
       .map((t: any) => String(t?.id || "").trim())
       .filter(Boolean);
 
+    where = "gmail_get_threads";
     const threads = await Promise.all(
       threadIds.map(async (id: string) => {
         try {
@@ -201,7 +206,7 @@ export async function GET(req: NextRequest) {
           const snippet = safeString(tr.data.snippet || last?.snippet || "");
 
           return { id, subject, from, date, snippet };
-        } catch (err: any) {
+        } catch {
           // Keep list stable even if a single thread fails
           return { id, subject: "", from: "", date: "", snippet: "" };
         }
@@ -216,11 +221,14 @@ export async function GET(req: NextRequest) {
   } catch (err: any) {
     const msg = String(err?.message || "");
     if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
-      return NextResponse.json({ error: msg }, { status: 429 });
+      return NextResponse.json({ ok: false, error: msg, code: "rate_limited", where: "rate_limit" }, { status: 429 });
     }
+
     console.error("Email threads error:", err);
+
+    // Always return a sanitized payload so you can see the real failure point.
     return NextResponse.json(
-      { ok: false, error: "Internal server error", details: devDetails(err) },
+      { ok: false, error: "Internal server error", code: "internal", where, details: sanitizeError(err) },
       { status: 500 },
     );
   }
