@@ -20,8 +20,27 @@ type Proposal = {
   notes?: string;
 };
 
+type GeneratedTable = {
+  title: string;
+  columns: string[];
+  rows: string[][];
+  notes?: string;
+};
+
 function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
+}
+
+function downloadTextFile(filename: string, text: string, mime = "text/plain") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export default function SpreadsheetsPage() {
@@ -33,15 +52,29 @@ export default function SpreadsheetsPage() {
 
   const [canApply, setCanApply] = useState(false);
 
+  // --- NEW: docs -> spreadsheet generation ---
+  const [genPrompt, setGenPrompt] = useState("");
+  const [genColumns, setGenColumns] = useState(""); // comma-separated
+  const [genMaxRows, setGenMaxRows] = useState<number>(200);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState("");
+  const [genFallback, setGenFallback] = useState<string | null>(null);
+  const [genTable, setGenTable] = useState<GeneratedTable | null>(null);
+  const [genCsv, setGenCsv] = useState<string>("");
+
+  // --- existing: CSV proposal edits ---
   const [csv, setCsv] = useState("");
   const [instruction, setInstruction] = useState("");
   const [proposing, setProposing] = useState(false);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [proposalId, setProposalId] = useState<string | null>(null);
   const [proposalError, setProposalError] = useState<string>("");
-
   const [applying, setApplying] = useState(false);
   const [applyMsg, setApplyMsg] = useState<string>("");
+
+  const canGenerate = useMemo(() => {
+    return genPrompt.trim().length > 0 && !generating;
+  }, [genPrompt, generating]);
 
   const canPropose = useMemo(() => {
     return csv.trim().length > 0 && instruction.trim().length > 0 && !proposing;
@@ -89,6 +122,72 @@ export default function SpreadsheetsPage() {
       cancelled = true;
     };
   }, []);
+
+  async function onGenerate() {
+    if (!canGenerate) return;
+
+    setGenerating(true);
+    setGenError("");
+    setGenFallback(null);
+    setGenTable(null);
+    setGenCsv("");
+
+    try {
+      const cols = genColumns
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 40);
+
+      const payload: any = {
+        prompt: genPrompt,
+        max_rows: Number.isFinite(genMaxRows) ? Math.max(1, Math.min(500, genMaxRows)) : 200,
+      };
+
+      if (cols.length) payload.columns = cols;
+
+      const j = await fetchJson<any>("/api/spreadsheets/generate", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (j?.fallback) {
+        setGenFallback(String(j?.message || "I don’t have that information in the docs yet."));
+        return;
+      }
+
+      const t = j?.table ?? null;
+      if (!t || !Array.isArray(t?.columns) || !Array.isArray(t?.rows)) {
+        setGenFallback("I don’t have that information in the docs yet.");
+        return;
+      }
+
+      setGenTable({
+        title: typeof t?.title === "string" ? t.title : "Spreadsheet",
+        columns: t.columns as string[],
+        rows: t.rows as string[][],
+        notes: typeof t?.notes === "string" ? t.notes : "",
+      });
+
+      setGenCsv(typeof j?.csv === "string" ? j.csv : "");
+    } catch (e: any) {
+      if (isFetchJsonError(e)) {
+        if (e.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (e.status === 403) {
+          setGenError("Upgrade required to generate spreadsheets from docs.");
+          return;
+        }
+      }
+      setGenError(e?.message ?? "Failed to generate spreadsheet");
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   async function onPropose() {
     if (!canPropose) return;
@@ -185,7 +284,7 @@ export default function SpreadsheetsPage() {
       <div className="mx-auto max-w-4xl p-6">
         <UpgradeGate
           title="Spreadsheets are available on paid plans"
-          message={upsell?.message || "Upgrade to unlock spreadsheet AI proposals and updates."}
+          message={upsell?.message || "Upgrade to unlock spreadsheet AI generation and proposals."}
           ctaHref="/app/billing"
           ctaLabel="Upgrade Plan"
         />
@@ -207,11 +306,175 @@ export default function SpreadsheetsPage() {
       <div>
         <h1 className="text-2xl font-semibold">Spreadsheets</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Propose edits first (audit-friendly). Plan: <span className="font-mono">{plan ?? "unknown"}</span>
+          Generate spreadsheets from docs (safe) or propose edits to an existing CSV. Plan:{" "}
+          <span className="font-mono">{plan ?? "unknown"}</span>
         </p>
       </div>
 
+      {/* NEW: Generate from docs */}
       <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
+        <div className="flex items-baseline justify-between gap-3">
+          <div>
+            <div className="text-base font-semibold">Generate from docs</div>
+            <div className="text-xs text-muted-foreground">
+              Louis will only use evidence found via file_search. If docs don’t support it, you’ll get the fallback.
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-sm font-medium">What spreadsheet do you want?</div>
+          <textarea
+            value={genPrompt}
+            onChange={(e) => setGenPrompt(e.target.value)}
+            rows={4}
+            className="mt-2 w-full rounded-xl border bg-background/40 p-3 text-sm"
+            placeholder='Example: "Make a client onboarding checklist table with columns: Step, Owner, SLA, Link, Notes. Use our SOP docs."'
+          />
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <div className="text-sm font-medium">Optional required columns (comma-separated)</div>
+            <input
+              value={genColumns}
+              onChange={(e) => setGenColumns(e.target.value)}
+              className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+              placeholder="Step, Owner, SLA, Link, Notes"
+            />
+            <div className="mt-2 text-xs text-muted-foreground">If set, output will match these columns.</div>
+          </div>
+
+          <div>
+            <div className="text-sm font-medium">Max rows</div>
+            <input
+              value={String(genMaxRows)}
+              onChange={(e) => setGenMaxRows(Number(e.target.value))}
+              type="number"
+              min={1}
+              max={500}
+              className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+            />
+            <div className="mt-2 text-xs text-muted-foreground">Capped at 500.</div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={!canGenerate}
+            className="rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-60"
+          >
+            {generating ? "Generating..." : "Generate spreadsheet"}
+          </button>
+
+          <div className="text-xs text-muted-foreground">Uses your bot’s vector store (docs).</div>
+        </div>
+
+        {genError ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{genError}</div>
+        ) : null}
+
+        {genFallback ? (
+          <div className="rounded-xl border bg-muted/40 p-3 text-sm font-mono">{genFallback}</div>
+        ) : null}
+
+        {genTable ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">{genTable.title}</div>
+                <div className="text-xs text-muted-foreground">
+                  {genTable.rows.length} row{genTable.rows.length === 1 ? "" : "s"} • {genTable.columns.length} col
+                  {genTable.columns.length === 1 ? "" : "s"}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                  onClick={() => {
+                    if (!genCsv) return;
+                    navigator.clipboard?.writeText(genCsv).catch(() => {});
+                  }}
+                  disabled={!genCsv}
+                  title={!genCsv ? "No CSV available" : "Copy CSV"}
+                >
+                  Copy CSV
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                  onClick={() => {
+                    if (!genCsv) return;
+                    const safe = (genTable.title || "spreadsheet")
+                      .toLowerCase()
+                      .replace(/[^a-z0-9]+/g, "-")
+                      .replace(/^-+|-+$/g, "")
+                      .slice(0, 60);
+                    downloadTextFile(`${safe || "spreadsheet"}.csv`, genCsv, "text/csv");
+                  }}
+                  disabled={!genCsv}
+                >
+                  Download CSV
+                </button>
+              </div>
+            </div>
+
+            {genTable.notes ? (
+              <div className="rounded-xl border bg-background/40 p-3 text-sm">{genTable.notes}</div>
+            ) : null}
+
+            <div className="overflow-x-auto rounded-xl border">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b bg-muted/40">
+                  <tr>
+                    {genTable.columns.map((c, idx) => (
+                      <th key={idx} className="px-3 py-2 font-medium">
+                        {c}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {genTable.rows.slice(0, 200).map((r, idx) => (
+                    <tr key={idx} className="border-b last:border-b-0">
+                      {genTable.columns.map((_, j) => (
+                        <td key={j} className="px-3 py-2 align-top text-muted-foreground">
+                          {String(r?.[j] ?? "")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                  {genTable.rows.length > 200 ? (
+                    <tr>
+                      <td colSpan={genTable.columns.length} className="px-3 py-3 text-xs text-muted-foreground">
+                        Showing first 200 rows. Download CSV to view all.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="text-xs text-muted-foreground">
+              Next: “Create Google Sheet” + “Write CSV to sheet” (OAuth) so this becomes one-click.
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* Existing: Propose edits from CSV snapshot */}
+      <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
+        <div>
+          <div className="text-base font-semibold">Propose edits to an existing CSV</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            Audit-friendly: generate a proposal first. No external sheet writes yet.
+          </div>
+        </div>
+
         <div>
           <div className="text-sm font-medium">1) Paste CSV snapshot</div>
           <textarea
