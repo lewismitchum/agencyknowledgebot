@@ -229,8 +229,6 @@ export default function Navbar() {
         <nav className="hidden items-center gap-2 md:flex">
           <NavLink href="/app">Dashboard</NavLink>
           <NavLink href="/app/chat">Chat</NavLink>
-          <NavLink href="/app/email">Email</NavLink>
-          <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
 
           {/* Docs dropdown (shows docs list) */}
           <div className="relative" ref={docsPanelRef}>
@@ -314,6 +312,8 @@ export default function Navbar() {
           </div>
 
           <NavLink href="/app/schedule">Schedule</NavLink>
+          <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
+          <NavLink href="/app/email">Email</NavLink>
           <NavLink href="/app/bots">Bots</NavLink>
           <NavLink href="/app/support">Support</NavLink>
           <NavLink href="/launch">Launch</NavLink>
@@ -329,16 +329,16 @@ export default function Navbar() {
               <Link href="/app/chat">Chat</Link>
             </Button>
             <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/email">Email</Link>
+              <Link href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}>Docs</Link>
+            </Button>
+            <Button asChild variant="ghost" size="sm" className="rounded-full">
+              <Link href="/app/schedule">Schedule</Link>
             </Button>
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/spreadsheets">Sheets</Link>
             </Button>
             <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}>Docs</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/schedule">Schedule</Link>
+              <Link href="/app/email">Email</Link>
             </Button>
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/bots">Bots</Link>
