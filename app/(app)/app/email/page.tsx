@@ -26,6 +26,12 @@ function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
 }
 
+function shortText(s: string, max = 80) {
+  const t = String(s || "").trim();
+  if (t.length <= max) return t;
+  return t.slice(0, Math.max(10, max - 12)) + "…" + t.slice(-10);
+}
+
 export default function EmailPage() {
   const [loading, setLoading] = useState(true);
   const [gated, setGated] = useState(false);
@@ -49,6 +55,10 @@ export default function EmailPage() {
   const [draftsLoading, setDraftsLoading] = useState(false);
   const [draftsError, setDraftsError] = useState("");
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
+
+  const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
+  const [openingDraft, setOpeningDraft] = useState(false);
+  const [openDraftError, setOpenDraftError] = useState("");
 
   const canDraft = useMemo(() => {
     return botId.trim().length > 0 && prompt.trim().length > 0 && !drafting;
@@ -133,6 +143,55 @@ export default function EmailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function refreshDrafts() {
+    try {
+      const d = await fetchJson<any>("/api/email/drafts", { credentials: "include", cache: "no-store" });
+      setDrafts(Array.isArray(d?.drafts) ? (d.drafts as DraftRow[]) : []);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function onOpenDraft(id: string) {
+    const draftId = String(id || "").trim();
+    if (!draftId) return;
+
+    setSelectedDraftId(draftId);
+    setOpeningDraft(true);
+    setOpenDraftError("");
+
+    try {
+      const j = await fetchJson<any>(`/api/email/drafts/${encodeURIComponent(draftId)}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+
+      const subj = String(j?.draft?.subject || "").trim();
+      const body = String(j?.draft?.body || "").trim();
+
+      if (!subj || !body) {
+        setOpenDraftError("Could not open draft.");
+        return;
+      }
+
+      setDraft({ subject: subj, body });
+      setFallback(null);
+      setDraftError("");
+    } catch (e: any) {
+      if (isFetchJsonError(e) && e.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      if (isFetchJsonError(e) && e.status === 404) {
+        setOpenDraftError("Draft not found.");
+        return;
+      }
+      setOpenDraftError(e?.message ?? "Failed to open draft");
+    } finally {
+      setOpeningDraft(false);
+    }
+  }
+
   async function onDraft() {
     if (!canDraft) return;
 
@@ -140,6 +199,8 @@ export default function EmailPage() {
     setDraftError("");
     setFallback(null);
     setDraft(null);
+    setSelectedDraftId(null);
+    setOpenDraftError("");
 
     try {
       const j = await fetchJson<any>("/api/email/draft", {
@@ -166,13 +227,7 @@ export default function EmailPage() {
 
       setDraft({ subject: String(j.draft.subject), body: String(j.draft.body) });
 
-      // refresh drafts list (best-effort)
-      try {
-        const d = await fetchJson<any>("/api/email/drafts", { credentials: "include", cache: "no-store" });
-        setDrafts(Array.isArray(d?.drafts) ? (d.drafts as DraftRow[]) : []);
-      } catch {
-        // ignore
-      }
+      await refreshDrafts();
     } catch (e: any) {
       if (isFetchJsonError(e)) {
         if (e.status === 401) {
@@ -325,7 +380,9 @@ export default function EmailPage() {
             {draft ? (
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-semibold">Draft</div>
+                  <div className="text-sm font-semibold">
+                    Draft {selectedDraftId ? <span className="text-xs text-muted-foreground">(opened)</span> : null}
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -370,18 +427,40 @@ export default function EmailPage() {
               <div className="text-sm text-muted-foreground">No drafts yet.</div>
             ) : (
               <div className="space-y-2">
-                {drafts.slice(0, 10).map((d) => (
-                  <div key={d.id} className="rounded-xl border bg-background/40 p-3">
-                    <div className="text-xs text-muted-foreground">{new Date(d.created_at).toLocaleString()}</div>
-                    <div className="mt-1 text-sm font-medium">{d.subject}</div>
-                    <div className="mt-1 text-[11px] text-muted-foreground font-mono">{d.id}</div>
+                {openDraftError ? (
+                  <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {openDraftError}
                   </div>
-                ))}
+                ) : null}
+
+                {drafts.slice(0, 12).map((d) => {
+                  const active = selectedDraftId === d.id;
+                  return (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onClick={() => onOpenDraft(d.id)}
+                      disabled={openingDraft && active}
+                      className={[
+                        "w-full text-left rounded-xl border bg-background/40 p-3 transition",
+                        active ? "border-primary/40 bg-primary/5" : "hover:bg-muted",
+                      ].join(" ")}
+                      title={d.subject}
+                    >
+                      <div className="text-xs text-muted-foreground">
+                        {new Date(d.created_at).toLocaleString()}
+                        {active && openingDraft ? " • Opening…" : ""}
+                      </div>
+                      <div className="mt-1 text-sm font-medium">{shortText(d.subject, 72)}</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground font-mono">{d.id}</div>
+                    </button>
+                  );
+                })}
               </div>
             )}
 
             <div className="text-xs text-muted-foreground">
-              Next: “Inbox” + thread view (corp). This is just docs-backed drafting + history.
+              Next: Inbox + threads (corp). This is just docs-backed drafting + history.
             </div>
           </div>
         </div>
