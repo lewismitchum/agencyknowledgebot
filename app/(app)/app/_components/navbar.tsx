@@ -313,10 +313,7 @@ export default function Navbar() {
 
           <NavLink href="/app/schedule">Schedule</NavLink>
           <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
-
-          {/* ✅ single email route */}
           <NavLink href="/app/email">Email</NavLink>
-
           <NavLink href="/app/bots">Bots</NavLink>
           <NavLink href="/app/support">Support</NavLink>
           <NavLink href="/launch">Launch</NavLink>
@@ -340,12 +337,9 @@ export default function Navbar() {
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/spreadsheets">Sheets</Link>
             </Button>
-
-            {/* ✅ single email route */}
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/email">Email</Link>
             </Button>
-
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/bots">Bots</Link>
             </Button>
