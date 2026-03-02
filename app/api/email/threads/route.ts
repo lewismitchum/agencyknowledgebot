@@ -22,6 +22,20 @@ function safeString(v: any) {
   return String(v ?? "").trim();
 }
 
+function devDetails(err: any) {
+  const isProd = process.env.NODE_ENV === "production";
+  if (isProd) return undefined;
+
+  return {
+    message: String(err?.message || ""),
+    name: String(err?.name || ""),
+    code: (err?.code ?? err?.response?.data?.error?.code ?? undefined) as any,
+    status: (err?.response?.status ?? undefined) as any,
+    responseData: err?.response?.data ?? undefined,
+    stack: String(err?.stack || ""),
+  };
+}
+
 /**
  * Turso/libSQL wrappers vary:
  * - some expect db.get(sql, ...args)
@@ -31,11 +45,9 @@ function safeString(v: any) {
  */
 async function dbGet(db: any, sql: string, args: any[]) {
   try {
-    // Prefer spread form (most common with libsql wrappers)
     return await db.get(sql, ...args);
   } catch (err: any) {
     const msg = String(err?.message || "");
-    // If the wrapper expects args array, retry once with array form
     if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
       return await db.get(sql, args);
     }
@@ -66,6 +78,27 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const max = Math.min(50, Math.max(1, safeInt(url.searchParams.get("max"), 30)));
     const q = safeString(url.searchParams.get("q") || "");
+
+    // Env checks (common cause of 500s on Vercel)
+    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+    const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "";
+
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Missing Google OAuth env vars.",
+          code: "missing_google_env",
+          missing: {
+            GOOGLE_CLIENT_ID: !GOOGLE_CLIENT_ID,
+            GOOGLE_CLIENT_SECRET: !GOOGLE_CLIENT_SECRET,
+            GOOGLE_REDIRECT_URI: !GOOGLE_REDIRECT_URI,
+          },
+        },
+        { status: 500 },
+      );
+    }
 
     const db = await getDb();
 
@@ -115,11 +148,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI,
-    );
+    const oauth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
 
     oauth2Client.setCredentials({
       access_token: accessToken || undefined,
@@ -129,20 +158,31 @@ export async function GET(req: NextRequest) {
 
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-    const listRes = await gmail.users.threads.list({
-      userId: "me",
-      maxResults: max,
-      q: q || undefined,
-    });
+    let listRes: any;
+    try {
+      listRes = await gmail.users.threads.list({
+        userId: "me",
+        maxResults: max,
+        q: q || undefined,
+      });
+    } catch (err: any) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Gmail list threads failed.",
+          code: "gmail_list_failed",
+          details: devDetails(err),
+        },
+        { status: 502 },
+      );
+    }
 
     const threadIds = (listRes.data.threads || [])
-      .map((t) => String(t?.id || "").trim())
+      .map((t: any) => String(t?.id || "").trim())
       .filter(Boolean);
 
-    // Fetch minimal metadata for each thread (subject/from/date/snippet)
-    // NOTE: this is N calls; keep max <= 50 (we cap it).
     const threads = await Promise.all(
-      threadIds.map(async (id) => {
+      threadIds.map(async (id: string) => {
         try {
           const tr = await gmail.users.threads.get({
             userId: "me",
@@ -160,14 +200,9 @@ export async function GET(req: NextRequest) {
           const date = extractHeader(headers, "Date");
           const snippet = safeString(tr.data.snippet || last?.snippet || "");
 
-          return {
-            id,
-            subject,
-            from,
-            date,
-            snippet,
-          };
-        } catch {
+          return { id, subject, from, date, snippet };
+        } catch (err: any) {
+          // Keep list stable even if a single thread fails
           return { id, subject: "", from: "", date: "", snippet: "" };
         }
       }),
@@ -184,6 +219,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: msg }, { status: 429 });
     }
     console.error("Email threads error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Internal server error", details: devDetails(err) },
+      { status: 500 },
+    );
   }
 }
