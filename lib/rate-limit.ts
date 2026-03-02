@@ -40,6 +40,18 @@ async function dbGet(db: any, sql: string, args: any[]) {
   }
 }
 
+async function dbAll(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.all(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.all(sql, args);
+    }
+    throw err;
+  }
+}
+
 async function dbRun(db: any, sql: string, args: any[]) {
   try {
     return await db.run(sql, ...args);
@@ -52,6 +64,50 @@ async function dbRun(db: any, sql: string, args: any[]) {
   }
 }
 
+async function ensureRateLimitSchema(db: any) {
+  // Create minimal table if missing (older installs may differ)
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      minute_window_start INTEGER NOT NULL,
+      minute_count INTEGER NOT NULL,
+      hour_window_start INTEGER NOT NULL,
+      hour_count INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (agency_id, user_id, key)
+    );
+  `);
+
+  // Detect drift & add missing columns
+  const cols = await dbAll(db, `PRAGMA table_info(rate_limits)`);
+  const have = new Set((cols || []).map((c: any) => String(c?.name || "")));
+
+  // These ALTERs are safe if column is missing; we guard with `have`.
+  if (!have.has("minute_window_start")) {
+    await db.exec(`ALTER TABLE rate_limits ADD COLUMN minute_window_start INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!have.has("minute_count")) {
+    await db.exec(`ALTER TABLE rate_limits ADD COLUMN minute_count INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!have.has("hour_window_start")) {
+    await db.exec(`ALTER TABLE rate_limits ADD COLUMN hour_window_start INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!have.has("hour_count")) {
+    await db.exec(`ALTER TABLE rate_limits ADD COLUMN hour_count INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!have.has("updated_at")) {
+    await db.exec(`ALTER TABLE rate_limits ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;`);
+  }
+
+  // Index after updated_at exists
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_rate_limits_updated
+      ON rate_limits(updated_at);
+  `);
+}
+
 export async function enforceRateLimit(input: RateLimitInput) {
   const { userId, agencyId, key, perMinute, perHour } = input;
 
@@ -60,34 +116,12 @@ export async function enforceRateLimit(input: RateLimitInput) {
   if (!Number.isFinite(perHour) || perHour <= 0) return;
 
   const db = await getDb();
-
-  // Drift-safe table
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS rate_limits (
-      agency_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-
-      minute_window_start INTEGER NOT NULL,
-      minute_count INTEGER NOT NULL,
-
-      hour_window_start INTEGER NOT NULL,
-      hour_count INTEGER NOT NULL,
-
-      updated_at INTEGER NOT NULL,
-
-      PRIMARY KEY (agency_id, user_id, key)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_rate_limits_updated
-      ON rate_limits(updated_at);
-  `);
+  await ensureRateLimitSchema(db);
 
   const t = nowMs();
   const minuteStart = floorToMinute(t);
   const hourStart = floorToHour(t);
 
-  // Fetch existing counters
   const row = await dbGet(
     db,
     `
@@ -126,7 +160,6 @@ export async function enforceRateLimit(input: RateLimitInput) {
     }
   }
 
-  // Enforce limits BEFORE writing
   if (nextMinuteCount > perMinute) {
     throw new Error("Too many requests. Please slow down.");
   }
@@ -134,7 +167,6 @@ export async function enforceRateLimit(input: RateLimitInput) {
     throw new Error("Hourly limit reached. Try again later.");
   }
 
-  // Upsert counters
   await dbRun(
     db,
     `
