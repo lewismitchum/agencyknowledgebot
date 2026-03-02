@@ -1,10 +1,17 @@
+// app/api/email/reply-draft/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
-import { getDb } from "@/lib/db";
+import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
+import { openai } from "@/lib/openai";
 import { enforceRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function safeStr(x: any) {
+  return String(x ?? "").trim();
+}
 
 function extractHeader(
   headers: Array<{ name?: string | null; value?: string | null }> | undefined,
@@ -13,10 +20,6 @@ function extractHeader(
   if (!headers) return "";
   const hit = headers.find((h) => (h.name || "").toLowerCase() === key.toLowerCase());
   return (hit?.value || "").trim();
-}
-
-function safeStr(x: any) {
-  return String(x ?? "").trim();
 }
 
 function b64urlToUtf8(data: string) {
@@ -31,9 +34,9 @@ function pickPlainText(payload: any): string {
   if (!payload) return "";
 
   const direct = payload?.body?.data ? b64urlToUtf8(String(payload.body.data)) : "";
-  const mime = safeStr(payload?.mimeType);
+  const mime = safeStr(payload?.mimeType).toLowerCase();
 
-  if (mime.toLowerCase().startsWith("text/plain") && direct) return direct;
+  if (mime.startsWith("text/plain") && direct) return direct;
 
   const parts: any[] = Array.isArray(payload?.parts) ? payload.parts : [];
   if (parts.length === 0) return direct || "";
@@ -56,24 +59,52 @@ function pickPlainText(payload: any): string {
   return "";
 }
 
-async function maybePersistRefreshedTokens(db: any, userId: string, agencyId: string, oauth2Client: any) {
-  const cred = oauth2Client.credentials || {};
-  const accessToken = cred.access_token ? String(cred.access_token) : null;
-  const expiryDate = typeof cred.expiry_date === "number" ? cred.expiry_date : null;
-
-  if (!accessToken && !expiryDate) return;
-
-  await db.run(
-    `UPDATE email_accounts
-     SET access_token = COALESCE(?, access_token),
-         expiry_date = COALESCE(?, expiry_date),
-         updated_at = ?
-     WHERE user_id = ? AND agency_id = ?`,
-    [accessToken, expiryDate, Date.now(), userId, agencyId]
-  );
+function tryParseJsonObject(s: string): any | null {
+  const t = safeStr(s);
+  if (!t) return null;
+  try {
+    return JSON.parse(t);
+  } catch {
+    const m = t.match(/```json\s*([\s\S]*?)\s*```/i) || t.match(/```\s*([\s\S]*?)\s*```/i);
+    if (m?.[1]) {
+      try {
+        return JSON.parse(m[1]);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
 }
 
-export async function GET(req: NextRequest, ctx: { params: Promise<{ threadId: string }> }) {
+async function ensureEmailDraftsColumns(db: Db) {
+  // Drift-safe: older envs might miss columns
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS email_drafts (
+      id TEXT PRIMARY KEY,
+      agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      bot_id TEXT,
+      thread_id TEXT,
+      subject TEXT,
+      body TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_drafts_user_created
+      ON email_drafts(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_created
+      ON email_drafts(agency_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_email_drafts_thread
+      ON email_drafts(thread_id);
+  `);
+
+  // If table existed but missing columns, add them
+  await db.run("ALTER TABLE email_drafts ADD COLUMN bot_id TEXT").catch(() => {});
+  await db.run("ALTER TABLE email_drafts ADD COLUMN thread_id TEXT").catch(() => {});
+  await db.run("ALTER TABLE email_drafts ADD COLUMN subject TEXT").catch(() => {});
+}
+
+export async function POST(req: NextRequest) {
   try {
     const session = await requireActiveMember(req);
 
@@ -82,28 +113,43 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ threadId: s
       return NextResponse.json({ error: "Upgrade required." }, { status: 403 });
     }
 
-    // Rate limit reads
+    // Rate limit AI drafting
     await enforceRateLimit({
       userId: session.userId,
       agencyId: session.agencyId,
-      key: "email_read",
-      perMinute: 30,
-      perHour: 500,
+      key: "email_reply",
+      perMinute: 10,
+      perHour: 200,
     });
 
-    const { threadId: raw } = await ctx.params;
-    const threadId = safeStr(raw);
+    const body = await req.json().catch(() => ({}));
+    const threadId = safeStr(body?.threadId);
+    const botId = safeStr(body?.botId);
+    const instruction = safeStr(body?.instruction);
 
-    if (!threadId) {
-      return NextResponse.json({ error: "Missing threadId" }, { status: 400 });
+    if (!threadId || !botId) {
+      return NextResponse.json({ error: "Missing threadId or botId" }, { status: 400 });
     }
 
     const db = await getDb();
+    await ensureEmailDraftsColumns(db);
+
+    const bot = await db.get(
+      `SELECT id, vector_store_id
+       FROM bots
+       WHERE id = ? AND agency_id = ?
+       LIMIT 1`,
+      [botId, session.agencyId]
+    );
+
+    if (!bot?.id) return NextResponse.json({ error: "Bot not found" }, { status: 404 });
+    if (!bot.vector_store_id) return NextResponse.json({ error: "Bot missing vector store" }, { status: 409 });
 
     const account = await db.get(
       `SELECT access_token, refresh_token, expiry_date
        FROM email_accounts
-       WHERE user_id = ? AND agency_id = ?`,
+       WHERE user_id = ? AND agency_id = ?
+       LIMIT 1`,
       [session.userId, session.agencyId]
     );
 
@@ -132,32 +178,98 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ threadId: s
     });
 
     const messages = threadRes.data.messages || [];
-    const outMsgs = messages
-      .map((m: any) => {
+    const recent = messages.slice(-6);
+
+    const threadContext = recent
+      .map((m) => {
         const headers = m?.payload?.headers || [];
-        return {
-          id: safeStr(m?.id),
-          from: extractHeader(headers, "From"),
-          to: extractHeader(headers, "To"),
-          date: extractHeader(headers, "Date"),
-          subject: extractHeader(headers, "Subject"),
-          snippet: safeStr(m?.snippet || ""),
-          body: pickPlainText(m?.payload),
-        };
+        const from = extractHeader(headers, "From") || "Unknown";
+        const to = extractHeader(headers, "To") || "";
+        const date = extractHeader(headers, "Date") || "";
+        const subject = extractHeader(headers, "Subject") || "";
+        const text = pickPlainText(m?.payload);
+        const snippet = safeStr(m?.snippet || "");
+        const bodyText = safeStr(text) || (snippet ? `[snippet]\n${snippet}` : "");
+        return `From: ${from}\nTo: ${to}\nDate: ${date}\nSubject: ${subject}\n\n${bodyText}`;
       })
-      .filter((x: any) => x.id);
+      .join("\n\n---\n\n");
 
     const lastHeaders = messages[messages.length - 1]?.payload?.headers || [];
-    const threadSubject =
-      safeStr(extractHeader(lastHeaders, "Subject")) || safeStr(outMsgs[outMsgs.length - 1]?.subject) || "";
+    const threadSubject = safeStr(extractHeader(lastHeaders, "Subject")) || "Re:";
 
-    await maybePersistRefreshedTokens(db, session.userId, session.agencyId, oauth2Client);
+    const sys = `
+You are Louis.Ai.
+
+Hard rules:
+- Use agency docs (file_search) for internal business facts: pricing, timelines, SOPs, deliverables, policies, meeting times, commitments, contract terms, client-specific status.
+- If the instruction or thread requires internal facts AND file_search provides no supporting evidence, return fallback=true.
+- If reply can be written using only email thread context + general writing, you may draft without docs.
+- Never invent internal facts or commitments.
+- Output JSON ONLY.
+
+Schema:
+{
+  "fallback": boolean,
+  "message": string,
+  "draftSubject": string,
+  "draftBody": string
+}
+`.trim();
+
+    const user = `
+Thread context:
+${threadContext}
+
+User instruction:
+${instruction || "(none) — draft the best professional reply."}
+
+Return JSON only.
+`.trim();
+
+    const resp = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      tools: [{ type: "file_search", vector_store_ids: [bot.vector_store_id] }],
+      input: [
+        { role: "system", content: sys },
+        { role: "user", content: user },
+      ],
+    });
+
+    const parsed = tryParseJsonObject(resp.output_text || "");
+
+    if (!parsed || typeof parsed.fallback !== "boolean") {
+      return NextResponse.json({ error: "Invalid model output" }, { status: 500 });
+    }
+
+    if (parsed.fallback) {
+      return NextResponse.json({
+        fallback: true,
+        message: safeStr(parsed.message) || "I couldn’t find this in your agency documents.",
+      });
+    }
+
+    const draftBody = safeStr(parsed.draftBody);
+    const draftSubject = safeStr(parsed.draftSubject) || threadSubject;
+
+    if (!draftBody) return NextResponse.json({ error: "Empty draftBody" }, { status: 500 });
+
+    const draftId = crypto.randomUUID();
+
+    await db.run(
+      `INSERT INTO email_drafts
+       (id, agency_id, user_id, bot_id, thread_id, subject, body, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [draftId, session.agencyId, session.userId, botId, threadId, draftSubject, draftBody, Date.now()]
+    );
 
     return NextResponse.json({
-      thread: {
-        id: threadId,
-        subject: threadSubject,
-        messages: outMsgs,
+      ok: true,
+      draft: {
+        id: draftId,
+        thread_id: threadId,
+        bot_id: botId,
+        subject: draftSubject,
+        body: draftBody,
       },
     });
   } catch (err: any) {
@@ -165,7 +277,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ threadId: s
     if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
       return NextResponse.json({ error: msg }, { status: 429 });
     }
-    console.error("Email thread get error:", err);
+    console.error("EMAIL_REPLY_DRAFT_ERROR", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
