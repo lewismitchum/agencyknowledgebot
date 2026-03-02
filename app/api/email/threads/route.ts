@@ -22,6 +22,27 @@ function safeString(v: any) {
   return String(v ?? "").trim();
 }
 
+/**
+ * Turso/libSQL wrappers vary:
+ * - some expect db.get(sql, ...args)
+ * - others expect db.get(sql, argsArray)
+ *
+ * This adapter supports both without touching your global db wrapper.
+ */
+async function dbGet(db: any, sql: string, args: any[]) {
+  try {
+    // Prefer spread form (most common with libsql wrappers)
+    return await db.get(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    // If the wrapper expects args array, retry once with array form
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.get(sql, args);
+    }
+    throw err;
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const session = await requireActiveMember(req);
@@ -68,7 +89,8 @@ export async function GET(req: NextRequest) {
         ON email_accounts(agency_id, user_id);
     `);
 
-    const account = await db.get(
+    const account = await dbGet(
+      db,
       `SELECT access_token, refresh_token, expiry_date, email
        FROM email_accounts
        WHERE user_id = ? AND agency_id = ?`,
