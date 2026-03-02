@@ -44,16 +44,6 @@ async function addColumnIfMissing(db: Db, table: string, col: string, sqlTypeAnd
   await db.exec(`ALTER TABLE ${qIdent(table)} ADD COLUMN ${qIdent(col)} ${sqlTypeAndDefault};`);
 }
 
-async function createIndexSafe(db: Db, sql: string) {
-  try {
-    await db.exec(sql);
-  } catch (e) {
-    // Drift-safe: index creation can fail if older DB is mid-migration; ignore.
-    // We prefer the app to boot and continue (ensureSchema runs on every request).
-    console.warn("SCHEMA_INDEX_CREATE_SKIPPED", String((e as any)?.message ?? e));
-  }
-}
-
 /**
  * usage_daily has been a drift landmine.
  * If canonical columns are missing, rebuild safely.
@@ -282,6 +272,12 @@ async function ensureSchedulePrefs(db: Db) {
  * Core tables — canonical shape
  */
 async function ensureCoreTables(db: Db) {
+  // IMPORTANT:
+  // - Create tables first
+  // - Then drift-repair columns
+  // - Then create indexes that reference drift columns (user_id, etc.)
+  // This prevents “no such column” crashes on legacy DBs.
+
   await db.exec(`
     CREATE TABLE IF NOT EXISTS agencies (
       id TEXT PRIMARY KEY,
@@ -444,8 +440,6 @@ async function ensureCoreTables(db: Db) {
     );
 
     -- Spreadsheets (proposal + audit trail)
-    -- NOTE: Keep created_by_user_id for backwards compatibility with existing routes,
-    -- but ALSO store user_id (canonical).
     CREATE TABLE IF NOT EXISTS spreadsheet_proposals (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -473,7 +467,6 @@ async function ensureCoreTables(db: Db) {
     );
 
     -- Email drafts (docs-backed)
-    -- NOTE: Keep created_by_user_id for backwards compatibility, but ALSO store user_id (canonical).
     CREATE TABLE IF NOT EXISTS email_drafts (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -499,7 +492,7 @@ async function ensureCoreTables(db: Db) {
   // Users onboarding drift
   await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
 
-  // Spreadsheets canonical user_id drift + backfill from legacy columns
+  // Spreadsheets drift columns + backfill
   if (await tableExists(db, "spreadsheet_proposals")) {
     await addColumnIfMissing(db, "spreadsheet_proposals", "user_id", "TEXT");
     await addColumnIfMissing(db, "spreadsheet_proposals", "created_by_user_id", "TEXT");
@@ -529,7 +522,7 @@ async function ensureCoreTables(db: Db) {
     `);
   }
 
-  // Email drafts canonical user_id drift + backfill from legacy columns
+  // Email drafts drift columns + backfill
   if (await tableExists(db, "email_drafts")) {
     await addColumnIfMissing(db, "email_drafts", "user_id", "TEXT");
     await addColumnIfMissing(db, "email_drafts", "created_by_user_id", "TEXT");
@@ -543,29 +536,25 @@ async function ensureCoreTables(db: Db) {
     `);
   }
 
-  // Helpful indexes (created AFTER drift-repair columns exist)
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);`);
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);`);
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);`);
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);`);
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);`);
+  // Helpful indexes (create AFTER drift repair; also safe to ignore failures on weird legacy DBs)
+  try {
+    await db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);
+      CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);
+      CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);
+      CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
+      CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
 
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);`);
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);`);
+      CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
+      CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
 
-  // Expression indexes are drift-safe AND work even if some rows still only have legacy user fields.
-  await createIndexSafe(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_sp_proposals_agency_user ON spreadsheet_proposals(agency_id, COALESCE(user_id, created_by_user_id), created_at);`
-  );
-  await createIndexSafe(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_sp_audit_agency_user ON spreadsheet_audit_log(agency_id, COALESCE(user_id, actor_user_id), created_at);`
-  );
-  await createIndexSafe(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user ON email_drafts(agency_id, COALESCE(user_id, created_by_user_id), created_at);`
-  );
+      CREATE INDEX IF NOT EXISTS idx_sp_proposals_agency_user ON spreadsheet_proposals(agency_id, user_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_sp_audit_agency_user ON spreadsheet_audit_log(agency_id, user_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user ON email_drafts(agency_id, user_id, created_at);
+    `);
+  } catch {
+    // If an index fails due to unexpected legacy drift, we prefer the app to keep running.
+  }
 }
 
 /**

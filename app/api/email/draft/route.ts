@@ -62,22 +62,8 @@ function makeId(prefix: string) {
   return `${prefix}_${uuid}`;
 }
 
-async function getEmailDraftColumns(db: Db): Promise<string[]> {
-  try {
-    const rows = (await db.all(`PRAGMA table_info("email_drafts")`)) as Array<{ name: string }>;
-    return rows.map((r) => r.name);
-  } catch {
-    return [];
-  }
-}
-
 function responseHasFileSearchEvidence(resp: any) {
-  // Defensive: SDK output shape drifts.
-  // We treat any recognizable file_search tool output / citations as evidence.
   try {
-    const s = JSON.stringify(resp ?? {});
-    if (s.includes("file_search") || s.includes("citations") || s.includes("citation")) return true;
-
     const outputs = Array.isArray(resp?.output) ? resp.output : [];
     for (const item of outputs) {
       const toolName = (item?.tool_name || item?.name || item?.tool)?.toString?.() ?? "";
@@ -254,40 +240,19 @@ ${prompt}
 
     const draftId = makeId("edraft");
 
-    // Drift-safe insert:
-    // - New canonical: email_drafts includes user_id
-    // - Legacy: only created_by_user_id exists
-    const cols = await getEmailDraftColumns(db);
-    const hasUserId = cols.includes("user_id");
-
-    if (hasUserId) {
-      await db.run(
-        `INSERT INTO email_drafts
-         (id, agency_id, user_id, bot_id, created_by_user_id, prompt, subject, body, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        draftId,
-        ctx.agencyId,
-        ctx.userId,
-        bot_id,
-        ctx.userId,
-        prompt,
-        normalized.draft.subject,
-        normalized.draft.body
-      );
-    } else {
-      await db.run(
-        `INSERT INTO email_drafts
-         (id, agency_id, bot_id, created_by_user_id, prompt, subject, body, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        draftId,
-        ctx.agencyId,
-        bot_id,
-        ctx.userId,
-        prompt,
-        normalized.draft.subject,
-        normalized.draft.body
-      );
-    }
+    await db.run(
+      `INSERT INTO email_drafts
+       (id, agency_id, user_id, created_by_user_id, bot_id, prompt, subject, body, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      draftId,
+      ctx.agencyId,
+      ctx.userId,
+      ctx.userId,
+      bot_id,
+      prompt,
+      normalized.draft.subject,
+      normalized.draft.body
+    );
 
     return Response.json({
       ok: true,

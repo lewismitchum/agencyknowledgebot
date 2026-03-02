@@ -1,12 +1,13 @@
 // app/api/email/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
-import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
+import { requireActiveMember } from "@/lib/authz";
 import { getAgencyPlan } from "@/lib/enforcement";
 import { normalizePlan, requireFeature } from "@/lib/plans";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
@@ -18,35 +19,26 @@ export async function GET(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
-    const planKey = normalizePlan(plan);
+    const rawPlan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const planKey = normalizePlan(rawPlan);
 
     const gate = requireFeature(planKey, "email");
     if (!gate.ok) {
-      return Response.json(
-        {
-          ok: true,
-          plan: planKey,
-          upsell: {
-            code: "PLAN_REQUIRED",
-            message: "Upgrade to Corporation to unlock the email inbox + docs-backed drafting.",
-          },
+      return Response.json({
+        ok: false,
+        plan: planKey,
+        upsell: {
+          code: "PLAN_REQUIRED",
+          message: "Email is available on Corporation.",
         },
-        { status: 200 }
-      );
+      });
     }
 
-    return Response.json({ ok: true, plan: planKey });
+    return Response.json({ ok: true, plan: planKey, upsell: null });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
     if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-
-    console.error("EMAIL_GET_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });
   }
-}
-
-export async function POST() {
-  return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
