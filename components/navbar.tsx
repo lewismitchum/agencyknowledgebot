@@ -229,6 +229,8 @@ export default function Navbar() {
         <nav className="hidden items-center gap-2 md:flex">
           <NavLink href="/app">Dashboard</NavLink>
           <NavLink href="/app/chat">Chat</NavLink>
+          <NavLink href="/app/email">Email</NavLink>
+          <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
 
           {/* Docs dropdown (shows docs list) */}
           <div className="relative" ref={docsPanelRef}>
@@ -325,6 +327,12 @@ export default function Navbar() {
             </Button>
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/chat">Chat</Link>
+            </Button>
+            <Button asChild variant="ghost" size="sm" className="rounded-full">
+              <Link href="/app/email">Email</Link>
+            </Button>
+            <Button asChild variant="ghost" size="sm" className="rounded-full">
+              <Link href="/app/spreadsheets">Sheets</Link>
             </Button>
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}>Docs</Link>
