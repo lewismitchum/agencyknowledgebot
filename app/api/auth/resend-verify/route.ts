@@ -5,7 +5,7 @@ import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { makeToken, hashToken, isoFromNowMinutes, nowIso } from "@/lib/tokens";
 import { getAppUrl, sendEmail } from "@/lib/email";
-import { rateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,8 +44,15 @@ export async function POST(req: NextRequest) {
       "unknown";
 
     // ✅ Rate limit: 3 / 10 minutes per IP + email combo
-    const rl = rateLimit(`resend-verify:${ip}:${normalizedEmail}`, 3, 10 * 60_000);
-    if (!rl.allowed) {
+    try {
+      await enforceRateLimit({
+        userId: `ip:${ip}:${normalizedEmail}`,
+        agencyId: "public",
+        key: "resend_verify",
+        perMinute: 1, // 1/min
+        perHour: 18,  // effectively ~3 per 10 mins + buffer
+      });
+    } catch {
       return NextResponse.json(
         { ok: false, error: "RATE_LIMITED", message: "Too many requests. Try again in a few minutes." },
         { status: 429 }
