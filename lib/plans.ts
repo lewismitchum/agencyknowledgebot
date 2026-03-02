@@ -90,7 +90,9 @@ const FEATURES: Record<FeatureKey, PlanKey[]> = {
   extraction: ["starter", "pro", "enterprise", "corporation"],
   multimedia: ["pro", "enterprise", "corporation"],
   email: ["corporation"],
-  spreadsheets: ["corporation"],
+
+  // ✅ paid tiers (not free)
+  spreadsheets: ["starter", "pro", "enterprise", "corporation"],
 };
 
 export function hasFeature(plan: unknown, feature: FeatureKey): boolean {

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ModeToggle } from "@/components/mode-toggle";
+import { hasFeature } from "@/lib/plans";
 
 type GateState = "checking" | "ok" | "redirecting";
 
@@ -32,6 +33,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
+
+  const plan = String(me?.agency?.plan ?? "free");
+
+  const canSeeEmail = hasFeature(plan, "email");
+  const canSeeSheets = hasFeature(plan, "spreadsheets");
 
   // allow these inside /app without forcing a redirect loop
   const gateBypass = useMemo(() => {
@@ -73,7 +79,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        // if /api/me returns other errors, do not brick the app shell
         const j = (await r.json().catch(() => null)) as MeResponse | null;
         if (!cancelled) {
           setMe(j);
@@ -223,12 +228,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <NavItem href="/app/extractions" active={pathname?.startsWith("/app/extractions")}>
               Extractions
             </NavItem>
-            <NavItem href="/app/spreadsheets" active={pathname?.startsWith("/app/spreadsheets")}>
-              Spreadsheets
-            </NavItem>
-            <NavItem href="/app/email" active={pathname?.startsWith("/app/email")}>
-              Email
-            </NavItem>
+
+            {canSeeSheets ? (
+              <NavItem href="/app/spreadsheets" active={pathname?.startsWith("/app/spreadsheets")}>
+                Spreadsheets
+              </NavItem>
+            ) : null}
+
+            {canSeeEmail ? (
+              <NavItem href="/app/email" active={pathname?.startsWith("/app/email")}>
+                Email
+              </NavItem>
+            ) : null}
+
             <NavItem href="/app/billing" active={pathname === "/app/billing"}>
               Billing
             </NavItem>
@@ -286,8 +298,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <MobileItem href="/app/bots" label="Bots" active={pathname === "/app/bots"} />
           <MobileItem href="/app/schedule" label="Schedule" active={pathname?.startsWith("/app/schedule")} />
           <MobileItem href="/app/notifications" label="Notify" active={pathname?.startsWith("/app/notifications")} />
-          <MobileItem href="/app/spreadsheets" label="Sheets" active={pathname?.startsWith("/app/spreadsheets")} />
-          <MobileItem href="/app/email" label="Email" active={pathname?.startsWith("/app/email")} />
+
+          {canSeeSheets ? (
+            <MobileItem href="/app/spreadsheets" label="Sheets" active={pathname?.startsWith("/app/spreadsheets")} />
+          ) : null}
+
+          {canSeeEmail ? <MobileItem href="/app/email" label="Email" active={pathname?.startsWith("/app/email")} /> : null}
+
           <MobileItem href="/app/support" label="Help" active={pathname?.startsWith("/app/support")} />
           <MobileItem href="/app/settings" label="Settings" active={pathname === "/app/settings"} />
         </div>
