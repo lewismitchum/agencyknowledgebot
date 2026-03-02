@@ -272,12 +272,6 @@ async function ensureSchedulePrefs(db: Db) {
  * Core tables — canonical shape
  */
 async function ensureCoreTables(db: Db) {
-  // IMPORTANT:
-  // - Create tables first
-  // - Then drift-repair columns
-  // - Then create indexes that reference drift columns (user_id, etc.)
-  // This prevents “no such column” crashes on legacy DBs.
-
   await db.exec(`
     CREATE TABLE IF NOT EXISTS agencies (
       id TEXT PRIMARY KEY,
@@ -443,10 +437,10 @@ async function ensureCoreTables(db: Db) {
     CREATE TABLE IF NOT EXISTS spreadsheet_proposals (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
-      user_id TEXT, -- canonical
-      created_by_user_id TEXT, -- legacy alias (routes may still write this)
-      bot_id TEXT, -- optional (docs-based generation context)
-      status TEXT NOT NULL DEFAULT 'proposed', -- proposed|applied|rejected
+      user_id TEXT,
+      created_by_user_id TEXT,
+      bot_id TEXT,
+      status TEXT NOT NULL DEFAULT 'proposed',
       instruction TEXT,
       csv_snapshot TEXT,
       proposal_json TEXT,
@@ -458,10 +452,10 @@ async function ensureCoreTables(db: Db) {
     CREATE TABLE IF NOT EXISTS spreadsheet_audit_log (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
-      user_id TEXT, -- canonical actor
-      actor_user_id TEXT, -- legacy alias
+      user_id TEXT,
+      actor_user_id TEXT,
       proposal_id TEXT NOT NULL,
-      action TEXT NOT NULL, -- APPLY|REJECT
+      action TEXT NOT NULL,
       details_json TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -470,14 +464,46 @@ async function ensureCoreTables(db: Db) {
     CREATE TABLE IF NOT EXISTS email_drafts (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
-      user_id TEXT, -- canonical
-      created_by_user_id TEXT, -- legacy alias
+      user_id TEXT,
+      created_by_user_id TEXT,
       bot_id TEXT NOT NULL,
       prompt TEXT,
       subject TEXT NOT NULL,
       body TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- ✅ Email OAuth connections (corp)
+    CREATE TABLE IF NOT EXISTS email_accounts (
+      id TEXT PRIMARY KEY,
+      agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      provider TEXT NOT NULL, -- 'google'
+      email TEXT, -- mailbox address
+      scope TEXT,
+      access_token TEXT,
+      refresh_token TEXT,
+      token_expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(agency_id, user_id, provider)
+    );
+
+    -- Helpful indexes
+    CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);
+    CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);
+    CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);
+    CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
+    CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
+
+    CREATE INDEX IF NOT EXISTS idx_sp_proposals_agency_user ON spreadsheet_proposals(agency_id, user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sp_audit_agency_user ON spreadsheet_audit_log(agency_id, user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user ON email_drafts(agency_id, user_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_email_accounts_agency_user ON email_accounts(agency_id, user_id, provider);
   `);
 
   // Stripe/billing columns (idempotent)
@@ -492,7 +518,7 @@ async function ensureCoreTables(db: Db) {
   // Users onboarding drift
   await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
 
-  // Spreadsheets drift columns + backfill
+  // Spreadsheets canonical user_id drift + backfill from legacy columns
   if (await tableExists(db, "spreadsheet_proposals")) {
     await addColumnIfMissing(db, "spreadsheet_proposals", "user_id", "TEXT");
     await addColumnIfMissing(db, "spreadsheet_proposals", "created_by_user_id", "TEXT");
@@ -522,7 +548,7 @@ async function ensureCoreTables(db: Db) {
     `);
   }
 
-  // Email drafts drift columns + backfill
+  // Email drafts canonical user_id drift + backfill from legacy columns
   if (await tableExists(db, "email_drafts")) {
     await addColumnIfMissing(db, "email_drafts", "user_id", "TEXT");
     await addColumnIfMissing(db, "email_drafts", "created_by_user_id", "TEXT");
@@ -536,24 +562,14 @@ async function ensureCoreTables(db: Db) {
     `);
   }
 
-  // Helpful indexes (create AFTER drift repair; also safe to ignore failures on weird legacy DBs)
-  try {
-    await db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);
-      CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);
-      CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);
-      CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
-      CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
-
-      CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
-      CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
-
-      CREATE INDEX IF NOT EXISTS idx_sp_proposals_agency_user ON spreadsheet_proposals(agency_id, user_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_sp_audit_agency_user ON spreadsheet_audit_log(agency_id, user_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user ON email_drafts(agency_id, user_id, created_at);
-    `);
-  } catch {
-    // If an index fails due to unexpected legacy drift, we prefer the app to keep running.
+  // Email accounts drift safety (if table existed with missing cols)
+  if (await tableExists(db, "email_accounts")) {
+    await addColumnIfMissing(db, "email_accounts", "email", "TEXT");
+    await addColumnIfMissing(db, "email_accounts", "scope", "TEXT");
+    await addColumnIfMissing(db, "email_accounts", "access_token", "TEXT");
+    await addColumnIfMissing(db, "email_accounts", "refresh_token", "TEXT");
+    await addColumnIfMissing(db, "email_accounts", "token_expires_at", "TEXT");
+    await addColumnIfMissing(db, "email_accounts", "updated_at", "TEXT NOT NULL DEFAULT (datetime('now'))");
   }
 }
 

@@ -17,6 +17,8 @@ export default function EmailInboxPage() {
   const [upsell, setUpsell] = useState<Upsell | null>(null);
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
+  const [provider, setProvider] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
 
   useEffect(() => {
@@ -35,6 +37,8 @@ export default function EmailInboxPage() {
 
         if (j?.ok) {
           setConnected(Boolean(j?.connected));
+          setProvider(j?.provider ?? null);
+          setEmail(j?.email ?? null);
           setMessage(String(j?.message || ""));
         }
       } catch (e: any) {
@@ -94,46 +98,54 @@ export default function EmailInboxPage() {
         <div className="text-base font-semibold">Connection</div>
 
         {connected ? (
-          <div className="rounded-xl border bg-background/40 p-3 text-sm">
-            Connected. (Threads + actions coming next.)
-          </div>
-        ) : (
           <div className="space-y-3">
             <div className="rounded-xl border bg-background/40 p-3 text-sm">
-              <div className="text-sm font-medium">Not connected yet</div>
+              <div className="text-sm font-medium">Connected</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                {message || "Gmail OAuth + thread list is coming next."}
+                Provider: <span className="font-mono">{provider ?? "unknown"}</span>
+                {email ? (
+                  <>
+                    {" "}
+                    • Mailbox: <span className="font-mono">{email}</span>
+                  </>
+                ) : null}
               </div>
             </div>
 
             <div className="rounded-xl border bg-muted/30 p-4 text-sm">
-              <div className="font-medium">Coming next</div>
+              <div className="font-medium">Next step</div>
               <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground space-y-1">
-                <li>Connect Gmail (OAuth)</li>
-                <li>Thread list + search</li>
+                <li>List threads (Gmail API)</li>
                 <li>Open thread + summarize</li>
-                <li>Draft reply using docs-backed evidence (same strict rules)</li>
-                <li>Send + log drafts/actions</li>
+                <li>Draft reply using docs-backed evidence</li>
+                <li>Send + log actions</li>
               </ul>
             </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="rounded-xl border bg-background/40 p-3 text-sm">
+              <div className="text-sm font-medium">Not connected</div>
+              <div className="mt-1 text-xs text-muted-foreground">{message || "Click Connect Gmail to enable inbox."}</div>
+            </div>
 
-            <button
-              type="button"
-              disabled
-              className="rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background opacity-60"
-              title="Gmail connection coming next"
+            <a
+              href="/api/email/connect"
+              className="inline-flex items-center justify-center rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background"
             >
-              Connect Gmail (coming soon)
-            </button>
+              Connect Gmail
+            </a>
+
+            <div className="text-xs text-muted-foreground">
+              This stores OAuth tokens for your user in your agency. We don’t send email without an explicit action.
+            </div>
           </div>
         )}
       </div>
 
       <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-3">
         <div className="text-base font-semibold">Drafting</div>
-        <div className="text-sm text-muted-foreground">
-          Drafting works now (docs-backed). Use the Draft page.
-        </div>
+        <div className="text-sm text-muted-foreground">Drafting works now (docs-backed). Use the Draft page.</div>
         <a className="inline-flex rounded-xl border px-4 py-2 text-sm hover:bg-muted" href="/app/email">
           Go to Drafting
         </a>

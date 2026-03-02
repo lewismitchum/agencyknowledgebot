@@ -37,15 +37,30 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Stub payload for now. Later: pull connected mailbox threads.
+    const acc = (await db.get(
+      `SELECT provider, email, token_expires_at, refresh_token
+       FROM email_accounts
+       WHERE agency_id = ? AND user_id = ?
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      ctx.agencyId,
+      ctx.userId
+    )) as
+      | { provider: string; email: string | null; token_expires_at: string | null; refresh_token: string | null }
+      | undefined;
+
+    const connected = Boolean(acc?.refresh_token || acc?.token_expires_at);
+    const provider = acc?.provider ?? null;
+
     return Response.json(
       {
         ok: true,
         plan: planKey,
-        connected: false,
-        provider: null,
-        message: "Inbox is not connected yet. Gmail OAuth is coming next.",
-        threads: [],
+        connected,
+        provider,
+        email: acc?.email ?? null,
+        message: connected ? "Connected." : "Not connected. Click Connect Gmail to enable inbox.",
+        threads: [], // next step: list threads
       },
       { status: 200 }
     );
