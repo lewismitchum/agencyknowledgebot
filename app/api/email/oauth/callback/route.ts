@@ -5,7 +5,6 @@ import { google } from "googleapis";
 import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
-import { requireActiveMember } from "@/lib/authz";
 import { encrypt } from "@/lib/crypto";
 
 export const runtime = "nodejs";
@@ -23,9 +22,50 @@ function parseState(state: string) {
 
   const agencyId = parts[2];
   const userId = parts[3];
-
   if (!agencyId || !userId) return null;
+
   return { agencyId, userId };
+}
+
+/**
+ * Turso/libSQL wrappers vary:
+ * - some expect db.get/sql run(sql, ...args)
+ * - others expect db.get/sql run(sql, argsArray)
+ */
+async function dbGet(db: any, sql: string, args: any[]) {
+  try {
+    return await db.get(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.get(sql, args);
+    }
+    throw err;
+  }
+}
+
+async function dbRun(db: any, sql: string, args: any[]) {
+  try {
+    return await db.run(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.run(sql, args);
+    }
+    throw err;
+  }
+}
+
+async function dbAll(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.all(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.all(sql, args);
+    }
+    throw err;
+  }
 }
 
 async function ensureEmailAccountsSchema(db: Db) {
@@ -47,14 +87,25 @@ async function ensureEmailAccountsSchema(db: Db) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user
       ON email_accounts(agency_id, user_id);
   `);
+
+  // Drift-safe add missing columns (prod may have older shape)
+  const cols = await dbAll(db, `PRAGMA table_info(email_accounts)`);
+  const have = new Set((cols || []).map((c: any) => String(c?.name || "")));
+
+  if (!have.has("email")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN email TEXT;`);
+  if (!have.has("access_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN access_token TEXT;`);
+  if (!have.has("refresh_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN refresh_token TEXT;`);
+  if (!have.has("expiry_date")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN expiry_date INTEGER;`);
+  if (!have.has("scope")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN scope TEXT;`);
+  if (!have.has("token_type")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN token_type TEXT;`);
+  if (!have.has("created_at")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;`);
+  if (!have.has("updated_at")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;`);
 }
 
 export async function GET(req: NextRequest) {
   try {
-    // User should still be logged in when returning from Google
-    const ctx = await requireActiveMember(req);
-
     const url = new URL(req.url);
+
     const code = safeString(url.searchParams.get("code"));
     const state = safeString(url.searchParams.get("state"));
     const error = safeString(url.searchParams.get("error"));
@@ -67,16 +118,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(new URL(`/app/email?connected=0&error=missing_code_or_state`, req.url));
     }
 
-    // CSRF: state must match httpOnly cookie set by /api/email/connect
+    // CSRF: must match httpOnly cookie set by /api/email/connect
     const cookieState = safeString(req.cookies.get("email_oauth_state")?.value);
     if (!cookieState || cookieState !== state) {
       return NextResponse.redirect(new URL(`/app/email?connected=0&error=state_mismatch`, req.url));
     }
 
-    // state includes agencyId/userId — verify it matches current session
+    // State carries agency/user (do NOT rely on session cookie; OAuth redirect may drop SameSite=Strict session cookies)
     const parsed = parseState(state);
-    if (!parsed || parsed.agencyId !== ctx.agencyId || parsed.userId !== ctx.userId) {
-      return NextResponse.redirect(new URL(`/app/email?connected=0&error=state_context_mismatch`, req.url));
+    if (!parsed) {
+      return NextResponse.redirect(new URL(`/app/email?connected=0&error=bad_state`, req.url));
     }
 
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
@@ -108,7 +159,7 @@ export async function GET(req: NextRequest) {
       expiry_date: expiryDate ?? undefined,
     });
 
-    // Fetch the connected Gmail address (best-effort)
+    // Fetch connected Gmail address (best-effort)
     let email: string | null = null;
     try {
       const gmail = google.gmail({ version: "v1", auth: oauth2Client });
@@ -124,17 +175,18 @@ export async function GET(req: NextRequest) {
 
     const now = Date.now();
 
-    // Upsert by (agency_id, user_id)
-    const existing = await db.get(
+    const existing = await dbGet(
+      db,
       `SELECT id FROM email_accounts WHERE agency_id = ? AND user_id = ?`,
-      [ctx.agencyId, ctx.userId],
+      [parsed.agencyId, parsed.userId],
     );
 
     const encAccess = accessToken ? encrypt(accessToken) : null;
     const encRefresh = refreshToken ? encrypt(refreshToken) : null;
 
     if (existing?.id) {
-      await db.run(
+      await dbRun(
+        db,
         `
         UPDATE email_accounts
         SET
@@ -161,7 +213,8 @@ export async function GET(req: NextRequest) {
         ],
       );
     } else {
-      await db.run(
+      await dbRun(
+        db,
         `
         INSERT INTO email_accounts (
           id, agency_id, user_id, provider,
@@ -171,8 +224,8 @@ export async function GET(req: NextRequest) {
         `,
         [
           `ea_${randomUUID()}`,
-          ctx.agencyId,
-          ctx.userId,
+          parsed.agencyId,
+          parsed.userId,
           "google",
           email,
           encAccess,
@@ -199,7 +252,6 @@ export async function GET(req: NextRequest) {
     return res;
   } catch (err: any) {
     const msg = safeString(err?.code ?? err?.message ?? err);
-    // Keep this redirect-based so UI stays simple
     return NextResponse.redirect(new URL(`/app/email?connected=0&error=${encodeURIComponent(msg || "callback_failed")}`, req.url));
   }
 }
