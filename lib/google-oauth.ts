@@ -8,7 +8,10 @@ function getEnv(name: string) {
 export function getGoogleOAuthConfig() {
   const clientId = getEnv("GOOGLE_CLIENT_ID");
   const clientSecret = getEnv("GOOGLE_CLIENT_SECRET");
-  const redirectUri = getEnv("GOOGLE_OAUTH_REDIRECT_URI");
+
+  // Prefer GOOGLE_REDIRECT_URI (your current env var),
+  // but allow the older name for backward compatibility.
+  const redirectUri = getEnv("GOOGLE_REDIRECT_URI") || getEnv("GOOGLE_OAUTH_REDIRECT_URI");
 
   const scopes =
     getEnv("GOOGLE_OAUTH_SCOPES") ||
