@@ -7,28 +7,23 @@ import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 
 type Upsell = { code?: string; message?: string };
 
-type Draft = {
+type Bot = {
+  id: string;
+  name: string;
+  owner_user_id?: string | null;
+};
+
+type Draft = { subject: string; body: string };
+
+type DraftRow = {
+  id: string;
+  bot_id: string;
   subject: string;
-  body: string;
-  tone?: string;
-  notes?: string;
-  citations?: Array<{ title?: string; snippet?: string }>;
+  created_at: string;
 };
 
 function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
-}
-
-function downloadTextFile(filename: string, text: string, mime = "text/plain") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }
 
 export default function EmailPage() {
@@ -38,23 +33,26 @@ export default function EmailPage() {
   const [plan, setPlan] = useState<string | undefined>(undefined);
   const [upsell, setUpsell] = useState<Upsell | null>(null);
 
-  // NEW: draft-from-docs composer
-  const [to, setTo] = useState("");
-  const [from, setFrom] = useState("");
-  const [context, setContext] = useState(""); // what user wants to say / scenario
-  const [ask, setAsk] = useState(""); // explicit instruction for what to draft
-  const [tone, setTone] = useState<"neutral" | "friendly" | "firm" | "sales" | "support">("neutral");
+  const [bots, setBots] = useState<Bot[]>([]);
+  const [botId, setBotId] = useState("");
+
+  const [tone, setTone] = useState("direct");
+  const [recipientName, setRecipientName] = useState("");
+  const [recipientCompany, setRecipientCompany] = useState("");
+  const [prompt, setPrompt] = useState("");
 
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
   const [fallback, setFallback] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
 
+  const [draftsLoading, setDraftsLoading] = useState(false);
+  const [draftsError, setDraftsError] = useState("");
+  const [drafts, setDrafts] = useState<DraftRow[]>([]);
+
   const canDraft = useMemo(() => {
-    const a = ask.trim().length > 0;
-    const c = context.trim().length > 0;
-    return (a || c) && !drafting;
-  }, [ask, context, drafting]);
+    return botId.trim().length > 0 && prompt.trim().length > 0 && !drafting;
+  }, [botId, prompt, drafting]);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,7 +64,6 @@ export default function EmailPage() {
 
       try {
         const j = await fetchJson<any>("/api/email", { credentials: "include", cache: "no-store" });
-
         if (cancelled) return;
 
         setPlan(typeof j?.plan === "string" ? j.plan : undefined);
@@ -74,6 +71,47 @@ export default function EmailPage() {
 
         const allowed = Boolean(j?.ok) && !j?.upsell?.code;
         setGated(!allowed);
+
+        if (allowed) {
+          try {
+            const b = await fetchJson<any>("/api/bots", { credentials: "include", cache: "no-store" });
+            const list = Array.isArray(b?.bots) ? b.bots : Array.isArray(b) ? b : [];
+            const parsed: Bot[] = list
+              .map((x: any) => ({
+                id: String(x?.id || ""),
+                name: String(x?.name || "Bot"),
+                owner_user_id: x?.owner_user_id ?? null,
+              }))
+              .filter((x: Bot) => x.id);
+
+            if (cancelled) return;
+
+            setBots(parsed);
+
+            if (!botId) {
+              const agency = parsed.find((x) => !x.owner_user_id) ?? parsed[0];
+              if (agency?.id) setBotId(agency.id);
+            }
+          } catch {
+            if (!cancelled) setBots([]);
+          }
+
+          // load drafts list
+          try {
+            setDraftsLoading(true);
+            setDraftsError("");
+
+            const d = await fetchJson<any>("/api/email/drafts", { credentials: "include", cache: "no-store" });
+            if (cancelled) return;
+
+            setDrafts(Array.isArray(d?.drafts) ? (d.drafts as DraftRow[]) : []);
+          } catch (e: any) {
+            if (cancelled) return;
+            setDraftsError(e?.message ?? "Failed to load drafts");
+          } finally {
+            if (!cancelled) setDraftsLoading(false);
+          }
+        }
       } catch (e: any) {
         if (cancelled) return;
 
@@ -92,6 +130,7 @@ export default function EmailPage() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function onDraft() {
@@ -108,11 +147,10 @@ export default function EmailPage() {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          to: to.trim() || null,
-          from: from.trim() || null,
+          bot_id: botId,
+          prompt,
           tone,
-          context,
-          instruction: ask,
+          recipient: { name: recipientName, company: recipientCompany },
         }),
       });
 
@@ -121,19 +159,20 @@ export default function EmailPage() {
         return;
       }
 
-      const d = j?.draft ?? null;
-      if (!d || typeof d?.subject !== "string" || typeof d?.body !== "string") {
+      if (!j?.draft?.subject || !j?.draft?.body) {
         setFallback("I don’t have that information in the docs yet.");
         return;
       }
 
-      setDraft({
-        subject: d.subject,
-        body: d.body,
-        tone: typeof d?.tone === "string" ? d.tone : tone,
-        notes: typeof d?.notes === "string" ? d.notes : "",
-        citations: Array.isArray(d?.citations) ? d.citations : [],
-      });
+      setDraft({ subject: String(j.draft.subject), body: String(j.draft.body) });
+
+      // refresh drafts list (best-effort)
+      try {
+        const d = await fetchJson<any>("/api/email/drafts", { credentials: "include", cache: "no-store" });
+        setDrafts(Array.isArray(d?.drafts) ? (d.drafts as DraftRow[]) : []);
+      } catch {
+        // ignore
+      }
     } catch (e: any) {
       if (isFetchJsonError(e)) {
         if (e.status === 401) {
@@ -141,7 +180,11 @@ export default function EmailPage() {
           return;
         }
         if (e.status === 403) {
-          setDraftError("Upgrade required to draft emails from docs.");
+          setDraftError("Upgrade required to use Email drafting.");
+          return;
+        }
+        if (e.status === 409) {
+          setDraftError("This bot is missing a vector store. Repair it in Bots first.");
           return;
         }
       }
@@ -158,7 +201,7 @@ export default function EmailPage() {
       <div className="mx-auto max-w-4xl p-6">
         <UpgradeGate
           title="Email is available on Corporation"
-          message={upsell?.message || "Upgrade to Corporation to unlock the email inbox + AI triage + drafting."}
+          message={upsell?.message || "Upgrade to unlock the email inbox + docs-backed drafting."}
           ctaHref="/app/billing"
           ctaLabel="Upgrade Plan"
         />
@@ -180,183 +223,167 @@ export default function EmailPage() {
       <div>
         <h1 className="text-2xl font-semibold">Email</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Draft emails from docs (safe) — inbox sync comes later. Plan:{" "}
-          <span className="font-mono">{plan ?? "unknown"}</span>
+          Docs-backed email drafting (strict). Plan: <span className="font-mono">{plan ?? "unknown"}</span>
         </p>
       </div>
 
-      <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
-        <div>
-          <div className="text-base font-semibold">Draft from docs</div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            Louis uses docs evidence. If the docs don’t support specifics, you’ll get the fallback.
-          </div>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <div>
-            <div className="text-sm font-medium">To (optional)</div>
-            <input
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
-              placeholder="client@company.com"
-              autoComplete="email"
-              inputMode="email"
-            />
-          </div>
-
-          <div>
-            <div className="text-sm font-medium">From (optional)</div>
-            <input
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
-              placeholder="you@yourcompany.com"
-              autoComplete="email"
-              inputMode="email"
-            />
-          </div>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <div>
-            <div className="text-sm font-medium">Tone</div>
-            <select
-              value={tone}
-              onChange={(e) => setTone(e.target.value as any)}
-              className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
-            >
-              <option value="neutral">Neutral</option>
-              <option value="friendly">Friendly</option>
-              <option value="firm">Firm</option>
-              <option value="sales">Sales</option>
-              <option value="support">Support</option>
-            </select>
-          </div>
-
-          <div className="rounded-2xl border bg-background/30 p-4 text-xs text-muted-foreground">
-            Tip: include the doc keyword you want Louis to use (e.g. “pricing”, “onboarding SOP”, “SLA”).
-          </div>
-        </div>
-
-        <div>
-          <div className="text-sm font-medium">Context (what’s happening)</div>
-          <textarea
-            value={context}
-            onChange={(e) => setContext(e.target.value)}
-            rows={4}
-            className="mt-2 w-full rounded-xl border bg-background/40 p-3 text-sm"
-            placeholder='Example: "Client asked about our onboarding timeline and what we need from them. We want to set expectations and ask for access to X."'
-          />
-        </div>
-
-        <div>
-          <div className="text-sm font-medium">Instruction (what to write)</div>
-          <textarea
-            value={ask}
-            onChange={(e) => setAsk(e.target.value)}
-            rows={3}
-            className="mt-2 w-full rounded-xl border bg-background/40 p-3 text-sm"
-            placeholder='Example: "Draft a reply confirming next steps, list required assets, and include our standard timeline + SLA from docs."'
-          />
-        </div>
-
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onDraft}
-            disabled={!canDraft}
-            className="rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-60"
-          >
-            {drafting ? "Drafting..." : "Draft email"}
-          </button>
-
-          <div className="text-xs text-muted-foreground">Uses your bot’s vector store (docs).</div>
-        </div>
-
-        {draftError ? (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{draftError}</div>
-        ) : null}
-
-        {fallback ? <div className="rounded-xl border bg-muted/40 p-3 text-sm font-mono">{fallback}</div> : null}
-      </div>
-
-      {draft ? (
-        <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
-          <div className="flex items-start justify-between gap-3">
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2 space-y-6">
+          <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
             <div>
-              <div className="text-base font-semibold">Draft</div>
-              <div className="text-xs text-muted-foreground">
-                Tone: <span className="font-mono">{draft.tone ?? tone}</span>
+              <div className="text-base font-semibold">Draft from docs</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Louis will only draft if file_search finds evidence. Otherwise you get the fallback.
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
-                onClick={() => {
-                  const text = `Subject: ${draft.subject}\n\n${draft.body}`;
-                  navigator.clipboard?.writeText(text).catch(() => {});
-                }}
-              >
-                Copy
-              </button>
-              <button
-                type="button"
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
-                onClick={() => downloadTextFile("draft-email.txt", `Subject: ${draft.subject}\n\n${draft.body}`)}
-              >
-                Download
-              </button>
-            </div>
-          </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <div className="text-sm font-medium">Bot</div>
+                <select
+                  value={botId}
+                  onChange={(e) => setBotId(e.target.value)}
+                  className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                >
+                  {bots.length === 0 ? <option value="">No bots found</option> : null}
+                  {bots.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                      {b.owner_user_id ? " (Private)" : " (Agency)"}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-2 text-xs text-muted-foreground">Drafting uses this bot’s vector store.</div>
+              </div>
 
-          <div className="rounded-xl border bg-background/40 p-4">
-            <div className="text-sm font-medium">Subject</div>
-            <div className="mt-1 font-mono text-sm">{draft.subject}</div>
-
-            <div className="mt-4 text-sm font-medium">Body</div>
-            <pre className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{draft.body}</pre>
-          </div>
-
-          {draft.notes ? <div className="rounded-xl border bg-muted/30 p-3 text-sm">{draft.notes}</div> : null}
-
-          {draft.citations && draft.citations.length ? (
-            <div className="rounded-xl border bg-background/30 p-4">
-              <div className="text-sm font-medium">Doc evidence (high level)</div>
-              <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-muted-foreground">
-                {draft.citations.slice(0, 6).map((c, idx) => (
-                  <li key={idx}>
-                    <span className="font-medium text-foreground">{c.title || "Doc"}</span>
-                    {c.snippet ? <span className="text-muted-foreground"> — {c.snippet}</span> : null}
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-2 text-xs text-muted-foreground">
-                Next: show exact citations/links once we store doc sources in the response.
+              <div>
+                <div className="text-sm font-medium">Tone</div>
+                <select
+                  value={tone}
+                  onChange={(e) => setTone(e.target.value)}
+                  className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                >
+                  <option value="friendly">friendly</option>
+                  <option value="direct">direct</option>
+                  <option value="formal">formal</option>
+                </select>
+                <div className="mt-2 text-xs text-muted-foreground">Controls voice. Facts still must come from docs.</div>
               </div>
             </div>
-          ) : null}
 
-          <div className="text-xs text-muted-foreground">
-            Next: connect Gmail/Microsoft and add “Send” + “Reply in thread” while keeping this docs-backed drafting mode.
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <div className="text-sm font-medium">Recipient name (optional)</div>
+                <input
+                  value={recipientName}
+                  onChange={(e) => setRecipientName(e.target.value)}
+                  className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                  placeholder="Jamie"
+                />
+              </div>
+              <div>
+                <div className="text-sm font-medium">Recipient company (optional)</div>
+                <input
+                  value={recipientCompany}
+                  onChange={(e) => setRecipientCompany(e.target.value)}
+                  className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                  placeholder="Acme Co"
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="text-sm font-medium">What email do you need?</div>
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={5}
+                className="mt-2 w-full rounded-xl border bg-background/40 p-3 text-sm"
+                placeholder='Example: "Draft a follow-up to the client about the onboarding kickoff. Use our onboarding SOP + timeline."'
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={onDraft}
+                disabled={!canDraft}
+                className="rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-60"
+              >
+                {drafting ? "Drafting..." : "Draft email"}
+              </button>
+
+              <div className="text-xs text-muted-foreground">Strict docs-only for internal facts.</div>
+            </div>
+
+            {draftError ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{draftError}</div>
+            ) : null}
+
+            {fallback ? <div className="rounded-xl border bg-muted/40 p-3 text-sm font-mono">{fallback}</div> : null}
+
+            {draft ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold">Draft</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                      onClick={() => navigator.clipboard?.writeText(draft.subject).catch(() => {})}
+                    >
+                      Copy subject
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                      onClick={() => navigator.clipboard?.writeText(draft.body).catch(() => {})}
+                    >
+                      Copy body
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border bg-background/40 p-3 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subject</div>
+                  <div className="mt-1">{draft.subject}</div>
+                </div>
+
+                <div className="rounded-xl border bg-background/40 p-3 text-sm whitespace-pre-wrap">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Body</div>
+                  <div className="mt-2">{draft.body}</div>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
-      ) : null}
 
-      <div className="rounded-3xl border bg-card p-6 shadow-sm">
-        <div className="text-base font-semibold">Coming next</div>
-        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-          <li>Connect provider (Gmail / Microsoft) + sync</li>
-          <li>Inbox list + threads</li>
-          <li>AI summary + suggested reply</li>
-          <li>“Extract meeting” → schedule</li>
-        </ul>
+        <div className="space-y-6">
+          <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-3">
+            <div className="text-base font-semibold">Recent drafts</div>
 
-        <div className="mt-4 rounded-2xl border bg-background/50 p-4 text-sm">
-          This page is wired + gated. Next step is adding <span className="font-mono">/api/email/draft</span>.
+            {draftsLoading ? (
+              <div className="text-sm text-muted-foreground">Loading…</div>
+            ) : draftsError ? (
+              <div className="text-sm text-red-600">{draftsError}</div>
+            ) : drafts.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No drafts yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {drafts.slice(0, 10).map((d) => (
+                  <div key={d.id} className="rounded-xl border bg-background/40 p-3">
+                    <div className="text-xs text-muted-foreground">{new Date(d.created_at).toLocaleString()}</div>
+                    <div className="mt-1 text-sm font-medium">{d.subject}</div>
+                    <div className="mt-1 text-[11px] text-muted-foreground font-mono">{d.id}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="text-xs text-muted-foreground">
+              Next: “Inbox” + thread view (corp). This is just docs-backed drafting + history.
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-// app/api/email/route.ts
+// app/api/email/drafts/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -22,27 +22,29 @@ export async function GET(req: NextRequest) {
     const planKey = normalizePlan(plan);
 
     const gate = requireFeature(planKey, "email");
-    if (!gate.ok) {
-      return Response.json(
-        {
-          ok: true,
-          plan: planKey,
-          upsell: {
-            code: "PLAN_REQUIRED",
-            message: "Upgrade to Corporation to unlock the email inbox + docs-backed drafting.",
-          },
-        },
-        { status: 200 }
-      );
-    }
+    if (!gate.ok) return Response.json(gate.body, { status: gate.status });
 
-    return Response.json({ ok: true, plan: planKey });
+    // Drift-safe: prefer canonical user_id, fallback to legacy created_by_user_id.
+    const rows = (await db.all(
+      `
+      SELECT id, bot_id, subject, created_at
+      FROM email_drafts
+      WHERE agency_id = ?
+        AND (COALESCE(user_id, created_by_user_id) = ?)
+      ORDER BY created_at DESC
+      LIMIT 50
+      `,
+      ctx.agencyId,
+      ctx.userId
+    )) as Array<{ id: string; bot_id: string; subject: string; created_at: string }>;
+
+    return Response.json({ ok: true, plan: planKey, drafts: rows || [] });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
     if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
 
-    console.error("EMAIL_GET_ERROR", err);
+    console.error("EMAIL_DRAFTS_GET_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }
