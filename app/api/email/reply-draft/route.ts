@@ -6,6 +6,75 @@ import { google } from "googleapis";
 
 export const runtime = "nodejs";
 
+function safeStr(x: any) {
+  return String(x ?? "").trim();
+}
+
+function b64urlToUtf8(data: string) {
+  if (!data) return "";
+  const b64 = data.replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (b64.length % 4)) % 4;
+  const padded = b64 + "=".repeat(padLen);
+  return Buffer.from(padded, "base64").toString("utf8");
+}
+
+function pickPlainText(payload: any): string {
+  if (!payload) return "";
+
+  const direct = payload?.body?.data ? b64urlToUtf8(String(payload.body.data)) : "";
+  const mime = safeStr(payload?.mimeType);
+
+  if (mime.toLowerCase().startsWith("text/plain") && direct) return direct;
+
+  const parts: any[] = Array.isArray(payload?.parts) ? payload.parts : [];
+  if (parts.length === 0) return direct || "";
+
+  for (const p of parts) {
+    const pm = safeStr(p?.mimeType).toLowerCase();
+    if (pm.startsWith("text/plain") && p?.body?.data) {
+      return b64urlToUtf8(String(p.body.data));
+    }
+  }
+
+  for (const p of parts) {
+    const pm = safeStr(p?.mimeType).toLowerCase();
+    if (pm.startsWith("multipart/")) {
+      const nested = pickPlainText(p);
+      if (nested) return nested;
+    }
+  }
+
+  return "";
+}
+
+function extractHeader(
+  headers: Array<{ name?: string | null; value?: string | null }> | undefined,
+  key: string
+) {
+  if (!headers) return "";
+  const hit = headers.find((h) => (h.name || "").toLowerCase() === key.toLowerCase());
+  return (hit?.value || "").trim();
+}
+
+function tryParseJsonObject(s: string): any | null {
+  const t = safeStr(s);
+  if (!t) return null;
+  try {
+    return JSON.parse(t);
+  } catch {
+    // sometimes models wrap in ```json ... ```
+    const m = t.match(/```json\s*([\s\S]*?)\s*```/i) || t.match(/```\s*([\s\S]*?)\s*```/i);
+    if (m?.[1]) {
+      try {
+        return JSON.parse(m[1]);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const session = await requireActiveMember(req);
@@ -15,7 +84,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Upgrade required." }, { status: 403 });
     }
 
-    const { threadId, botId, instruction } = await req.json();
+    const body = await req.json();
+    const threadId = safeStr(body?.threadId);
+    const botId = safeStr(body?.botId);
+    const instruction = safeStr(body?.instruction);
 
     if (!threadId || !botId) {
       return NextResponse.json({ error: "Missing threadId or botId" }, { status: 400 });
@@ -69,51 +141,54 @@ export async function POST(req: NextRequest) {
     });
 
     const messages = threadRes.data.messages || [];
-    const recentMessages = messages.slice(-5);
+    const recent = messages.slice(-6);
 
-    const threadContext = recentMessages
+    const threadContext = recent
       .map((m) => {
-        const headers = m.payload?.headers || [];
-        const from = headers.find((h) => h.name === "From")?.value || "Unknown";
-        const subject = headers.find((h) => h.name === "Subject")?.value || "";
+        const headers = m?.payload?.headers || [];
+        const from = extractHeader(headers, "From") || "Unknown";
+        const to = extractHeader(headers, "To") || "";
+        const date = extractHeader(headers, "Date") || "";
+        const subject = extractHeader(headers, "Subject") || "";
+        const text = pickPlainText(m?.payload);
+        const snippet = safeStr(m?.snippet || "");
 
-        const bodyData =
-          m.payload?.parts?.find((p) => p.mimeType === "text/plain")?.body?.data ||
-          m.payload?.body?.data ||
-          "";
+        const bodyText = safeStr(text) || (snippet ? `[snippet]\n${snippet}` : "");
 
-        // NOTE: Gmail API uses base64url in many places, but this is "good enough" for our draft context.
-        // We keep it simple; thread endpoints do the full base64url decode.
-        const decoded = bodyData ? Buffer.from(String(bodyData), "base64").toString("utf-8") : "";
-
-        return `From: ${from}\nSubject: ${subject}\n\n${decoded}`;
+        return `From: ${from}\nTo: ${to}\nDate: ${date}\nSubject: ${subject}\n\n${bodyText}`;
       })
       .join("\n\n---\n\n");
 
-    const systemPrompt = `
+    const sys = `
 You are Louis.Ai.
 
-Rules:
-- Prioritize agency documents when relevant.
-- If clearly internal business knowledge AND no document evidence exists, respond:
-  "I couldn’t find this in your agency documents."
-- Match tone of thread.
-- Be concise and professional.
-- No hallucinated internal policy.
+Hard rules:
+- Use agency docs (file_search) for internal business facts: pricing, timelines, SOPs, deliverables, policies, meeting times, commitments, contract terms, client-specific status.
+- If the user instruction or the thread requires internal facts AND file_search provides no supporting evidence, you MUST return fallback=true.
+- If the reply can be written using only the email thread context + general writing, you may draft without docs.
+- Never invent internal facts. Never guess numbers, dates, commitments, or policy language without doc evidence.
+- Output JSON ONLY.
+
+Output schema (exact keys):
+{
+  "fallback": boolean,
+  "message": string,        // required if fallback=true (use: "I couldn’t find this in your agency documents.")
+  "draftBody": string       // required if fallback=false
+}
 `.trim();
 
-    const userPrompt = `
-Thread:
-
+    const user = `
+Thread context:
 ${threadContext}
 
-Instruction:
-${instruction || "Write a professional reply."}
+User instruction:
+${instruction || "(none) — draft the best professional reply."}
 
-Draft the reply only.
+Write a reply email. Keep it concise and aligned with the thread tone.
+Return JSON only.
 `.trim();
 
-    const response = await openai.responses.create({
+    const resp = await openai.responses.create({
       model: "gpt-4.1-mini",
       tools: [
         {
@@ -122,16 +197,28 @@ Draft the reply only.
         },
       ],
       input: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: "system", content: sys },
+        { role: "user", content: user },
       ],
     });
 
-    // ✅ Correct, type-safe: output_text is the unified text output
-    const draftBody = String(response.output_text || "").trim();
+    const raw = safeStr(resp.output_text);
+    const parsed = tryParseJsonObject(raw);
 
+    if (!parsed || typeof parsed.fallback !== "boolean") {
+      return NextResponse.json({ error: "Invalid model output" }, { status: 500 });
+    }
+
+    if (parsed.fallback) {
+      return NextResponse.json({
+        fallback: true,
+        message: safeStr(parsed.message) || "I couldn’t find this in your agency documents.",
+      });
+    }
+
+    const draftBody = safeStr(parsed.draftBody);
     if (!draftBody) {
-      return NextResponse.json({ error: "Failed to generate draft" }, { status: 500 });
+      return NextResponse.json({ error: "Empty draftBody" }, { status: 500 });
     }
 
     const draftId = crypto.randomUUID();
