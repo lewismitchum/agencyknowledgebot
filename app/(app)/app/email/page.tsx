@@ -124,8 +124,8 @@ export default function EmailPage() {
   const [composeError, setComposeError] = useState("");
   const [composeOk, setComposeOk] = useState<string | null>(null);
 
-  // ===== AI panel (chat) =====
-  const [aiOpen, setAiOpen] = useState(true);
+  // ===== AI drawer (not a column) =====
+  const [aiOpen, setAiOpen] = useState(false);
   const [aiMsgs, setAiMsgs] = useState<AiChatMsg[]>([]);
   const [aiInput, setAiInput] = useState("");
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
@@ -304,7 +304,6 @@ export default function EmailPage() {
       setThreadsLoading(true);
       setThreadsError("");
 
-      // If backend supports ?q=, it can use it. If not, it will ignore safely.
       const query = String(nextQ ?? qApplied ?? "").trim();
       const url = query ? `/api/email/threads?q=${encodeURIComponent(query)}` : "/api/email/threads";
 
@@ -321,7 +320,6 @@ export default function EmailPage() {
 
       const cleaned = rows.filter((r) => r.id);
 
-      // If backend doesn't filter, do a light client filter to make search feel real.
       const filtered =
         query && cleaned.length
           ? cleaned.filter((r) => {
@@ -348,7 +346,6 @@ export default function EmailPage() {
     setThreadError("");
     setThread(null);
 
-    // reset reply/send state
     setReplyDraftError("");
     setReplyDraftId(null);
     setReplyBody("");
@@ -386,7 +383,6 @@ export default function EmailPage() {
         messages: messages.filter((x) => x.id),
       });
 
-      // Seed AI panel with a tiny context message so it feels “attached” to the thread.
       setAiMsgs((prev) => {
         if (prev.length) return prev;
         const s = subject || (messages[messages.length - 1]?.subject || "");
@@ -441,29 +437,15 @@ export default function EmailPage() {
         setReplyDraftError("Failed to generate reply draft.");
         setAiMsgs((prev) => [
           ...prev,
-          {
-            role: "assistant",
-            text: "I couldn’t generate a draft for that request. Try a simpler instruction.",
-            at: Date.now(),
-          },
+          { role: "assistant", text: "I couldn’t generate a draft. Try a simpler instruction.", at: Date.now() },
         ]);
         return;
       }
 
       setReplyDraftId(id);
-
-      // Gmail-like: AI suggests draft, but user owns the editor.
-      // If editor is empty, insert automatically; otherwise leave as suggestion.
       setReplyBody((prev) => (prev.trim().length ? prev : body));
 
-      setAiMsgs((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          text: body,
-          at: Date.now(),
-        },
-      ]);
+      setAiMsgs((prev) => [...prev, { role: "assistant", text: body, at: Date.now() }]);
     } catch (e: any) {
       if (isFetchJsonError(e)) {
         if (e.status === 401) {
@@ -491,11 +473,7 @@ export default function EmailPage() {
       setReplyDraftError(e?.message ?? "Failed to generate reply draft");
       setAiMsgs((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          text: e?.message ? `Error: ${String(e.message)}` : "Something went wrong generating the draft.",
-          at: Date.now(),
-        },
+        { role: "assistant", text: e?.message ? `Error: ${String(e.message)}` : "Something went wrong.", at: Date.now() },
       ]);
     } finally {
       setReplyDrafting(false);
@@ -504,7 +482,7 @@ export default function EmailPage() {
 
   async function onSendReply() {
     if (!replyDraftId || !selectedThreadId) {
-      setSendError("Generate a draft first (AI panel), then send.");
+      setSendError("Generate a draft first (AI), then send.");
       return;
     }
 
@@ -605,14 +583,12 @@ export default function EmailPage() {
       setComposeOk(`Sent to ${String(j?.toEmail || to)}`);
       setComposeConfirm(false);
 
-      // clear compose
       setComposeTo("");
       setComposeCc("");
       setComposeBcc("");
       setComposeSubject("");
       setComposeBody("");
 
-      // refresh threads so it feels Gmail-real
       await refreshThreads();
       setTab("inbox");
     } catch (e: any) {
@@ -747,7 +723,7 @@ export default function EmailPage() {
     }
   }, [tab]);
 
-  if (loading) return <div className="p-6">Loading...</div>;
+  if (loading) return <div className="p-6">Loading…</div>;
 
   if (gated) {
     return (
@@ -773,12 +749,16 @@ export default function EmailPage() {
 
   const activeThread = threads.find((t) => t.id === selectedThreadId) || null;
 
+  const showThreadsColumn = tab === "inbox" || tab === "drafts";
+  const showReadingPane = tab === "inbox" || tab === "drafts";
+  const showReplyBar = tab === "inbox";
+
   return (
-    <div className="h-[calc(100vh-0px)] w-full">
+    <div className="h-[calc(100vh-0px)] w-full bg-background text-foreground">
       <div className="flex h-full">
-        {/* Left sidebar */}
-        <aside className="hidden w-[260px] shrink-0 border-r bg-card md:flex md:flex-col">
-          <div className="p-4">
+        {/* Email left rail (Gmail-ish) */}
+        <aside className="hidden w-[280px] shrink-0 border-r bg-background md:flex md:flex-col">
+          <div className="px-4 py-4">
             <div className="flex items-center justify-between gap-2">
               <div className="text-base font-semibold">Email</div>
               <div className="text-[11px] text-muted-foreground font-mono">{plan ?? "unknown"}</div>
@@ -787,21 +767,17 @@ export default function EmailPage() {
             <button
               type="button"
               onClick={() => setTab("compose")}
-              className="mt-3 w-full rounded-2xl bg-foreground px-4 py-3 text-left text-sm font-semibold text-background shadow-sm hover:opacity-95"
-              title="Compose"
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-foreground px-4 py-3 text-sm font-semibold text-background hover:opacity-95"
             >
               Compose
-              <div className="mt-1 text-[11px] font-normal text-background/80">AI can help write</div>
             </button>
-          </div>
 
-          <div className="px-3 pb-3">
-            <div className="rounded-2xl border bg-background/40 p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bot</div>
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Bot</div>
               <select
                 value={botId}
                 onChange={(e) => setBotId(e.target.value)}
-                className="mt-2 h-10 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                className="mt-2 h-10 w-full rounded-lg border bg-background px-3 text-sm"
               >
                 {bots.length === 0 ? <option value="">No bots found</option> : null}
                 {bots.map((b) => (
@@ -815,34 +791,32 @@ export default function EmailPage() {
             </div>
           </div>
 
-          <nav className="flex-1 px-3 pb-4">
+          <nav className="px-2 pb-3">
             <button
               type="button"
               onClick={() => setTab("inbox")}
               className={cx(
-                "mb-1 w-full rounded-xl px-3 py-2 text-left text-sm transition",
+                "w-full rounded-lg px-3 py-2 text-left text-sm",
                 tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted/60",
               )}
             >
               Inbox
             </button>
-
             <button
               type="button"
               onClick={() => setTab("drafts")}
               className={cx(
-                "mb-1 w-full rounded-xl px-3 py-2 text-left text-sm transition",
+                "mt-1 w-full rounded-lg px-3 py-2 text-left text-sm",
                 tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted/60",
               )}
             >
               Drafts
             </button>
-
             <button
               type="button"
               onClick={() => setTab("docs-draft")}
               className={cx(
-                "mb-1 w-full rounded-xl px-3 py-2 text-left text-sm transition",
+                "mt-1 w-full rounded-lg px-3 py-2 text-left text-sm",
                 tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted/60",
               )}
             >
@@ -850,32 +824,32 @@ export default function EmailPage() {
             </button>
           </nav>
 
-          <div className="border-t p-3">
+          <div className="mt-auto border-t p-3">
             <button
               type="button"
               onClick={() => {
                 refreshThreads().catch(() => {});
                 refreshDrafts().catch(() => {});
               }}
-              className="w-full rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+              className="w-full rounded-lg border px-3 py-2 text-sm hover:bg-muted"
             >
               Refresh
             </button>
           </div>
         </aside>
 
-        {/* Main column */}
+        {/* Main app surface */}
         <div className="flex h-full flex-1 flex-col">
-          {/* Topbar */}
-          <header className="border-b bg-card px-4 py-3">
-            <div className="flex items-center gap-3">
+          {/* Top search bar (flat, like Gmail) */}
+          <header className="border-b bg-background px-3 py-3">
+            <div className="flex items-center gap-2">
               <div className="md:hidden">
                 <div className="text-base font-semibold">Email</div>
                 <div className="text-[11px] text-muted-foreground font-mono">{plan ?? "unknown"}</div>
               </div>
 
               <div className="flex flex-1 items-center gap-2">
-                <div className="flex flex-1 items-center rounded-2xl border bg-background/40 px-3">
+                <div className="flex flex-1 items-center rounded-full border bg-background px-4">
                   <input
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
@@ -891,7 +865,7 @@ export default function EmailPage() {
                   />
                   <button
                     type="button"
-                    className="rounded-xl px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+                    className="ml-2 rounded-full px-3 py-1 text-xs text-muted-foreground hover:bg-muted"
                     onClick={() => {
                       const next = String(q || "").trim();
                       setQApplied(next);
@@ -905,176 +879,173 @@ export default function EmailPage() {
 
                 <button
                   type="button"
-                  className="hidden rounded-xl border px-3 py-2 text-sm hover:bg-muted md:inline-flex"
-                  onClick={() => setAiOpen((v) => !v)}
-                  title="Toggle AI panel"
+                  className={cx(
+                    "hidden items-center rounded-full border px-4 py-2 text-sm hover:bg-muted md:inline-flex",
+                    tab === "inbox" ? "md:inline-flex" : "md:hidden",
+                  )}
+                  onClick={() => setAiOpen(true)}
+                  title="Open AI assistant"
                 >
-                  {aiOpen ? "Hide AI" : "Show AI"}
+                  AI
                 </button>
               </div>
             </div>
           </header>
 
-          {/* Content area */}
+          {/* Content columns */}
           <div className="flex flex-1 overflow-hidden">
-            {/* Left list */}
-            <section
-              className={cx("w-[360px] shrink-0 border-r bg-card", tab === "inbox" || tab === "drafts" ? "block" : "hidden md:block")}
-            >
-              {tab === "inbox" ? (
-                <div className="flex h-full flex-col">
-                  <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-  <div className="text-sm font-semibold">Threads</div>
-  <button
-    type="button"
-    onClick={() => refreshThreads().catch(() => {})}
-    className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
-  >
-    Reload
-  </button>
-</div>
-
-                  <div className="flex-1 overflow-auto p-2">
-                    {threadsLoading ? (
-                      <div className="p-3 text-sm text-muted-foreground">Loading…</div>
-                    ) : threadsError ? (
-                      <div className="m-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                        {threadsError}
-                      </div>
-                    ) : threads.length === 0 ? (
-                      <div className="p-3 text-sm text-muted-foreground">No threads found.</div>
-                    ) : (
-                      <div className="space-y-1">
-                        {threads.slice(0, 50).map((t) => {
-                          const active = selectedThreadId === t.id;
-                          return (
-                            <button
-                              key={t.id}
-                              type="button"
-                              onClick={() => {
-                                setTab("inbox");
-                                loadThread(t.id).catch(() => {});
-                              }}
-                              className={cx(
-                                "w-full rounded-2xl border px-3 py-3 text-left transition",
-                                active ? "border-primary/40 bg-primary/5" : "bg-background/40 hover:bg-muted",
-                              )}
-                              title={t.subject || t.snippet || t.id}
-                            >
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="truncate text-[12px] text-muted-foreground">{shortText(t.from || "", 48)}</div>
-                                <div className="shrink-0 text-[11px] text-muted-foreground">{safeDateLabel(t.date) || ""}</div>
-                              </div>
-                              <div className="mt-1 truncate text-sm font-medium">{shortText(t.subject || "(no subject)", 64)}</div>
-                              <div className="mt-1 truncate text-[12px] text-muted-foreground">{shortText(t.snippet || "", 90)}</div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+            {/* Threads / Drafts list column */}
+            {showThreadsColumn ? (
+              <section className="w-[420px] shrink-0 border-r bg-background">
+                <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+                  <div className="text-sm font-semibold">{tab === "drafts" ? "Drafts" : "Threads"}</div>
+                  <button
+                    type="button"
+                    onClick={() => (tab === "drafts" ? refreshDrafts() : refreshThreads()).catch(() => {})}
+                    className="rounded-full border px-3 py-1.5 text-xs hover:bg-muted"
+                  >
+                    Reload
+                  </button>
                 </div>
-              ) : tab === "drafts" ? (
-                <div className="flex h-full flex-col">
-                  <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-                    <div className="text-sm font-semibold">Drafts</div>
-                    <button
-                      type="button"
-                      onClick={() => refreshDrafts().catch(() => {})}
-                      className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
-                    >
-                      Reload
-                    </button>
-                  </div>
 
-                  <div className="flex-1 overflow-auto p-2">
-                    {draftsLoading ? (
-                      <div className="p-3 text-sm text-muted-foreground">Loading…</div>
-                    ) : draftsError ? (
-                      <div className="m-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                        {draftsError}
-                      </div>
-                    ) : drafts.length === 0 ? (
-                      <div className="p-3 text-sm text-muted-foreground">No drafts yet.</div>
-                    ) : (
-                      <div className="space-y-1">
-                        {openDraftError ? (
-                          <div className="m-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                            {openDraftError}
-                          </div>
-                        ) : null}
-
-                        {drafts.slice(0, 50).map((d) => {
-                          const active = selectedDraftId === d.id;
-                          return (
-                            <button
-                              key={d.id}
-                              type="button"
-                              onClick={() => onOpenDraft(d.id).catch(() => {})}
-                              disabled={openingDraft && active}
-                              className={cx(
-                                "w-full rounded-2xl border px-3 py-3 text-left transition",
-                                active ? "border-primary/40 bg-primary/5" : "bg-background/40 hover:bg-muted",
-                              )}
-                              title={d.subject}
-                            >
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="truncate text-[12px] text-muted-foreground">Draft</div>
-                                <div className="shrink-0 text-[11px] text-muted-foreground">
-                                  {new Date(d.created_at).toLocaleString()}
+                <div className="h-full overflow-auto">
+                  {tab === "inbox" ? (
+                    <div className="px-1 py-1">
+                      {threadsLoading ? (
+                        <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+                      ) : threadsError ? (
+                        <div className="m-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                          {threadsError}
+                        </div>
+                      ) : threads.length === 0 ? (
+                        <div className="p-4 text-sm text-muted-foreground">No threads found.</div>
+                      ) : (
+                        <div>
+                          {threads.slice(0, 80).map((t) => {
+                            const active = selectedThreadId === t.id;
+                            return (
+                              <button
+                                key={t.id}
+                                type="button"
+                                onClick={() => {
+                                  setTab("inbox");
+                                  loadThread(t.id).catch(() => {});
+                                }}
+                                className={cx(
+                                  "w-full px-4 py-3 text-left transition",
+                                  active ? "bg-muted" : "hover:bg-muted/60",
+                                )}
+                                title={t.subject || t.snippet || t.id}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="truncate text-[12px] text-muted-foreground">
+                                    {shortText(t.from || "", 56)}
+                                  </div>
+                                  <div className="shrink-0 text-[11px] text-muted-foreground">
+                                    {safeDateLabel(t.date) || ""}
+                                  </div>
                                 </div>
-                              </div>
-                              <div className="mt-1 truncate text-sm font-medium">{shortText(d.subject || "(no subject)", 64)}</div>
-                              <div className="mt-1 truncate text-[11px] font-mono text-muted-foreground">{d.id}</div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                                <div className="mt-1 truncate text-sm font-medium">
+                                  {shortText(t.subject || "(no subject)", 72)}
+                                </div>
+                                <div className="mt-1 truncate text-[12px] text-muted-foreground">
+                                  {shortText(t.snippet || "", 110)}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="px-1 py-1">
+                      {draftsLoading ? (
+                        <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+                      ) : draftsError ? (
+                        <div className="m-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                          {draftsError}
+                        </div>
+                      ) : drafts.length === 0 ? (
+                        <div className="p-4 text-sm text-muted-foreground">No drafts yet.</div>
+                      ) : (
+                        <div>
+                          {openDraftError ? (
+                            <div className="m-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                              {openDraftError}
+                            </div>
+                          ) : null}
+
+                          {drafts.slice(0, 80).map((d) => {
+                            const active = selectedDraftId === d.id;
+                            return (
+                              <button
+                                key={d.id}
+                                type="button"
+                                onClick={() => onOpenDraft(d.id).catch(() => {})}
+                                disabled={openingDraft && active}
+                                className={cx(
+                                  "w-full px-4 py-3 text-left transition",
+                                  active ? "bg-muted" : "hover:bg-muted/60",
+                                )}
+                                title={d.subject}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="truncate text-[12px] text-muted-foreground">Draft</div>
+                                  <div className="shrink-0 text-[11px] text-muted-foreground">
+                                    {new Date(d.created_at).toLocaleString()}
+                                  </div>
+                                </div>
+                                <div className="mt-1 truncate text-sm font-medium">
+                                  {shortText(d.subject || "(no subject)", 80)}
+                                </div>
+                                <div className="mt-1 truncate text-[11px] font-mono text-muted-foreground">{shortText(d.id, 54)}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="p-4 text-sm text-muted-foreground">Select Inbox or Drafts.</div>
-              )}
-            </section>
+              </section>
+            ) : null}
 
-            {/* Main pane */}
-            <main className="flex flex-1 flex-col overflow-hidden">
+            {/* Reading pane / compose pane */}
+            <main className="flex flex-1 flex-col overflow-hidden bg-background">
               {tab === "compose" ? (
-                <div className="h-full overflow-auto p-6">
-                  <div className="mx-auto max-w-3xl space-y-6">
-                    <div className="flex items-start justify-between gap-4">
+                <div className="h-full overflow-auto">
+                  <div className="mx-auto max-w-3xl px-6 py-6">
+                    <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-xl font-semibold">Compose</div>
-                        <div className="mt-1 text-sm text-muted-foreground">Send a new email. AI can help draft.</div>
+                        <div className="text-lg font-semibold">Compose</div>
+                        <div className="mt-1 text-sm text-muted-foreground">Send a new email.</div>
                       </div>
-
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={() => setTab("docs-draft")}
-                          className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                         >
                           Draft from docs
                         </button>
                         <button
                           type="button"
                           onClick={() => setTab("inbox")}
-                          className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                         >
-                          Back to inbox
+                          Back
                         </button>
                       </div>
                     </div>
 
-                    <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
+                    <div className="mt-6 space-y-4">
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
                           <div className="text-sm font-medium">To</div>
                           <input
                             value={composeTo}
                             onChange={(e) => setComposeTo(e.target.value)}
-                            className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                            className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
                             placeholder="name@company.com"
                           />
                         </div>
@@ -1084,7 +1055,7 @@ export default function EmailPage() {
                             <input
                               value={composeCc}
                               onChange={(e) => setComposeCc(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                              className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
                               placeholder="optional"
                             />
                           </div>
@@ -1093,7 +1064,7 @@ export default function EmailPage() {
                             <input
                               value={composeBcc}
                               onChange={(e) => setComposeBcc(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                              className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
                               placeholder="optional"
                             />
                           </div>
@@ -1105,22 +1076,20 @@ export default function EmailPage() {
                         <input
                           value={composeSubject}
                           onChange={(e) => setComposeSubject(e.target.value)}
-                          className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                          className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
                           placeholder="(no subject)"
                         />
                       </div>
 
                       <div>
                         <div className="text-sm font-medium">Message</div>
-                        <div className="mt-2 rounded-2xl border bg-background/40 p-2">
-                          <textarea
-                            value={composeBody}
-                            onChange={(e) => setComposeBody(e.target.value)}
-                            rows={10}
-                            className="w-full resize-none bg-transparent p-2 text-sm outline-none"
-                            placeholder="Write your email… (or generate from Docs Draft / AI panel)"
-                          />
-                        </div>
+                        <textarea
+                          value={composeBody}
+                          onChange={(e) => setComposeBody(e.target.value)}
+                          rows={14}
+                          className="mt-2 w-full rounded-lg border bg-background p-3 text-sm outline-none"
+                          placeholder="Write your email…"
+                        />
                       </div>
 
                       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1147,7 +1116,7 @@ export default function EmailPage() {
                               setComposeOk(null);
                               setComposeConfirm(false);
                             }}
-                            className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                            className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                             disabled={composeSending}
                           >
                             Clear
@@ -1157,7 +1126,7 @@ export default function EmailPage() {
                             type="button"
                             onClick={() => onSendCompose().catch(() => {})}
                             disabled={!canComposeSend}
-                            className="rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-60"
+                            className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
                           >
                             {composeSending ? "Sending…" : "Send"}
                           </button>
@@ -1165,52 +1134,47 @@ export default function EmailPage() {
                       </div>
 
                       {composeError ? (
-                        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{composeError}</div>
+                        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{composeError}</div>
                       ) : null}
 
-                      {composeOk ? <div className="rounded-xl border bg-muted/40 p-3 text-sm">{composeOk}</div> : null}
-
-                      <div className="text-xs text-muted-foreground">
-                        Safety: sending requires explicit confirmation. Corp-tier only.
-                      </div>
+                      {composeOk ? <div className="rounded-lg border bg-muted/30 p-3 text-sm">{composeOk}</div> : null}
                     </div>
                   </div>
                 </div>
               ) : tab === "docs-draft" ? (
-                <div className="h-full overflow-auto p-6">
-                  <div className="mx-auto max-w-3xl space-y-6">
-                    <div className="flex items-start justify-between gap-4">
+                <div className="h-full overflow-auto">
+                  <div className="mx-auto max-w-3xl px-6 py-6">
+                    <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-xl font-semibold">Draft from docs</div>
+                        <div className="text-lg font-semibold">Draft from docs</div>
                         <div className="mt-1 text-sm text-muted-foreground">Generates content using file_search evidence.</div>
                       </div>
-
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={() => setTab("compose")}
-                          className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                         >
                           Back to compose
                         </button>
                         <button
                           type="button"
                           onClick={() => setTab("inbox")}
-                          className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                         >
-                          Back to inbox
+                          Back
                         </button>
                       </div>
                     </div>
 
-                    <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
+                    <div className="mt-6 space-y-4">
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
                           <div className="text-sm font-medium">Tone</div>
                           <select
                             value={tone}
                             onChange={(e) => setTone(e.target.value)}
-                            className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                            className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
                           >
                             <option value="friendly">friendly</option>
                             <option value="direct">direct</option>
@@ -1223,9 +1187,9 @@ export default function EmailPage() {
                             type="button"
                             onClick={() => onDraftFromDocs().catch(() => {})}
                             disabled={!canDraft}
-                            className="h-11 rounded-xl bg-foreground px-4 text-sm font-medium text-background disabled:opacity-60"
+                            className="h-11 rounded-full bg-foreground px-5 text-sm font-medium text-background disabled:opacity-60"
                           >
-                            {drafting ? "Drafting..." : "Generate draft"}
+                            {drafting ? "Drafting…" : "Generate"}
                           </button>
                         </div>
                       </div>
@@ -1236,7 +1200,7 @@ export default function EmailPage() {
                           <input
                             value={recipientName}
                             onChange={(e) => setRecipientName(e.target.value)}
-                            className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                            className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
                             placeholder="Jamie"
                           />
                         </div>
@@ -1245,7 +1209,7 @@ export default function EmailPage() {
                           <input
                             value={recipientCompany}
                             onChange={(e) => setRecipientCompany(e.target.value)}
-                            className="mt-2 h-11 w-full rounded-xl border bg-background/40 px-3 text-sm"
+                            className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
                             placeholder="Acme Co"
                           />
                         </div>
@@ -1256,29 +1220,29 @@ export default function EmailPage() {
                         <textarea
                           value={prompt}
                           onChange={(e) => setPrompt(e.target.value)}
-                          rows={6}
-                          className="mt-2 w-full rounded-xl border bg-background/40 p-3 text-sm"
+                          rows={7}
+                          className="mt-2 w-full rounded-lg border bg-background p-3 text-sm outline-none"
                           placeholder='Example: "Draft a follow-up about the onboarding kickoff. Use our onboarding SOP + timeline."'
                         />
-                        <div className="mt-2 text-xs text-muted-foreground">Facts must come from docs; general writing is allowed.</div>
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Facts must come from docs; general writing is allowed.
+                        </div>
                       </div>
 
                       {draftError ? (
-                        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{draftError}</div>
+                        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{draftError}</div>
                       ) : null}
 
-                      {fallback ? <div className="rounded-xl border bg-muted/40 p-3 text-sm font-mono">{fallback}</div> : null}
+                      {fallback ? <div className="rounded-lg border bg-muted/30 p-3 text-sm font-mono">{fallback}</div> : null}
 
                       {draft ? (
                         <div className="space-y-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="text-sm font-semibold">
-                              Draft {selectedDraftId ? <span className="text-xs text-muted-foreground">(opened)</span> : null}
-                            </div>
+                            <div className="text-sm font-semibold">Draft</div>
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
-                                className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                                className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                                 onClick={moveDraftIntoCompose}
                                 title="Move into compose editor"
                               >
@@ -1286,14 +1250,14 @@ export default function EmailPage() {
                               </button>
                               <button
                                 type="button"
-                                className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                                className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                                 onClick={() => navigator.clipboard?.writeText(draft.subject).catch(() => {})}
                               >
                                 Copy subject
                               </button>
                               <button
                                 type="button"
-                                className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                                className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                                 onClick={() => navigator.clipboard?.writeText(draft.body).catch(() => {})}
                               >
                                 Copy body
@@ -1301,13 +1265,17 @@ export default function EmailPage() {
                             </div>
                           </div>
 
-                          <div className="rounded-xl border bg-background/40 p-3 text-sm">
-                            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subject</div>
+                          <div className="rounded-lg border bg-background p-3 text-sm">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Subject
+                            </div>
                             <div className="mt-1">{draft.subject}</div>
                           </div>
 
-                          <div className="rounded-xl border bg-background/40 p-3 text-sm whitespace-pre-wrap">
-                            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Body</div>
+                          <div className="rounded-lg border bg-background p-3 text-sm whitespace-pre-wrap">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Body
+                            </div>
                             <div className="mt-2">{draft.body}</div>
                           </div>
                         </div>
@@ -1316,16 +1284,19 @@ export default function EmailPage() {
                   </div>
                 </div>
               ) : tab === "drafts" ? (
-                <div className="h-full overflow-auto p-6">
-                  <div className="mx-auto max-w-3xl space-y-4">
-                    <div className="text-xl font-semibold">Draft</div>
+                <div className="flex h-full flex-col">
+                  <div className="border-b px-4 py-3">
+                    <div className="text-sm font-semibold">{draft?.subject ? shortText(draft.subject, 90) : "Draft"}</div>
+                    <div className="mt-1 text-[12px] text-muted-foreground">Select a draft from the list.</div>
+                  </div>
+
+                  <div className="flex-1 overflow-auto p-4">
                     {draft ? (
-                      <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-sm font-semibold">{draft.subject}</div>
+                      <div className="mx-auto max-w-3xl">
+                        <div className="mb-3 flex items-center justify-end">
                           <button
                             type="button"
-                            className="rounded-xl border px-3 py-2 text-sm hover:bg-muted"
+                            className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                             onClick={() => {
                               setComposeSubject(draft.subject || "");
                               setComposeBody(draft.body || "");
@@ -1338,25 +1309,23 @@ export default function EmailPage() {
                             Use in compose
                           </button>
                         </div>
-                        <div className="whitespace-pre-wrap text-sm">{draft.body}</div>
+                        <div className="whitespace-pre-wrap text-sm leading-6">{draft.body}</div>
                       </div>
                     ) : (
-                      <div className="rounded-3xl border bg-card p-6 shadow-sm text-sm text-muted-foreground">
-                        Select a draft from the left.
-                      </div>
+                      <div className="p-4 text-sm text-muted-foreground">Pick a draft to preview.</div>
                     )}
                   </div>
                 </div>
               ) : (
                 <div className="flex h-full flex-col">
-                  {/* Thread header */}
-                  <div className="flex items-center justify-between gap-3 border-b bg-card px-4 py-3">
+                  {/* Reading pane header */}
+                  <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold">
-                        {shortText(thread?.subject || activeThread?.subject || "Inbox", 96)}
+                        {shortText(thread?.subject || activeThread?.subject || "Select a thread", 96)}
                       </div>
-                      <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                        {selectedThreadId ? `thread_id: ${selectedThreadId}` : "Select a thread"}
+                      <div className="mt-1 truncate text-[12px] text-muted-foreground">
+                        {selectedThreadId ? shortText(activeThread?.from || "", 80) : "Pick a thread from the left."}
                       </div>
                     </div>
 
@@ -1365,291 +1334,166 @@ export default function EmailPage() {
                         type="button"
                         onClick={() => (selectedThreadId ? loadThread(selectedThreadId) : null)}
                         disabled={!selectedThreadId || threadLoading}
-                        className="rounded-xl border px-3 py-2 text-xs hover:bg-muted disabled:opacity-60"
+                        className="rounded-full border px-4 py-2 text-xs hover:bg-muted disabled:opacity-60"
                       >
                         {threadLoading ? "Loading…" : "Refresh"}
                       </button>
+
                       <button
                         type="button"
-                        className="rounded-xl border px-3 py-2 text-xs hover:bg-muted md:hidden"
-                        onClick={() => setAiOpen((v) => !v)}
+                        className="rounded-full border px-4 py-2 text-xs hover:bg-muted"
+                        onClick={() => setAiOpen(true)}
+                        disabled={!selectedThreadId || !botId.trim().length}
+                        title={!selectedThreadId ? "Select a thread first" : "Open AI assistant"}
                       >
-                        {aiOpen ? "Hide AI" : "Show AI"}
+                        AI
                       </button>
                     </div>
                   </div>
 
-                  {/* Thread body */}
-                  <div className="flex-1 overflow-auto p-4">
+                  {/* Reading pane body */}
+                  <div className="flex-1 overflow-auto">
                     {threadError ? (
-                      <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{threadError}</div>
+                      <div className="m-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{threadError}</div>
                     ) : null}
 
                     {!selectedThreadId ? (
-                      <div className="rounded-3xl border bg-card p-6 text-sm text-muted-foreground">Select a thread to view.</div>
+                      <div className="p-6 text-sm text-muted-foreground">Select a thread to view.</div>
                     ) : threadLoading ? (
-                      <div className="rounded-3xl border bg-card p-6 text-sm text-muted-foreground">Loading thread…</div>
+                      <div className="p-6 text-sm text-muted-foreground">Loading thread…</div>
                     ) : thread ? (
-                      <div className="space-y-3">
+                      <div>
                         {thread.messages.length === 0 ? (
-                          <div className="rounded-3xl border bg-card p-6 text-sm text-muted-foreground">No messages.</div>
+                          <div className="p-6 text-sm text-muted-foreground">No messages.</div>
                         ) : (
                           thread.messages.map((m) => (
-                            <div key={m.id} className="rounded-3xl border bg-card p-4 shadow-sm">
+                            <div key={m.id} className="border-b px-6 py-5">
                               <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="text-sm font-medium">{shortText(m.from || "Unknown", 90)}</div>
+                                <div className="text-sm font-medium">{shortText(m.from || "Unknown", 110)}</div>
                                 <div className="text-xs text-muted-foreground">{safeDateLabel(m.date) || "—"}</div>
                               </div>
-                              {m.to ? <div className="mt-1 text-[12px] text-muted-foreground">To: {shortText(m.to, 110)}</div> : null}
-                              {m.snippet ? <div className="mt-2 text-sm text-muted-foreground">{shortText(m.snippet, 220)}</div> : null}
-                              {m.body ? <div className="mt-3 whitespace-pre-wrap text-sm">{m.body}</div> : null}
+                              {m.to ? (
+                                <div className="mt-1 text-[12px] text-muted-foreground">
+                                  To: {shortText(m.to, 140)}
+                                </div>
+                              ) : null}
+                              {m.snippet ? (
+                                <div className="mt-2 text-sm text-muted-foreground">{shortText(m.snippet, 260)}</div>
+                              ) : null}
+                              {m.body ? <div className="mt-3 whitespace-pre-wrap text-sm leading-6">{m.body}</div> : null}
                             </div>
                           ))
                         )}
                       </div>
                     ) : (
-                      <div className="rounded-3xl border bg-card p-6 text-sm text-muted-foreground">No thread loaded.</div>
+                      <div className="p-6 text-sm text-muted-foreground">No thread loaded.</div>
                     )}
                   </div>
 
-                  {/* Reply editor */}
-                  <div className="border-t bg-card p-4">
-                    <div className="mx-auto max-w-4xl">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-semibold">Reply</div>
-                        <div className="flex items-center gap-2">
+                  {/* Reply bar (clean, Gmail-ish) */}
+                  {showReplyBar ? (
+                    <div className="border-t bg-background px-4 py-3">
+                      <div className="mx-auto max-w-4xl">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-semibold">Reply</div>
                           <button
                             type="button"
-                            className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
+                            className="rounded-full border px-4 py-2 text-xs hover:bg-muted"
                             onClick={() => setReplyBody("")}
                             disabled={!replyBody.trim().length}
                           >
                             Clear
                           </button>
                         </div>
-                      </div>
 
-                      <div className="mt-2 rounded-2xl border bg-background/40 p-2">
-                        <textarea
-                          value={replyBody}
-                          onChange={(e) => setReplyBody(e.target.value)}
-                          rows={6}
-                          className="w-full resize-none bg-transparent p-2 text-sm outline-none"
-                          placeholder={selectedThreadId ? "Write your reply… (or use the AI panel)" : "Select a thread first…"}
-                          disabled={!selectedThreadId}
-                        />
-                      </div>
-
-                      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={confirmSend}
-                            onChange={(e) => setConfirmSend(e.target.checked)}
-                            className="h-4 w-4"
+                        <div className="mt-2 rounded-lg border bg-background">
+                          <textarea
+                            value={replyBody}
+                            onChange={(e) => setReplyBody(e.target.value)}
+                            rows={5}
+                            className="w-full resize-none bg-transparent p-3 text-sm outline-none"
+                            placeholder={selectedThreadId ? "Write your reply… (or open AI)" : "Select a thread first…"}
+                            disabled={!selectedThreadId}
                           />
-                          Confirm send
-                        </label>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => onSendReply().catch(() => {})}
-                            disabled={!selectedThreadId || !replyDraftId || !confirmSend || sending}
-                            className="rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-60"
-                            title={!replyDraftId ? "Generate a draft via AI first" : "Send reply"}
-                          >
-                            {sending ? "Sending…" : "Send"}
-                          </button>
                         </div>
+
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={confirmSend}
+                              onChange={(e) => setConfirmSend(e.target.checked)}
+                              className="h-4 w-4"
+                            />
+                            Confirm send
+                          </label>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => onSendReply().catch(() => {})}
+                              disabled={!selectedThreadId || !replyDraftId || !confirmSend || sending}
+                              className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
+                              title={!replyDraftId ? "Generate a draft via AI first" : "Send reply"}
+                            >
+                              {sending ? "Sending…" : "Send"}
+                            </button>
+                          </div>
+                        </div>
+
+                        {replyDraftError ? (
+                          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                            {replyDraftError}
+                          </div>
+                        ) : null}
+
+                        {sendError ? (
+                          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                            {sendError}
+                          </div>
+                        ) : null}
+
+                        {sendOk ? <div className="mt-3 rounded-lg border bg-muted/30 p-3 text-sm">{sendOk}</div> : null}
+
+                        {replyDraftId ? (
+                          <div className="mt-2 text-[11px] text-muted-foreground font-mono">draft_id: {replyDraftId}</div>
+                        ) : null}
                       </div>
-
-                      {replyDraftError ? (
-                        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{replyDraftError}</div>
-                      ) : null}
-
-                      {sendError ? (
-                        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{sendError}</div>
-                      ) : null}
-
-                      {sendOk ? <div className="mt-3 rounded-xl border bg-muted/40 p-3 text-sm">{sendOk}</div> : null}
-
-                      {replyDraftId ? <div className="mt-2 text-[11px] text-muted-foreground font-mono">draft_id: {replyDraftId}</div> : null}
                     </div>
-                  </div>
+                  ) : null}
                 </div>
               )}
             </main>
-
-            {/* AI panel */}
-            {tab === "inbox" ? (
-              <aside
-                className={cx(
-                  "hidden w-[420px] shrink-0 border-l bg-card lg:flex lg:flex-col",
-                  aiOpen ? "lg:flex" : "lg:hidden",
-                )}
-              >
-                <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-                  <div className="text-sm font-semibold">AI Assistant</div>
-                  <button
-                    type="button"
-                    className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
-                    onClick={() => setAiOpen(false)}
-                  >
-                    Hide
-                  </button>
-                </div>
-
-                <div className="px-4 py-3">
-                  <div className="rounded-2xl border bg-background/40 p-3 text-xs text-muted-foreground">
-                    Gmail-like inbox. Only difference: you can ask AI to draft replies.
-                    <div className="mt-2">
-                      Thread: <span className="font-mono">{selectedThreadId ? shortText(selectedThreadId, 48) : "none"}</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={!canReplyWithAi}
-                      onClick={() => onAiSend("Draft a reply. Be clear and professional.")}
-                      className="rounded-xl border px-3 py-2 text-xs hover:bg-muted disabled:opacity-60"
-                    >
-                      Draft reply
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!canReplyWithAi}
-                      onClick={() => onAiSend("Rewrite the reply more concise.")}
-                      className="rounded-xl border px-3 py-2 text-xs hover:bg-muted disabled:opacity-60"
-                    >
-                      Shorter
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!canReplyWithAi}
-                      onClick={() => onAiSend("Rewrite the reply friendlier.")}
-                      className="rounded-xl border px-3 py-2 text-xs hover:bg-muted disabled:opacity-60"
-                    >
-                      Friendlier
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!canReplyWithAi}
-                      onClick={() => onAiSend("Rewrite the reply firmer and more direct.")}
-                      className="rounded-xl border px-3 py-2 text-xs hover:bg-muted disabled:opacity-60"
-                    >
-                      Firmer
-                    </button>
-                  </div>
-                </div>
-
-                <div ref={aiScrollRef} className="flex-1 overflow-auto px-4 pb-4">
-                  <div className="space-y-2">
-                    {aiMsgs.length === 0 ? (
-                      <div className="rounded-2xl border bg-background/40 p-4 text-sm text-muted-foreground">
-                        Ask me to draft a reply for the selected thread.
-                      </div>
-                    ) : (
-                      aiMsgs.map((m, idx) => (
-                        <div
-                          key={`${m.at}-${idx}`}
-                          className={cx(
-                            "rounded-2xl border p-3 text-sm whitespace-pre-wrap",
-                            m.role === "user" ? "bg-background/40" : "bg-muted/30",
-                          )}
-                        >
-                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            {m.role === "user" ? "You" : "Louis"}
-                          </div>
-                          {m.text}
-                          {m.role === "assistant" && m.text.trim().length ? (
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              <button
-                                type="button"
-                                className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
-                                onClick={() => setReplyBody(m.text)}
-                                title="Insert into reply editor"
-                              >
-                                Insert into reply
-                              </button>
-                              <button
-                                type="button"
-                                className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
-                                onClick={() => navigator.clipboard?.writeText(m.text).catch(() => {})}
-                              >
-                                Copy
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div className="border-t p-4">
-                  <div className="rounded-2xl border bg-background/40 p-2">
-                    <textarea
-                      value={aiInput}
-                      onChange={(e) => setAiInput(e.target.value)}
-                      rows={3}
-                      className="w-full resize-none bg-transparent p-2 text-sm outline-none"
-                      placeholder={selectedThreadId ? 'Ask: "Decline politely and propose next week."' : "Select a thread first…"}
-                      disabled={!selectedThreadId || !botId.trim().length}
-                      onKeyDown={(e) => {
-                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                          e.preventDefault();
-                          onAiSend().catch(() => {});
-                        }
-                      }}
-                    />
-                  </div>
-
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="text-[11px] text-muted-foreground">Ctrl/⌘ + Enter to send</div>
-                    <button
-                      type="button"
-                      onClick={() => onAiSend().catch(() => {})}
-                      disabled={!selectedThreadId || !botId.trim().length || replyDrafting || !aiInput.trim().length}
-                      className="rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-60"
-                    >
-                      {replyDrafting ? "Thinking…" : "Send"}
-                    </button>
-                  </div>
-                </div>
-              </aside>
-            ) : null}
           </div>
 
           {/* Mobile bottom nav */}
-          <div className="border-t bg-card p-3 md:hidden">
+          <div className="border-t bg-background p-3 md:hidden">
             <div className="grid grid-cols-4 gap-2">
               <button
                 type="button"
                 onClick={() => setTab("inbox")}
-                className={cx("rounded-xl border px-3 py-2 text-sm", tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted")}
               >
                 Inbox
               </button>
               <button
                 type="button"
                 onClick={() => setTab("drafts")}
-                className={cx("rounded-xl border px-3 py-2 text-sm", tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted")}
               >
                 Drafts
               </button>
               <button
                 type="button"
                 onClick={() => setTab("compose")}
-                className={cx("rounded-xl border px-3 py-2 text-sm", tab === "compose" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "compose" ? "bg-muted font-medium" : "hover:bg-muted")}
               >
                 Compose
               </button>
               <button
                 type="button"
                 onClick={() => setTab("docs-draft")}
-                className={cx("rounded-xl border px-3 py-2 text-sm", tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted")}
               >
                 Docs
               </button>
@@ -1657,6 +1501,149 @@ export default function EmailPage() {
           </div>
         </div>
       </div>
+
+      {/* AI Drawer (slide-over) */}
+      {aiOpen ? (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setAiOpen(false)} />
+          <aside className="absolute right-0 top-0 h-full w-full max-w-[520px] border-l bg-background shadow-xl">
+            <div className="flex h-full flex-col">
+              <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+                <div className="text-sm font-semibold">AI Assistant</div>
+                <button
+                  type="button"
+                  className="rounded-full border px-4 py-2 text-xs hover:bg-muted"
+                  onClick={() => setAiOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="px-4 py-3">
+                <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Draft replies for the selected thread.
+                  <div className="mt-2">
+                    Thread:{" "}
+                    <span className="font-mono">
+                      {selectedThreadId ? shortText(selectedThreadId, 64) : "none"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={!canReplyWithAi}
+                    onClick={() => onAiSend("Draft a reply. Be clear and professional.")}
+                    className="rounded-full border px-4 py-2 text-xs hover:bg-muted disabled:opacity-60"
+                  >
+                    Draft reply
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canReplyWithAi}
+                    onClick={() => onAiSend("Rewrite the reply more concise.")}
+                    className="rounded-full border px-4 py-2 text-xs hover:bg-muted disabled:opacity-60"
+                  >
+                    Shorter
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canReplyWithAi}
+                    onClick={() => onAiSend("Rewrite the reply friendlier.")}
+                    className="rounded-full border px-4 py-2 text-xs hover:bg-muted disabled:opacity-60"
+                  >
+                    Friendlier
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canReplyWithAi}
+                    onClick={() => onAiSend("Rewrite the reply firmer and more direct.")}
+                    className="rounded-full border px-4 py-2 text-xs hover:bg-muted disabled:opacity-60"
+                  >
+                    Firmer
+                  </button>
+                </div>
+              </div>
+
+              <div ref={aiScrollRef} className="flex-1 overflow-auto px-4 pb-4">
+                <div className="space-y-2">
+                  {aiMsgs.length === 0 ? (
+                    <div className="rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">
+                      Ask me to draft a reply for the selected thread.
+                    </div>
+                  ) : (
+                    aiMsgs.map((m, idx) => (
+                      <div
+                        key={`${m.at}-${idx}`}
+                        className={cx(
+                          "rounded-lg border p-3 text-sm whitespace-pre-wrap",
+                          m.role === "user" ? "bg-background" : "bg-muted/20",
+                        )}
+                      >
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {m.role === "user" ? "You" : "Louis"}
+                        </div>
+                        {m.text}
+                        {m.role === "assistant" && m.text.trim().length ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="rounded-full border px-4 py-2 text-xs hover:bg-muted"
+                              onClick={() => setReplyBody(m.text)}
+                              title="Insert into reply editor"
+                            >
+                              Insert into reply
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-full border px-4 py-2 text-xs hover:bg-muted"
+                              onClick={() => navigator.clipboard?.writeText(m.text).catch(() => {})}
+                            >
+                              Copy
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="border-t p-4">
+                <div className="rounded-lg border bg-background p-2">
+                  <textarea
+                    value={aiInput}
+                    onChange={(e) => setAiInput(e.target.value)}
+                    rows={3}
+                    className="w-full resize-none bg-transparent p-2 text-sm outline-none"
+                    placeholder={selectedThreadId ? 'Ask: "Decline politely and propose next week."' : "Select a thread first…"}
+                    disabled={!selectedThreadId || !botId.trim().length}
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        onAiSend().catch(() => {});
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <div className="text-[11px] text-muted-foreground">Ctrl/⌘ + Enter to send</div>
+                  <button
+                    type="button"
+                    onClick={() => onAiSend().catch(() => {})}
+                    disabled={!selectedThreadId || !botId.trim().length || replyDrafting || !aiInput.trim().length}
+                    className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
+                  >
+                    {replyDrafting ? "Thinking…" : "Send"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      ) : null}
     </div>
   );
 }
