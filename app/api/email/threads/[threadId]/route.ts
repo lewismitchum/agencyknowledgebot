@@ -1,89 +1,161 @@
-// app/api/email/threads/[threadId]/route.ts
-import type { NextRequest } from "next/server";
-import { getDb, type Db } from "@/lib/db";
-import { ensureSchema } from "@/lib/schema";
-import { requireActiveMember } from "@/lib/authz";
-import { getAgencyPlan } from "@/lib/enforcement";
-import { normalizePlan, requireFeature } from "@/lib/plans";
-import { ensureFreshAccessToken, getThread } from "@/lib/gmail";
+import { NextRequest, NextResponse } from "next/server";
+import { google } from "googleapis";
+import { getDb } from "@/lib/db";
+import { requireActiveMember, requireFeature } from "@/lib/authz";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
-type Ctx = { params: Promise<{ threadId: string }> };
-
-export async function OPTIONS() {
-  return new Response(null, { status: 204 });
+function extractHeader(
+  headers: Array<{ name?: string | null; value?: string | null }> | undefined,
+  key: string
+) {
+  if (!headers) return "";
+  const hit = headers.find((h) => (h.name || "").toLowerCase() === key.toLowerCase());
+  return (hit?.value || "").trim();
 }
 
-export async function GET(req: NextRequest, ctx2: Ctx) {
+function safeStr(x: any) {
+  return String(x ?? "").trim();
+}
+
+function b64urlToUtf8(data: string) {
+  if (!data) return "";
+  const b64 = data.replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (b64.length % 4)) % 4;
+  const padded = b64 + "=".repeat(padLen);
+  return Buffer.from(padded, "base64").toString("utf8");
+}
+
+function pickPlainText(payload: any): string {
+  if (!payload) return "";
+
+  const direct = payload?.body?.data ? b64urlToUtf8(String(payload.body.data)) : "";
+  const mime = safeStr(payload?.mimeType);
+
+  if (mime.toLowerCase().startsWith("text/plain") && direct) return direct;
+
+  const parts: any[] = Array.isArray(payload?.parts) ? payload.parts : [];
+  if (parts.length === 0) return direct || "";
+
+  for (const p of parts) {
+    const pm = safeStr(p?.mimeType).toLowerCase();
+    if (pm.startsWith("text/plain") && p?.body?.data) {
+      return b64urlToUtf8(String(p.body.data));
+    }
+  }
+
+  for (const p of parts) {
+    const pm = safeStr(p?.mimeType).toLowerCase();
+    if (pm.startsWith("multipart/")) {
+      const nested = pickPlainText(p);
+      if (nested) return nested;
+    }
+  }
+
+  return "";
+}
+
+async function maybePersistRefreshedTokens(db: any, userId: string, agencyId: string, oauth2Client: any) {
+  const cred = oauth2Client.credentials || {};
+  const accessToken = cred.access_token ? String(cred.access_token) : null;
+  const expiryDate = typeof cred.expiry_date === "number" ? cred.expiry_date : null;
+
+  if (!accessToken && !expiryDate) return;
+
+  await db.run(
+    `UPDATE email_accounts
+     SET access_token = COALESCE(?, access_token),
+         expiry_date = COALESCE(?, expiry_date),
+         updated_at = ?
+     WHERE user_id = ? AND agency_id = ?`,
+    [accessToken, expiryDate, Date.now(), userId, agencyId]
+  );
+}
+
+export async function GET(
+  req: NextRequest,
+  ctx: { params: Promise<{ threadId: string }> }
+) {
   try {
-    const ctx = await requireActiveMember(req);
-    const { threadId } = await ctx2.params;
+    const session = await requireActiveMember(req);
+    await requireFeature(session.agencyId, "email");
 
-    const db: Db = await getDb();
-    await ensureSchema(db);
-
-    const rawPlan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
-    const planKey = normalizePlan(rawPlan);
-    const gate = requireFeature(planKey, "email");
-    if (!gate.ok) return Response.json(gate.body, { status: gate.status });
-
-    const acc = (await db.get(
-      `SELECT id, provider, access_token, refresh_token, token_expires_at
-       FROM email_accounts
-       WHERE agency_id = ? AND user_id = ?
-       ORDER BY updated_at DESC
-       LIMIT 1`,
-      ctx.agencyId,
-      ctx.userId
-    )) as
-      | {
-          id: string;
-          provider: string;
-          access_token: string | null;
-          refresh_token: string | null;
-          token_expires_at: string | null;
-        }
-      | undefined;
-
-    if (!acc?.id || acc.provider !== "google") {
-      return Response.json({ ok: false, error: "NOT_CONNECTED" }, { status: 409 });
+    const { threadId: raw } = await ctx.params;
+    const threadId = safeStr(raw);
+    if (!threadId) {
+      return NextResponse.json({ error: "Missing threadId" }, { status: 400 });
     }
 
-    const tok = await ensureFreshAccessToken({
-      access_token: acc.access_token,
-      token_expires_at: acc.token_expires_at,
-      refresh_token: acc.refresh_token,
-      onUpdate: async (t) => {
-        await db.run(
-          `UPDATE email_accounts
-           SET access_token = ?, token_expires_at = ?, scope = COALESCE(scope, ?), updated_at = datetime('now')
-           WHERE id = ? AND agency_id = ? AND user_id = ?`,
-          t.access_token,
-          t.token_expires_at || null,
-          t.scope || null,
-          acc.id,
-          ctx.agencyId,
-          ctx.userId
-        );
-      },
+    const db = await getDb();
+
+    const account = await db.get(
+      `SELECT access_token, refresh_token, expiry_date
+       FROM email_accounts
+       WHERE user_id = ? AND agency_id = ?`,
+      [session.userId, session.agencyId]
+    );
+
+    if (!account) {
+      return NextResponse.json({ error: "No Gmail account connected" }, { status: 400 });
+    }
+
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI
+    );
+
+    oauth2Client.setCredentials({
+      access_token: account.access_token,
+      refresh_token: account.refresh_token,
+      expiry_date: account.expiry_date,
     });
 
-    if (!tok.ok) {
-      return Response.json({ ok: false, error: tok.error }, { status: 409 });
-    }
+    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-    const t = await getThread(tok.access_token, threadId);
-    if (!t.ok) {
-      return Response.json({ ok: false, error: t.error, details: (t as any).details }, { status: 502 });
-    }
+    const threadRes = await gmail.users.threads.get({
+      userId: "me",
+      id: threadId,
+      format: "full",
+    });
 
-    return Response.json({ ok: true, thread: t.thread }, { status: 200 });
+    const messages = threadRes.data.messages || [];
+    const outMsgs = messages
+      .map((m: any) => {
+        const headers = m?.payload?.headers || [];
+        const subject = extractHeader(headers, "Subject");
+        const from = extractHeader(headers, "From");
+        const to = extractHeader(headers, "To");
+        const date = extractHeader(headers, "Date");
+        const snippet = safeStr(m?.snippet || "");
+        const body = pickPlainText(m?.payload);
+
+        return {
+          id: safeStr(m?.id),
+          from,
+          to,
+          date,
+          subject,
+          snippet,
+          body,
+        };
+      })
+      .filter((x: any) => x.id);
+
+    const lastHeaders = messages[messages.length - 1]?.payload?.headers || [];
+    const threadSubject = safeStr(extractHeader(lastHeaders, "Subject")) || safeStr(outMsgs[outMsgs.length - 1]?.subject) || "";
+
+    await maybePersistRefreshedTokens(db, session.userId, session.agencyId, oauth2Client);
+
+    return NextResponse.json({
+      thread: {
+        id: threadId,
+        subject: threadSubject,
+        messages: outMsgs,
+      },
+    });
   } catch (err: any) {
-    const msg = String(err?.code ?? err?.message ?? err);
-    if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
-    return Response.json({ error: "Server error", message: msg }, { status: 500 });
+    console.error("Email thread get error:", err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
