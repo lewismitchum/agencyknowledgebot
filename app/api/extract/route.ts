@@ -53,12 +53,71 @@ function asString(v: any) {
   return typeof v === "string" ? v : String(v ?? "");
 }
 
+async function tableColumns(db: Db, table: string): Promise<Set<string>> {
+  const safe = String(table).replace(/[^a-zA-Z0-9_]/g, "");
+  try {
+    const rows = (await db.all(`PRAGMA table_info(${safe})`)) as Array<{ name?: string }>;
+    return new Set((rows ?? []).map((r) => String(r?.name ?? "").trim()).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+async function ensureNotificationsTable(db: Db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      agency_id TEXT NOT NULL,
+      user_id TEXT,
+      type TEXT,
+      title TEXT,
+      body TEXT,
+      url TEXT,
+      created_at TEXT NOT NULL,
+      read_at TEXT
+    );
+  `);
+
+  const cols = await tableColumns(db, "notifications");
+
+  async function add(col: string, ddl: string) {
+    if (cols.has(col)) return;
+    try {
+      await db.exec(`ALTER TABLE notifications ADD COLUMN ${ddl};`);
+    } catch {
+      // ignore
+    }
+  }
+
+  await add("agency_id", "agency_id TEXT NOT NULL DEFAULT ''");
+  await add("user_id", "user_id TEXT");
+  await add("type", "type TEXT");
+  await add("title", "title TEXT");
+  await add("body", "body TEXT");
+  await add("url", "url TEXT");
+  await add("created_at", "created_at TEXT NOT NULL DEFAULT ''");
+  await add("read_at", "read_at TEXT");
+
+  try {
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_notifications_agency_created ON notifications (agency_id, created_at DESC);`);
+  } catch {}
+  try {
+    await db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_notifications_agency_user_created ON notifications (agency_id, user_id, created_at DESC);`
+    );
+  } catch {}
+  try {
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_notifications_agency_read ON notifications (agency_id, read_at);`);
+  } catch {}
+}
+
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
 
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureNotificationsTable(db);
 
     // Gate using DB plan (authoritative), fallback to ctx.plan
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
@@ -186,6 +245,23 @@ Rules:
         new Date().toISOString()
       );
 
+      // Notification: extraction error
+      try {
+        await db.run(
+          `INSERT INTO notifications
+           (id, agency_id, user_id, type, title, body, url, created_at, read_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          makeId("ntf"),
+          ctx.agencyId,
+          ctx.userId,
+          "extraction_error",
+          `Extraction failed: ${doc.title || "Document"}`,
+          msg.slice(0, 800),
+          "/app/docs",
+          new Date().toISOString()
+        );
+      } catch {}
+
       return Response.json({
         ok: true,
         events_created: 0,
@@ -220,11 +296,13 @@ Rules:
         const startAt = it?.start_at ? asString(it.start_at) : "";
         if (!startAt) continue;
 
+        const eventId = makeId("evt");
+
         await db.run(
           `INSERT INTO schedule_events
            (id, agency_id, bot_id, document_id, title, start_at, end_at, notes, confidence, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          makeId("evt"),
+          eventId,
           ctx.agencyId,
           doc.bot_id,
           doc.id,
@@ -236,13 +314,32 @@ Rules:
           now
         );
 
+        // Notification: event extracted
+        try {
+          await db.run(
+            `INSERT INTO notifications
+             (id, agency_id, user_id, type, title, body, url, created_at, read_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+            makeId("ntf"),
+            ctx.agencyId,
+            ctx.userId,
+            "event_extracted",
+            `Event extracted: ${title}`,
+            `From: ${doc.title || doc.id}\nStart: ${startAt}${notes ? `\n\n${notes}` : ""}`.slice(0, 1200),
+            "/app/schedule",
+            now
+          );
+        } catch {}
+
         events_created++;
       } else {
+        const taskId = makeId("tsk");
+
         await db.run(
           `INSERT INTO schedule_tasks
            (id, agency_id, bot_id, document_id, title, due_at, status, notes, confidence, created_at)
            VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
-          makeId("tsk"),
+          taskId,
           ctx.agencyId,
           doc.bot_id,
           doc.id,
@@ -252,6 +349,24 @@ Rules:
           confidence,
           now
         );
+
+        // Notification: task extracted
+        try {
+          const dueAt = it?.due_at ? asString(it.due_at) : "";
+          await db.run(
+            `INSERT INTO notifications
+             (id, agency_id, user_id, type, title, body, url, created_at, read_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+            makeId("ntf"),
+            ctx.agencyId,
+            ctx.userId,
+            "task_extracted",
+            `Task extracted: ${title}`,
+            `From: ${doc.title || doc.id}${dueAt ? `\nDue: ${dueAt}` : ""}${notes ? `\n\n${notes}` : ""}`.slice(0, 1200),
+            "/app/schedule",
+            now
+          );
+        } catch {}
 
         tasks_created++;
       }
@@ -267,6 +382,23 @@ Rules:
       doc.id,
       now
     );
+
+    // Notification: extraction summary
+    try {
+      await db.run(
+        `INSERT INTO notifications
+         (id, agency_id, user_id, type, title, body, url, created_at, read_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        makeId("ntf"),
+        ctx.agencyId,
+        ctx.userId,
+        "extraction_complete",
+        `Extraction complete: ${doc.title || "Document"}`,
+        `Created ${events_created} event(s) and ${tasks_created} task(s).`,
+        "/app/notifications",
+        now
+      );
+    } catch {}
 
     return Response.json({
       ok: true,

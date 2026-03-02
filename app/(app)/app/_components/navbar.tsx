@@ -56,15 +56,6 @@ function shortFilename(name: string, max = 28) {
   return s.slice(0, Math.max(10, max - 10)) + "…" + s.slice(-8);
 }
 
-function UnreadPill({ count }: { count: number }) {
-  if (!count) return null;
-  return (
-    <span className="ml-2 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-foreground px-1.5 text-[11px] font-semibold text-background">
-      {count > 99 ? "99+" : String(count)}
-    </span>
-  );
-}
-
 export default function Navbar() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -85,9 +76,6 @@ export default function Navbar() {
   const [docsError, setDocsError] = useState<string | null>(null);
 
   const docsPanelRef = useRef<HTMLDivElement | null>(null);
-
-  // --- Notifications badge ---
-  const [notifUnread, setNotifUnread] = useState(0);
 
   // Keep active bot in sync with URL param
   useEffect(() => {
@@ -209,45 +197,6 @@ export default function Navbar() {
     };
   }, [isAuthed, activeBotId]);
 
-  // Load unread notifications count (poll every 60s)
-  useEffect(() => {
-    if (!isAuthed) {
-      setNotifUnread(0);
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadUnread() {
-      try {
-        const r = await fetch("/api/notifications/list?limit=50", { credentials: "include", cache: "no-store" });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) return;
-
-        // if upsell, treat as 0
-        if (j?.upsell?.code) {
-          if (!cancelled) setNotifUnread(0);
-          return;
-        }
-
-        const list = Array.isArray(j?.notifications) ? j.notifications : [];
-        const unread = list.filter((n: any) => !n?.read_at).length;
-
-        if (!cancelled) setNotifUnread(Number(unread) || 0);
-      } catch {
-        // silent
-      }
-    }
-
-    loadUnread();
-    const id = window.setInterval(loadUnread, 60_000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [isAuthed]);
-
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login";
@@ -365,24 +314,7 @@ export default function Navbar() {
           <NavLink href="/app/schedule">Schedule</NavLink>
           <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
 
-          {/* Notifications (with unread badge) */}
-          <Link
-            href="/app/notifications"
-            className={[
-              "text-sm transition-colors",
-              "rounded-full px-3 py-1.5",
-              pathname === "/app/notifications"
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            ].join(" ")}
-          >
-            <span className="inline-flex items-center">
-              Notifications
-              <UnreadPill count={notifUnread} />
-            </span>
-          </Link>
-
-          {/* Email points to the unified page */}
+          {/* ✅ single email route */}
           <NavLink href="/app/email">Email</NavLink>
 
           <NavLink href="/app/bots">Bots</NavLink>
@@ -408,15 +340,12 @@ export default function Navbar() {
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/spreadsheets">Sheets</Link>
             </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/notifications">
-                Notifs
-                <UnreadPill count={notifUnread} />
-              </Link>
-            </Button>
+
+            {/* ✅ single email route */}
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/email">Email</Link>
             </Button>
+
             <Button asChild variant="ghost" size="sm" className="rounded-full">
               <Link href="/app/bots">Bots</Link>
             </Button>

@@ -1,4 +1,4 @@
-// app/(app)/app/email/drafts/page.tsx
+// app/(app)/app/email/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -290,7 +290,7 @@ export default function EmailDraftsPage() {
           </div>
 
           <nav className="flex-1 px-3 pb-4 pt-3">
-            <a className="block rounded-xl px-3 py-2 text-sm hover:bg-muted/60" href="/app/email/inbox">
+            <a className="block rounded-xl px-3 py-2 text-sm hover:bg-muted/60" href="/app/email">
               Inbox
             </a>
             <div className="mt-1 rounded-xl bg-muted px-3 py-2 text-sm font-medium">Drafts</div>
@@ -337,7 +337,7 @@ export default function EmailDraftsPage() {
                   </button>
                 </div>
 
-                <a href="/app/email/inbox" className="rounded-xl border px-3 py-2 text-sm hover:bg-muted">
+                <a href="/app/email" className="rounded-xl border px-3 py-2 text-sm hover:bg-muted">
                   Inbox
                 </a>
               </div>
@@ -488,7 +488,7 @@ export default function EmailDraftsPage() {
           {/* Mobile nav */}
           <div className="border-t bg-card p-3 md:hidden">
             <div className="grid grid-cols-2 gap-2">
-              <a href="/app/email/inbox" className="rounded-xl border px-3 py-2 text-center text-sm hover:bg-muted">
+              <a href="/app/email" className="rounded-xl border px-3 py-2 text-center text-sm hover:bg-muted">
                 Inbox
               </a>
               <a href="/app/email" className="rounded-xl border px-3 py-2 text-center text-sm hover:bg-muted">
