@@ -11,7 +11,7 @@ export type PlanLimits = {
   allow_images: boolean;
   allow_video: boolean;
 
-  // conversation "invisible refresh" threshold
+  // conversation "invisible refresh" threshold (counts messages in convo, user+assistant)
   summarize_after_messages: number;
 };
 
@@ -35,7 +35,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     summarize_after_messages: 30,
   },
   pro: {
-    daily_messages: null, // ✅ unlimited (no sentinels)
+    daily_messages: null,
     daily_uploads: null,
     max_users: 15,
     max_agency_bots: 3,
@@ -44,7 +44,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     summarize_after_messages: 40,
   },
   enterprise: {
-    daily_messages: null, // ✅ unlimited
+    daily_messages: null,
     daily_uploads: null,
     max_users: 50,
     max_agency_bots: 5,
@@ -53,7 +53,7 @@ const LIMITS: Record<PlanKey, PlanLimits> = {
     summarize_after_messages: 50,
   },
   corporation: {
-    daily_messages: null, // ✅ unlimited
+    daily_messages: null,
     daily_uploads: null,
     max_users: 100,
     max_agency_bots: 10,
@@ -83,6 +83,22 @@ export function isPaidPlan(plan: unknown): boolean {
   return normalizePlan(plan) !== "free";
 }
 
+export function isUnlimited(n: unknown): boolean {
+  return n == null;
+}
+
+export function getSummarizeAfterMessages(plan: unknown): number {
+  return getPlanLimits(plan).summarize_after_messages;
+}
+
+export function getMaxUsers(plan: unknown): number | null {
+  return getPlanLimits(plan).max_users;
+}
+
+export function getMaxAgencyBots(plan: unknown): number | null {
+  return getPlanLimits(plan).max_agency_bots;
+}
+
 export type FeatureKey = "schedule" | "extraction" | "multimedia" | "email" | "spreadsheets";
 
 const FEATURES: Record<FeatureKey, PlanKey[]> = {
@@ -90,8 +106,6 @@ const FEATURES: Record<FeatureKey, PlanKey[]> = {
   extraction: ["starter", "pro", "enterprise", "corporation"],
   multimedia: ["pro", "enterprise", "corporation"],
   email: ["corporation"],
-
-  // ✅ paid tiers (not free)
   spreadsheets: ["starter", "pro", "enterprise", "corporation"],
 };
 
@@ -106,14 +120,28 @@ export function requireFeature(
   const p = normalizePlan(plan);
   if (FEATURES[feature].includes(p)) return { ok: true };
 
+  const pretty =
+    feature === "email"
+      ? "Email inbox is available on Corporation."
+      : feature === "multimedia"
+        ? "Images + video uploads are available on Pro and up."
+        : feature === "schedule" || feature === "extraction"
+          ? "Schedule / extraction is available on Starter and up."
+          : feature === "spreadsheets"
+            ? "Spreadsheets integration is available on Starter and up."
+            : "Upgrade required.";
+
   return {
     ok: false,
     status: 403,
     body: {
       ok: false,
-      error: "PLAN_REQUIRED",
-      feature,
-      plan: p,
+      upsell: {
+        code: "upgrade_required",
+        feature,
+        plan: p,
+        message: pretty,
+      },
     },
   };
 }

@@ -24,7 +24,7 @@ export async function enforceDailyMessages(
   const usage = await getUsageRow(db, agencyId, dateKey);
 
   const limit = limits.daily_messages; // number | null
-  if (limit == null) return { ok: true }; // ✅ unlimited
+  if (limit == null) return { ok: true }; // unlimited
 
   const n = Number(limit);
   if (!Number.isFinite(n) || n <= 0) return { ok: true };
@@ -57,7 +57,7 @@ export async function enforceDailyUploads(
   const p = normalizePlan(plan);
   const limits = getPlanLimits(p);
 
-  if (limits.daily_uploads == null) return { ok: true };
+  if (limits.daily_uploads == null) return { ok: true }; // unlimited
 
   const limit = Number(limits.daily_uploads);
   if (!Number.isFinite(limit) || limit <= 0) return { ok: true };
@@ -87,4 +87,96 @@ export function enforceFeature(plan: unknown, feature: FeatureKey): EnforcementR
   const r = requireFeature(plan, feature);
   if (r.ok) return { ok: true };
   return { ok: false, status: r.status, body: r.body };
+}
+
+/**
+ * Billable seats = users in this agency with status active/pending,
+ * EXCLUDING owner/admin roles.
+ *
+ * Assumes users table has: agency_id, role, status
+ * (matches your existing auth model).
+ */
+export async function enforceSeatLimit(
+  db: Db,
+  agencyId: string,
+  plan: unknown
+): Promise<EnforcementResult> {
+  const p = normalizePlan(plan);
+  const limits = getPlanLimits(p);
+
+  const max = limits.max_users;
+  if (max == null) return { ok: true }; // unlimited seats
+
+  const row = (await db.get(
+    `
+    SELECT COUNT(1) AS n
+    FROM users
+    WHERE agency_id = ?
+      AND status IN ('active','pending')
+      AND role NOT IN ('owner','admin')
+    `,
+    String(agencyId)
+  )) as { n?: number } | undefined;
+
+  const used = Number(row?.n ?? 0);
+
+  if (used >= max) {
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        ok: false,
+        error: "SEAT_LIMIT_EXCEEDED",
+        used,
+        max,
+        plan: p,
+      },
+    };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Agency bots limit = bots where owner_user_id IS NULL (shared bots),
+ * EXCLUDING private bots.
+ */
+export async function enforceAgencyBotLimit(
+  db: Db,
+  agencyId: string,
+  plan: unknown
+): Promise<EnforcementResult> {
+  const p = normalizePlan(plan);
+  const limits = getPlanLimits(p);
+
+  const max = limits.max_agency_bots;
+  if (max == null) return { ok: true };
+
+  const row = (await db.get(
+    `
+    SELECT COUNT(1) AS n
+    FROM bots
+    WHERE agency_id = ?
+      AND owner_user_id IS NULL
+    `,
+    String(agencyId)
+  )) as { n?: number } | undefined;
+
+  const used = Number(row?.n ?? 0);
+
+  if (used >= max) {
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        ok: false,
+        error: "AGENCY_BOT_LIMIT_EXCEEDED",
+        used,
+        max,
+        plan: p,
+      },
+    };
+  }
+
+  return { ok: true };
 }

@@ -9,7 +9,7 @@ import {
   normalizeUserRole,
   normalizeUserStatus,
 } from "@/lib/users";
-import { normalizePlan } from "@/lib/plans";
+import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export type AuthedContext = {
   agencyId: string;
@@ -18,7 +18,7 @@ export type AuthedContext = {
   userEmail: string;
   role: "owner" | "admin" | "member";
   status: "active" | "pending" | "blocked";
-  plan: string | null;
+  plan: PlanKey;
 };
 
 export type AuthzErrorCode =
@@ -41,20 +41,35 @@ async function ensureUserRoleColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
 }
 
+async function ensureAgencyPlanColumn(db: Db) {
+  // Some old schemas can be missing this column; keep reads from crashing.
+  await db.run("ALTER TABLE agencies ADD COLUMN plan TEXT").catch(() => {});
+}
+
+export function isOwnerOrAdmin(ctx: Pick<AuthedContext, "role">) {
+  return ctx.role === "owner" || ctx.role === "admin";
+}
+
+export function isBillableMember(ctx: Pick<AuthedContext, "role">) {
+  // Owner/admin should NOT count toward seat limits.
+  return ctx.role !== "owner" && ctx.role !== "admin";
+}
+
 export async function requireActiveMember(req: NextRequest): Promise<AuthedContext> {
   const session = getSessionFromRequest(req);
   if (!session?.agencyId || !session?.agencyEmail) throw new AuthzError("UNAUTHENTICATED");
 
   const db: Db = await getDb();
   await ensureUserRoleColumns(db);
-
-  const agency = (await db.get(
-    `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
-    String(session.agencyId)
-  )) as { plan: string | null } | undefined;
+  await ensureAgencyPlanColumn(db);
 
   const agencyId = String(session.agencyId);
   const agencyEmail = String(session.agencyEmail);
+
+  const agency = (await db.get(
+    `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
+    agencyId
+  )) as { plan?: string | null } | undefined;
 
   // ✅ prefer per-user identity
   const sessionUserId = (session as any).userId ? String((session as any).userId) : "";
@@ -105,8 +120,6 @@ export async function requireOwner(req: NextRequest): Promise<AuthedContext> {
 
 export async function requireOwnerOrAdmin(req: NextRequest): Promise<AuthedContext> {
   const ctx = await requireActiveMember(req);
-  if (ctx.role !== "owner" && ctx.role !== "admin") {
-    throw new AuthzError("FORBIDDEN_NOT_ADMIN_OR_OWNER");
-  }
+  if (!isOwnerOrAdmin(ctx)) throw new AuthzError("FORBIDDEN_NOT_ADMIN_OR_OWNER");
   return ctx;
 }

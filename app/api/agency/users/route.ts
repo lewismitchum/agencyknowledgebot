@@ -1,11 +1,12 @@
 // app/api/agency/users/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { randomBytes } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { requireOwnerOrAdmin } from "@/lib/authz";
 import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { nowIso } from "@/lib/tokens";
-import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { getPlanLimits, normalizePlan, type PlanKey } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
@@ -14,7 +15,7 @@ type Ctx = {
   agencyId: string;
   userId: string;
   role: "owner" | "admin" | "member";
-  plan?: string | null;
+  plan: PlanKey;
 };
 
 type UserRow = {
@@ -35,6 +36,10 @@ type InviteRow = {
 async function ensureRoleStatusColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
+}
+
+async function ensureAgencyPlanColumn(db: Db) {
+  await db.run("ALTER TABLE agencies ADD COLUMN plan TEXT").catch(() => {});
 }
 
 function normalizeRole(raw: unknown): "owner" | "admin" | "member" {
@@ -58,11 +63,14 @@ function pickMaxUsersFromLimits(limits: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: string | null) {
-  const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan: PlanKey) {
+  await ensureAgencyPlanColumn(db);
+
+  const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, String(agencyId))) as
     | { plan: string | null }
     | undefined;
-  return normalizePlan(row?.plan ?? fallbackPlan ?? null);
+
+  return normalizePlan(row?.plan ?? fallbackPlan ?? "free");
 }
 
 function isEmail(s: string) {
@@ -77,7 +85,7 @@ function addDaysIso(days: number) {
 }
 
 function randomToken() {
-  return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+  return randomBytes(32).toString("base64url");
 }
 
 async function getSeatState(db: Db, agencyId: string, maxUsers: number | null) {
@@ -116,7 +124,6 @@ async function getSeatState(db: Db, agencyId: string, maxUsers: number | null) {
   )) as InviteRow[];
 
   const pendingInvites = (invites ?? []).length;
-
   const reserved = pendingBillableMembers + pendingInvites;
 
   return {
@@ -145,7 +152,6 @@ function seatLimitResponse(args: {
   reserved?: number;
   mode: "invite" | "activate";
 }) {
-  // Standardized error response so UI can reliably detect "upgrade required"
   return NextResponse.json(
     {
       ok: false,
@@ -171,7 +177,7 @@ export async function GET(req: NextRequest) {
     await ensureRoleStatusColumns(db);
     await ensureInviteTables();
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const limits = getPlanLimits(plan);
     const maxUsers = pickMaxUsersFromLimits(limits);
 
@@ -183,6 +189,7 @@ export async function GET(req: NextRequest) {
       ctx.agencyId
     )) as UserRow[];
 
+    // backfill blanks
     for (const u of users) {
       const role = normalizeRole(u.role);
       const status = normalizeStatus(u.status);
@@ -279,7 +286,7 @@ export async function POST(req: NextRequest) {
     await ensureRoleStatusColumns(db);
     await ensureInviteTables();
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const limits = getPlanLimits(plan);
     const maxUsers = pickMaxUsersFromLimits(limits);
 
@@ -321,10 +328,7 @@ export async function POST(req: NextRequest) {
     )) as InviteRow | undefined;
 
     const origin = req.nextUrl.origin;
-
-    // ✅ Standard invite landing page
     const acceptPath = "/join";
-
     const expiresAt = addDaysIso(7);
 
     if (existingInvite?.id) {
@@ -394,7 +398,7 @@ export async function PATCH(req: NextRequest) {
     await ensureRoleStatusColumns(db);
     await ensureInviteTables();
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
+    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const limits = getPlanLimits(plan);
     const maxUsers = pickMaxUsersFromLimits(limits);
 
@@ -497,6 +501,7 @@ export async function DELETE(req: NextRequest) {
     const userId = String(url.searchParams.get("userId") ?? "").trim();
     const inviteId = String(url.searchParams.get("inviteId") ?? "").trim();
 
+    // keep body fallback for clients that still send JSON
     const body = (await req.json().catch(() => ({}))) as any;
     const bodyUserId = String(body?.userId ?? "").trim();
     const bodyInviteId = String(body?.inviteId ?? "").trim();

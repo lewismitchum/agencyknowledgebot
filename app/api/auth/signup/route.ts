@@ -69,6 +69,14 @@ async function verifyTurnstile(token: string, ip: string | null) {
   return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
 }
 
+function normName(s: string) {
+  return String(s ?? "").trim();
+}
+
+function normEmail(s: string) {
+  return String(s ?? "").trim().toLowerCase();
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -86,7 +94,11 @@ export async function POST(req: NextRequest) {
 
     const { name, email, password, turnstile_token, isJson } = await readBody(req);
 
-    if (!name?.trim() || !email?.trim() || !password?.trim()) {
+    const agencyName = normName(name);
+    const normalizedEmail = normEmail(email);
+    const rawPassword = String(password ?? "").trim();
+
+    if (!agencyName || !normalizedEmail || !rawPassword) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
     }
 
@@ -100,32 +112,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: ts.error }, { status: 400 });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
-
-    // IMPORTANT: "signup" here is for creating a NEW agency/owner.
-    // If the email already exists as an AGENCY login, block.
-    const existingAgency = (await db.get(
+    // Safety: block if email is already used as an agency login anywhere (prevents confusion / takeover).
+    const existingAgencyByEmail = (await db.get(
       "SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
     )) as { id: string } | undefined;
 
-    if (existingAgency?.id) {
+    if (existingAgencyByEmail?.id) {
       return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
 
-    // Also block if this email is already a USER in any agency (prevents confusion / takeover).
-    const existingUser = (await db.get(
+    // Block if this email already exists as a user in ANY agency (keeps your current rule).
+    const existingUserAnywhere = (await db.get(
       "SELECT id FROM users WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
     )) as { id: string } | undefined;
 
-    if (existingUser?.id) {
+    if (existingUserAnywhere?.id) {
       return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
 
-    const agencyId = randomUUID();
-    const ownerUserId = randomUUID();
-    const password_hash = await bcrypt.hash(password, 10);
+    // ✅ If agency name already exists => join flow (pending approval)
+    const existingAgencyByName = (await db.get(
+      `SELECT id, name, email
+       FROM agencies
+       WHERE lower(name) = lower(?)
+       LIMIT 1`,
+      agencyName
+    )) as { id: string; name: string | null; email: string | null } | undefined;
+
+    const password_hash = await bcrypt.hash(rawPassword, 10);
 
     const willSendEmail = resendConfigured();
     const emailVerified = willSendEmail ? 0 : 1;
@@ -138,19 +154,79 @@ export async function POST(req: NextRequest) {
       const token = makeToken();
       tokenHash = hashToken(token);
       expiresAt = isoFromNowMinutes(60);
-
       const tokenParam = encodeURIComponent(token);
       verifyUrl = `${getAppUrl()}/verify-email?token=${tokenParam}`;
     }
+
+    // ===== JOIN EXISTING AGENCY (PENDING) =====
+    if (existingAgencyByName?.id) {
+      const agencyId = String(existingAgencyByName.id);
+      const newUserId = randomUUID();
+
+      // Create member as PENDING (owner/admin must approve).
+      // NOTE: status is pending even if emailVerified=1, because approval is separate from verification.
+      await db.run(
+        `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at, password_hash)
+         VALUES (?, ?, ?, ?, 'member', 'pending', 0, ?, ?, ?)`,
+        newUserId,
+        agencyId,
+        normalizedEmail,
+        emailVerified,
+        nowIso(),
+        nowIso(),
+        password_hash
+      );
+
+      // Optional: verify email (for safety), but STILL pending approval.
+      if (willSendEmail && verifyUrl) {
+        try {
+          await sendEmail({
+            to: normalizedEmail,
+            subject: "Verify your email for Louis.Ai",
+            html: `
+              <div style="font-family: ui-sans-serif, system-ui; line-height: 1.5">
+                <h2>Verify your email</h2>
+                <p>Click the button below to verify your email address.</p>
+                <p>After verification, your request will still need approval by the agency owner/admin.</p>
+                <p style="margin: 24px 0;">
+                  <a href="${verifyUrl}" style="background:#111;color:#fff;padding:10px 14px;border-radius:999px;text-decoration:none;display:inline-block;">
+                    Verify email
+                  </a>
+                </p>
+                <p style="color:#666;font-size:12px;">This link expires in 60 minutes.</p>
+              </div>
+            `,
+          });
+        } catch (e) {
+          console.error("JOIN_VERIFY_EMAIL_SEND_FAILED", e);
+        }
+      }
+
+      const redirectTo = "/pending-approval";
+
+      if (isJson) {
+        return NextResponse.json({
+          ok: true,
+          mode: "join_existing_agency",
+          agencyId,
+          redirectTo,
+        });
+      }
+
+      return NextResponse.redirect(new URL(redirectTo, req.url));
+    }
+
+    // ===== CREATE NEW AGENCY (OWNER) =====
+    const agencyId = randomUUID();
+    const ownerUserId = randomUUID();
 
     await db.run(
       `INSERT INTO agencies (
         id, name, email, password_hash, vector_store_id, created_at,
         email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-
       agencyId,
-      name.trim(),
+      agencyName,
       normalizedEmail,
       password_hash,
       null,
@@ -162,11 +238,9 @@ export async function POST(req: NextRequest) {
     );
 
     // Owner user: if verification required => pending until verified.
-    // Onboarding starts incomplete (0).
     await db.run(
       `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at, password_hash)
        VALUES (?, ?, ?, ?, 'owner', ?, 0, ?, ?, ?)`,
-
       ownerUserId,
       agencyId,
       normalizedEmail,
@@ -202,7 +276,7 @@ export async function POST(req: NextRequest) {
 
     // If email verification is NOT required, send welcome immediately (never blocks signup).
     if (emailVerified) {
-      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName: name.trim() });
+      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName });
     }
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
@@ -210,7 +284,7 @@ export async function POST(req: NextRequest) {
     // ✅ Only set a session when the account is active (no email verification required).
     if (emailVerified) {
       if (isJson) {
-        const res = NextResponse.json({ ok: true, redirectTo });
+        const res = NextResponse.json({ ok: true, mode: "new_agency", redirectTo });
         setSessionCookie(res, {
           agencyId,
           agencyEmail: normalizedEmail,
@@ -232,12 +306,15 @@ export async function POST(req: NextRequest) {
 
     // ✅ Verification required: do NOT create a session yet.
     if (isJson) {
-      return NextResponse.json({ ok: true, redirectTo });
+      return NextResponse.json({ ok: true, mode: "new_agency", redirectTo });
     }
 
     return NextResponse.redirect(new URL(redirectTo, req.url));
   } catch (err: any) {
     console.error("SIGNUP_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }
