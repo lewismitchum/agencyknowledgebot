@@ -924,15 +924,15 @@ export default function EmailPage() {
               {tab === "inbox" ? (
                 <div className="flex h-full flex-col">
                   <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-                    <div className="text-sm font-semibold">Inbox</div>
-                    <button
-                      type="button"
-                      onClick={() => refreshThreads().catch(() => {})}
-                      className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
-                    >
-                      Reload
-                    </button>
-                  </div>
+  <div className="text-sm font-semibold">Threads</div>
+  <button
+    type="button"
+    onClick={() => refreshThreads().catch(() => {})}
+    className="rounded-xl border px-3 py-2 text-xs hover:bg-muted"
+  >
+    Reload
+  </button>
+</div>
 
                   <div className="flex-1 overflow-auto p-2">
                     {threadsLoading ? (
