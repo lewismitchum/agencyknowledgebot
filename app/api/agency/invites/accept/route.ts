@@ -33,7 +33,6 @@ async function ensureInviteTables(db: Db) {
       ON agency_invites(token_hash);
   `);
 
-  // Columns drift-safe
   const cols = (await db.all(`PRAGMA table_info(agency_invites)`)) as Array<{
     name?: string;
   }>;
@@ -79,17 +78,15 @@ function isEmail(s: string) {
 }
 
 export async function GET(req: NextRequest) {
-  // Allow redeem via GET for convenience:
-  // /api/agency/invites/accept?token=...
   const url = new URL(req.url);
   const token = String(url.searchParams.get("token") ?? "").trim();
-  if (!token)
+  if (!token) {
     return NextResponse.json(
       { ok: false, error: "MISSING_TOKEN" },
       { status: 400 }
     );
+  }
 
-  // Proxy into POST logic
   return POST(
     new Request(req.url, {
       method: "POST",
@@ -149,16 +146,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (invite.accepted_at) {
-      return NextResponse.json({
-        ok: true,
-        alreadyAccepted: true,
-        agency_id: invite.agency_id,
-        email: invite.email,
-        redirectTo: "/login",
-      });
-    }
-
     // expires check (string ISO)
     const exp = invite.expires_at ? Date.parse(invite.expires_at) : NaN;
     if (invite.expires_at && Number.isFinite(exp) && Date.now() > exp) {
@@ -176,7 +163,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Create user in that agency if missing; otherwise keep existing but ensure pending
+    // If already accepted: do NOT force pending, just send them to signup/login.
+    if (invite.accepted_at) {
+      return NextResponse.json({
+        ok: true,
+        alreadyAccepted: true,
+        agency_id: invite.agency_id,
+        email,
+        // They might already have a password/session; if not, they’ll go through login/signup.
+        redirectTo: "/login",
+      });
+    }
+
+    // Create user in that agency if missing; otherwise ensure ACTIVE (invited users skip approval)
     const existingUser = (await db.get(
       `SELECT id, role, status
        FROM users
@@ -197,27 +196,29 @@ export async function POST(req: NextRequest) {
         email,
         0,
         "member",
-        "pending",
+        "active",
         0,
         nowIso(),
         nowIso()
       );
     } else {
-      // If they exist but are blocked, don't override
-      const status = String(existingUser.status ?? "pending").toLowerCase();
+      const status = String(existingUser.status ?? "active").toLowerCase();
       if (status !== "blocked") {
         await db.run(
           `UPDATE users
            SET role = COALESCE(NULLIF(role,''), 'member'),
-               status = CASE
-                 WHEN lower(COALESCE(status,'')) = 'active' THEN status
-                 ELSE 'pending'
-               END,
+               status = 'active',
                updated_at = ?
            WHERE id = ? AND agency_id = ?`,
           nowIso(),
           existingUser.id,
           invite.agency_id
+        );
+      } else {
+        // blocked stays blocked
+        return NextResponse.json(
+          { ok: false, error: "USER_BLOCKED" },
+          { status: 403 }
         );
       }
     }
@@ -242,17 +243,23 @@ export async function POST(req: NextRequest) {
       void sendWelcomeEmailSafe({ to: email, agencyName });
     }
 
+    // Invited users should go straight into the app after they authenticate.
+    // Your auth flow will decide whether they need /signup or /login.
     return NextResponse.json({
       ok: true,
       agency_id: invite.agency_id,
       email,
-      status: "pending",
-      redirectTo: "/pending-approval",
+      status: "active",
+      redirectTo: "/app",
     });
   } catch (err: any) {
     console.error("ACCEPT_INVITE_ERROR", err);
     return NextResponse.json(
-      { ok: false, error: "INTERNAL_ERROR", message: String(err?.message ?? err) },
+      {
+        ok: false,
+        error: "INTERNAL_ERROR",
+        message: String(err?.message ?? err),
+      },
       { status: 500 }
     );
   }
