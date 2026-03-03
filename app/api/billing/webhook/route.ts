@@ -20,6 +20,18 @@ function getWebhookSecret() {
   return secret;
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function makeId(prefix: string) {
+  const uuid =
+    globalThis.crypto && "randomUUID" in globalThis.crypto
+      ? (globalThis.crypto as any).randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}_${uuid}`;
+}
+
 async function ensureAgencyBillingColumns(db: Db) {
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_customer_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE agencies ADD COLUMN stripe_subscription_id TEXT`).catch(() => {});
@@ -29,13 +41,114 @@ async function ensureAgencyBillingColumns(db: Db) {
 }
 
 async function ensureStripeEventsTable(db: Db) {
-  await db.run(
-    `CREATE TABLE IF NOT EXISTS stripe_events (
-      id TEXT PRIMARY KEY,
-      type TEXT,
-      created_at TEXT
-    )`
-  ).catch(() => {});
+  await db
+    .run(
+      `CREATE TABLE IF NOT EXISTS stripe_events (
+        id TEXT PRIMARY KEY,
+        type TEXT,
+        created_at TEXT
+      )`
+    )
+    .catch(() => {});
+}
+
+/**
+ * Notifications: drift-safe.
+ * We create a basic table if missing, then only insert columns that actually exist.
+ */
+async function ensureNotificationsTable(db: Db) {
+  await db
+    .run(
+      `CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        agency_id TEXT,
+        user_id TEXT,
+        kind TEXT,
+        title TEXT,
+        body TEXT,
+        href TEXT,
+        created_at TEXT,
+        read_at TEXT
+      )`
+    )
+    .catch(() => {});
+}
+
+async function getTableColumns(db: Db, table: string): Promise<Set<string>> {
+  try {
+    const rows = (await db.all(`PRAGMA table_info(${table})`)) as Array<{ name?: string }>;
+    const s = new Set<string>();
+    for (const r of rows) {
+      const n = String(r?.name ?? "").trim();
+      if (n) s.add(n);
+    }
+    return s;
+  } catch {
+    return new Set<string>();
+  }
+}
+
+async function insertNotificationDriftSafe(
+  db: Db,
+  args: {
+    agencyId: string;
+    userId: string;
+    kind?: string;
+    title: string;
+    body: string;
+    href?: string;
+  }
+) {
+  const cols = await getTableColumns(db, "notifications");
+  if (!cols.size) return;
+
+  const payload: Record<string, any> = {
+    id: makeId("notif"),
+    agency_id: args.agencyId,
+    user_id: args.userId,
+    kind: args.kind ?? "system",
+    title: args.title,
+    body: args.body,
+    href: args.href ?? "/app/email",
+    created_at: nowIso(),
+    read_at: null,
+  };
+
+  const keys = Object.keys(payload).filter((k) => cols.has(k));
+  if (!keys.length) return;
+
+  const qs = keys.map(() => "?").join(", ");
+  const sql = `INSERT INTO notifications (${keys.join(", ")}) VALUES (${qs})`;
+  const values = keys.map((k) => payload[k]);
+
+  await db.run(sql, ...values).catch(() => {});
+}
+
+async function notifyCorpUpgrade(db: Db, agencyId: string) {
+  // Notify active users only (pending users will see it after approval via UI logic anyway)
+  const users = (await db.all(
+    `SELECT id
+     FROM users
+     WHERE agency_id = ?
+       AND status = 'active'`,
+    agencyId
+  )) as Array<{ id?: string }>;
+
+  const title = "Email unlocked";
+  const body = "Your agency upgraded to Corporation. Connect your inbox to enable the Email page.";
+
+  for (const u of users) {
+    const userId = String(u?.id ?? "").trim();
+    if (!userId) continue;
+    await insertNotificationDriftSafe(db, {
+      agencyId,
+      userId,
+      kind: "billing",
+      title,
+      body,
+      href: "/app/email",
+    });
+  }
 }
 
 function planFromPriceId(priceId: string | null | undefined): PlanKey {
@@ -161,7 +274,7 @@ async function recordStripeEventOnce(db: Db, event: Stripe.Event): Promise<boole
       `INSERT INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)`,
       event.id,
       event.type,
-      new Date().toISOString()
+      nowIso()
     );
     return true;
   } catch {
@@ -211,6 +324,7 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureAgencyBillingColumns(db);
     await ensureStripeEventsTable(db);
+    await ensureNotificationsTable(db);
 
     const firstTime = await recordStripeEventOnce(db, event);
     if (!firstTime) return NextResponse.json({ ok: true });
@@ -282,15 +396,31 @@ export async function POST(req: NextRequest) {
         const trialingNow = status === "trialing";
         const hasEverHadTrial = trialingNow || trialEndSec > 0;
 
+        // Detect plan transition to Corporation (only when active/trialing)
+        let priorPlan: PlanKey = "free";
         if (agencyId) {
+          const row = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+            | { plan?: string | null }
+            | undefined;
+          priorPlan = normalizePlan(row?.plan ?? "free");
+        }
+
+        if (agencyId) {
+          const nextPlan = active ? bestPlan : "free";
+
           await updateAgencyBilling(db, agencyId, {
-            plan: active ? bestPlan : "free",
+            plan: nextPlan,
             stripe_customer_id: customerId ?? undefined,
             stripe_subscription_id: sub.id ?? undefined,
             stripe_price_id: chosenPriceId ?? undefined,
             stripe_current_period_end: periodEndIso ?? undefined,
             ...(hasEverHadTrial ? { trial_used: 1 } : {}),
           });
+
+          // If they just upgraded into Corporation, notify everyone to connect inbox.
+          if (active && nextPlan === "corporation" && priorPlan !== "corporation") {
+            await notifyCorpUpgrade(db, agencyId);
+          }
         }
 
         return;
