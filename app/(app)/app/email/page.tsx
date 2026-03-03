@@ -100,7 +100,7 @@ export default function EmailPage() {
   const [qApplied, setQApplied] = useState("");
 
   // ===== Gmail connection state =====
-  const [gmailConnected, setGmailConnected] = useState<boolean>(true);
+  const [gmailConnected, setGmailConnected] = useState<boolean>(false);
   const [connectHint, setConnectHint] = useState<string | null>(null);
 
   // ===== Inbox state =====
@@ -219,6 +219,18 @@ export default function EmailPage() {
         setPlan(typeof j?.plan === "string" ? j.plan : undefined);
         setUpsell(j?.upsell ?? null);
 
+        // Optional: API can tell us upfront if Gmail is connected
+        const connectedFromApi =
+          typeof j?.gmail_connected === "boolean"
+            ? j.gmail_connected
+            : typeof j?.connected === "boolean"
+              ? j.connected
+              : null;
+
+        if (connectedFromApi !== null) {
+          setGmailConnected(connectedFromApi);
+        }
+
         const allowed = Boolean(j?.ok) && !j?.upsell?.code;
         setGated(!allowed);
 
@@ -268,45 +280,55 @@ export default function EmailPage() {
             if (!cancelled) setDraftsLoading(false);
           }
 
-          // inbox list
-          try {
-            setThreadsLoading(true);
-            setThreadsError("");
-            setGmailConnected(true);
+          // If Gmail is not connected (known), do NOT call threads endpoint.
+          const isConnectedNow =
+            connectedFromApi !== null ? connectedFromApi : gmailConnected;
 
-            const t = await fetchJson<any>("/api/email/threads", {
-              credentials: "include",
-              cache: "no-store",
-            });
-            if (cancelled) return;
+          if (!isConnectedNow) {
+            setThreads([]);
+            setSelectedThreadId(null);
+            setThreadsError("Gmail is not connected.");
+          } else {
+            // inbox list
+            try {
+              setThreadsLoading(true);
+              setThreadsError("");
+              setGmailConnected(true);
 
-            const rows: GmailThreadRow[] = Array.isArray(t?.threads)
-              ? t.threads.map((x: any) => ({
-                  id: String(x?.id || x?.threadId || ""),
-                  subject: String(x?.subject || ""),
-                  snippet: String(x?.snippet || ""),
-                  from: String(x?.from || ""),
-                  date: String(x?.date || x?.internalDate || x?.timestamp || ""),
-                }))
-              : [];
+              const t = await fetchJson<any>("/api/email/threads", {
+                credentials: "include",
+                cache: "no-store",
+              });
+              if (cancelled) return;
 
-            const cleaned = rows.filter((r) => r.id);
-            setThreads(cleaned);
-            if (!selectedThreadId && cleaned[0]?.id) setSelectedThreadId(cleaned[0].id);
-          } catch (e: any) {
-            if (cancelled) return;
+              const rows: GmailThreadRow[] = Array.isArray(t?.threads)
+                ? t.threads.map((x: any) => ({
+                    id: String(x?.id || x?.threadId || ""),
+                    subject: String(x?.subject || ""),
+                    snippet: String(x?.snippet || ""),
+                    from: String(x?.from || ""),
+                    date: String(x?.date || x?.internalDate || x?.timestamp || ""),
+                  }))
+                : [];
 
-            // Key: show connect CTA on 409 not_connected
-            if (isFetchJsonError(e) && e.status === 409 && isNotConnectedError(e)) {
-              setGmailConnected(false);
-              setThreads([]);
-              setSelectedThreadId(null);
-              setThreadsError("Gmail is not connected.");
-            } else {
-              setThreadsError(e?.message ?? "Failed to load inbox threads");
+              const cleaned = rows.filter((r) => r.id);
+              setThreads(cleaned);
+              if (!selectedThreadId && cleaned[0]?.id) setSelectedThreadId(cleaned[0].id);
+            } catch (e: any) {
+              if (cancelled) return;
+
+              // Key: show connect CTA on 409 not_connected
+              if (isFetchJsonError(e) && e.status === 409 && isNotConnectedError(e)) {
+                setGmailConnected(false);
+                setThreads([]);
+                setSelectedThreadId(null);
+                setThreadsError("Gmail is not connected.");
+              } else {
+                setThreadsError(e?.message ?? "Failed to load inbox threads");
+              }
+            } finally {
+              if (!cancelled) setThreadsLoading(false);
             }
-          } finally {
-            if (!cancelled) setThreadsLoading(false);
           }
         }
       } catch (e: any) {
@@ -875,7 +897,7 @@ export default function EmailPage() {
               onClick={() => setTab("inbox")}
               className={cx(
                 "w-full rounded-lg px-3 py-2 text-left text-sm",
-                tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted/60",
+                tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted/60"
               )}
             >
               Inbox
@@ -885,7 +907,7 @@ export default function EmailPage() {
               onClick={() => setTab("drafts")}
               className={cx(
                 "mt-1 w-full rounded-lg px-3 py-2 text-left text-sm",
-                tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted/60",
+                tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted/60"
               )}
             >
               Drafts
@@ -895,7 +917,7 @@ export default function EmailPage() {
               onClick={() => setTab("docs-draft")}
               className={cx(
                 "mt-1 w-full rounded-lg px-3 py-2 text-left text-sm",
-                tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted/60",
+                tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted/60"
               )}
             >
               Draft from docs
@@ -971,7 +993,7 @@ export default function EmailPage() {
                   type="button"
                   className={cx(
                     "hidden items-center rounded-full border px-4 py-2 text-sm hover:bg-muted md:inline-flex",
-                    tab === "inbox" ? "md:inline-flex" : "md:hidden",
+                    tab === "inbox" ? "md:inline-flex" : "md:hidden"
                   )}
                   onClick={() => setAiOpen(true)}
                   title="Open AI assistant"
@@ -1060,7 +1082,7 @@ export default function EmailPage() {
                                 }}
                                 className={cx(
                                   "w-full px-4 py-3 text-left transition",
-                                  active ? "bg-muted" : "hover:bg-muted/60",
+                                  active ? "bg-muted" : "hover:bg-muted/60"
                                 )}
                                 title={t.subject || t.snippet || t.id}
                               >
@@ -1112,7 +1134,7 @@ export default function EmailPage() {
                                 disabled={openingDraft && active}
                                 className={cx(
                                   "w-full px-4 py-3 text-left transition",
-                                  active ? "bg-muted" : "hover:bg-muted/60",
+                                  active ? "bg-muted" : "hover:bg-muted/60"
                                 )}
                                 title={d.subject}
                               >
@@ -1141,13 +1163,6 @@ export default function EmailPage() {
 
             {/* Reading pane / compose pane */}
             <main className="flex flex-1 flex-col overflow-hidden bg-background">
-              {/* Keep your existing panes exactly as before (compose/docs-draft/drafts/reading) */}
-              {/* To keep this message from exploding even more, the rest of the file is unchanged UI logic-wise. */}
-              {/* IMPORTANT: We must not cut the file; leaving as-is below. */}
-
-              {/* === START unchanged body from your original file === */}
-              {/* NOTE: This block is intentionally identical to your existing code paths. */}
-
               {tab === "compose" ? (
                 <div className="h-full overflow-auto">
                   <div className="mx-auto max-w-3xl px-6 py-6">
@@ -1284,10 +1299,6 @@ export default function EmailPage() {
                   Pick Inbox/Drafts/Compose/Docs.
                 </div>
               )}
-
-              {/* === END unchanged body placeholder === */}
-              {/* You can keep your existing full panes here; this placeholder avoids sending another 600 lines. */}
-              {/* If you want, I’ll re-send the FULL file again with your exact panes included—just say "send full file with panes". */}
             </main>
           </div>
 
@@ -1297,28 +1308,40 @@ export default function EmailPage() {
               <button
                 type="button"
                 onClick={() => setTab("inbox")}
-                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx(
+                  "rounded-lg border px-3 py-2 text-sm",
+                  tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted"
+                )}
               >
                 Inbox
               </button>
               <button
                 type="button"
                 onClick={() => setTab("drafts")}
-                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx(
+                  "rounded-lg border px-3 py-2 text-sm",
+                  tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted"
+                )}
               >
                 Drafts
               </button>
               <button
                 type="button"
                 onClick={() => setTab("compose")}
-                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "compose" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx(
+                  "rounded-lg border px-3 py-2 text-sm",
+                  tab === "compose" ? "bg-muted font-medium" : "hover:bg-muted"
+                )}
               >
                 Compose
               </button>
               <button
                 type="button"
                 onClick={() => setTab("docs-draft")}
-                className={cx("rounded-lg border px-3 py-2 text-sm", tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted")}
+                className={cx(
+                  "rounded-lg border px-3 py-2 text-sm",
+                  tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted"
+                )}
               >
                 Docs
               </button>
@@ -1349,9 +1372,7 @@ export default function EmailPage() {
                   Draft replies for the selected thread.
                   <div className="mt-2">
                     Thread:{" "}
-                    <span className="font-mono">
-                      {selectedThreadId ? shortText(selectedThreadId, 64) : "none"}
-                    </span>
+                    <span className="font-mono">{selectedThreadId ? shortText(selectedThreadId, 64) : "none"}</span>
                   </div>
                 </div>
 
@@ -1383,7 +1404,7 @@ export default function EmailPage() {
                         key={`${m.at}-${idx}`}
                         className={cx(
                           "rounded-lg border p-3 text-sm whitespace-pre-wrap",
-                          m.role === "user" ? "bg-background" : "bg-muted/20",
+                          m.role === "user" ? "bg-background" : "bg-muted/20"
                         )}
                       >
                         <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1419,9 +1440,7 @@ export default function EmailPage() {
                   <button
                     type="button"
                     onClick={() => onAiSend().catch(() => {})}
-                    disabled={
-                      !selectedThreadId || !botId.trim().length || replyDrafting || !aiInput.trim().length || !gmailConnected
-                    }
+                    disabled={!selectedThreadId || !botId.trim().length || replyDrafting || !aiInput.trim().length || !gmailConnected}
                     className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
                   >
                     {replyDrafting ? "Thinking…" : "Send"}
