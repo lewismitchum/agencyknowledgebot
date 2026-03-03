@@ -159,9 +159,14 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
   }));
 }
 
+/**
+ * Internal/business question detection (stricter).
+ * Goal: only treat as "internal" when it plausibly depends on the user's org/client/process/docs.
+ */
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
+  // Strongly "general" starters: bias away from internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -179,66 +184,159 @@ function looksInternalBusinessQuestion(message: string) {
     "how to",
     "calculate",
     "solve ",
+    "why ",
+    "what is ",
+    "who is ",
+    "where is ",
   ];
-  if (generalStarters.some((s) => t.startsWith(s) || t.includes(s))) return false;
+  if (generalStarters.some((s) => t.startsWith(s))) return false;
 
-  const internalHints = [
-    "our ",
-    "we ",
-    "us ",
+  // If it explicitly references "our company/agency/client" etc, it's internal.
+  const explicitOrgMarkers = [
+    "our company",
+    "our agency",
     "my agency",
-    "company",
-    "client",
-    "customer",
+    "our team",
+    "our client",
+    "my client",
+    "our customers",
+    "our customer",
+    "our product",
+    "our service",
+    "our offer",
+    "our pricing",
+    "our contract",
+    "our invoice",
+    "our onboarding",
+    "our sop",
+    "our process",
+    "our policy",
+    "our playbook",
+    "our brand",
+    "our messaging",
+    "our kpi",
+    "our dashboard",
+  ];
+  if (explicitOrgMarkers.some((m) => t.includes(m))) return true;
+
+  // Internal-ish keywords, but *not* overly broad ones like "we/us/doc/bot/schedule/meeting".
+  const internalHints = [
     "pricing",
-    "offer",
     "proposal",
     "contract",
     "invoice",
+    "sow",
+    "statement of work",
+    "msa",
     "onboarding",
     "sop",
     "process",
     "policy",
     "playbook",
-    "brand",
+    "brand voice",
+    "brand guidelines",
     "messaging",
-    "meeting",
-    "schedule",
     "deliverable",
     "scope",
     "kpi",
     "dashboard",
-    "workspace",
-    "member",
-    "bot",
-    "doc",
-    "document",
+    "workspace settings",
+    "seat limit",
+    "billing",
+    "stripe",
+    "plan",
   ];
 
   return internalHints.some((h) => t.includes(h));
 }
 
+/**
+ * Robust evidence detection:
+ * Responses API payload shapes vary. We deep-scan for:
+ * - file_search tool outputs/results
+ * - citations arrays
+ * - annotations that include file_id / quote-ish objects
+ */
 function responseHasFileSearchEvidence(resp: any) {
-  try {
-    const outputs = Array.isArray(resp?.output) ? resp.output : [];
-    for (const item of outputs) {
-      const toolName = (item?.tool_name || item?.name || item?.tool)?.toString?.() ?? "";
-      const type = (item?.type || "").toString();
+  const seen = new Set<any>();
+
+  function isObj(v: any) {
+    return v && typeof v === "object";
+  }
+
+  function hasCitationLikeArray(v: any) {
+    if (!Array.isArray(v) || v.length === 0) return false;
+    // Common patterns: {file_id,...}, {quote,...}, {source,...}, {document_id,...}
+    return v.some((x) => {
+      if (!isObj(x)) return false;
+      const keys = Object.keys(x);
+      return (
+        keys.includes("file_id") ||
+        keys.includes("document_id") ||
+        keys.includes("source") ||
+        keys.includes("quote") ||
+        keys.includes("excerpt") ||
+        keys.includes("uri")
+      );
+    });
+  }
+
+  function walk(node: any, depth: number): boolean {
+    if (depth > 14) return false; // safety
+    if (!isObj(node) && !Array.isArray(node)) return false;
+    if (seen.has(node)) return false;
+    seen.add(node);
+
+    // Direct: tool output blocks
+    if (isObj(node)) {
+      const toolName = (node.tool_name || node.name || node.tool)?.toString?.() ?? "";
+      const type = (node.type || "")?.toString?.() ?? "";
 
       if (toolName === "file_search" || type.includes("file_search")) {
-        const results = item?.results ?? item?.output?.results ?? item?.result ?? item?.output;
+        const results = node.results ?? node.output?.results ?? node.result ?? node.output ?? node.data;
         if (Array.isArray(results) && results.length > 0) return true;
-
         if (results?.data && Array.isArray(results.data) && results.data.length > 0) return true;
 
-        const citations = item?.citations ?? item?.output?.citations;
-        if (Array.isArray(citations) && citations.length > 0) return true;
+        const citations = node.citations ?? node.output?.citations ?? node.annotations ?? node.output?.annotations;
+        if (hasCitationLikeArray(citations)) return true;
+      }
+
+      // Any nested citations/annotations
+      const maybeCitations = node.citations ?? node.annotations;
+      if (hasCitationLikeArray(maybeCitations)) return true;
+
+      // Some SDKs put annotations inside content blocks:
+      // output[].content[].annotations
+      const content = node.content;
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          const anns = c?.annotations;
+          if (hasCitationLikeArray(anns)) return true;
+        }
       }
     }
-  } catch {
-    // ignore
+
+    // Recurse
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        if (walk(item, depth + 1)) return true;
+      }
+    } else {
+      for (const k of Object.keys(node)) {
+        const v = (node as any)[k];
+        if (hasCitationLikeArray(v)) return true;
+        if (walk(v, depth + 1)) return true;
+      }
+    }
+
+    return false;
   }
-  return false;
+
+  try {
+    return walk(resp, 0);
+  } catch {
+    return false;
+  }
 }
 
 function toUiDailyLimit(raw: unknown): number | null {
@@ -377,13 +475,19 @@ Do not add extra words before or after the fallback.
       const modelText =
         typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
-      const hasEvidence = responseHasFileSearchEvidence(resp);
+      // Server-side guardrail:
+      // Only force fallback when it's internal AND we can be confident there was no doc evidence.
+      // (We do NOT want false negatives to cause "docs-only" behavior.)
+      const hasEvidence = tools.length > 0 ? responseHasFileSearchEvidence(resp) : false;
 
-      if (internal && tools.length > 0 && !hasEvidence) {
+      if (internal && tools.length === 0) {
+        // No vector store available => cannot consult docs => must fallback for internal.
         answer = FALLBACK;
-      } else if (internal && tools.length === 0) {
+      } else if (internal && tools.length > 0 && !hasEvidence) {
+        // Internal + vector store available but no evidence returned => fallback.
         answer = FALLBACK;
       } else {
+        // Non-internal OR internal with evidence => allow model answer.
         answer = modelText || (internal ? FALLBACK : "Sorry — I couldn’t generate a response.");
       }
     }
