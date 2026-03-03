@@ -20,9 +20,7 @@ async function getAgencyPlan(
   const row = (await db.get(
     `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
     agencyId
-  )) as
-    | { plan: string | null }
-    | undefined;
+  )) as { plan: string | null } | undefined;
 
   return normalizePlan(row?.plan ?? fallbackPlan ?? null);
 }
@@ -152,16 +150,19 @@ export async function POST(req: NextRequest) {
       nowIso()
     );
 
-    // Canonical join link (this is what your /join page expects)
     const appUrl = getAppUrl();
-    const joinUrl = `${appUrl}/join?token=${encodeURIComponent(token)}`;
+
+    // Path-style join link (doesn't rely on query params)
+    const joinUrl = `${appUrl}/join/${encodeURIComponent(token)}`;
+
+    // Query fallback (some older flows / manual paste)
+    const joinUrlQuery = `${appUrl}/join?token=${encodeURIComponent(token)}`;
 
     // Back-compat (if you still have an /accept-invite page somewhere)
     const acceptInviteUrl = `${appUrl}/accept-invite?token=${encodeURIComponent(
       token
     )}`;
 
-    // Send email best-effort. Never block invite creation.
     let email_ok = true;
     let email_error: string | null = null;
 
@@ -173,11 +174,13 @@ export async function POST(req: NextRequest) {
           <div style="font-family: ui-sans-serif, system-ui; line-height: 1.5">
             <h2>You’re invited</h2>
             <p>Click below to join the workspace.</p>
+
             <p style="margin: 24px 0;">
               <a href="${joinUrl}" style="background:#111;color:#fff;padding:10px 14px;border-radius:999px;text-decoration:none;display:inline-block;">
                 Accept invite
               </a>
             </p>
+
             <p style="margin: 0 0 10px; color:#666; font-size:12px;">
               If the button doesn’t work, copy/paste:
               <br />
@@ -185,6 +188,15 @@ export async function POST(req: NextRequest) {
                 ${joinUrl}
               </span>
             </p>
+
+            <p style="margin: 0 0 10px; color:#666; font-size:12px;">
+              Alternate link:
+              <br />
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
+                ${joinUrlQuery}
+              </span>
+            </p>
+
             <p style="color:#666;font-size:12px;">This link expires in 7 days.</p>
           </div>
         `,
@@ -201,6 +213,7 @@ export async function POST(req: NextRequest) {
       email_ok,
       email_error,
       join_url: joinUrl,
+      join_url_query: joinUrlQuery,
       accept_invite_url: acceptInviteUrl,
       expires_at,
     });
