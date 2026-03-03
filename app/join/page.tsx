@@ -1,4 +1,5 @@
 // app/join/page.tsx
+import { Suspense } from "react";
 import JoinClient from "./JoinClient";
 
 type JoinPageProps = {
@@ -19,5 +20,9 @@ export default function JoinPage({ searchParams }: JoinPageProps) {
     getParam(searchParams, "t") ||
     getParam(searchParams, "code");
 
-  return <JoinClient token={token ? String(token).trim() : null} />;
+  return (
+    <Suspense fallback={null}>
+      <JoinClient token={token ? String(token).trim() : null} />
+    </Suspense>
+  );
 }
