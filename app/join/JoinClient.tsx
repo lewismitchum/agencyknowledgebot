@@ -23,13 +23,68 @@ type AcceptResp =
       message?: string;
     };
 
+function extractTokenFromPathname(pathname: string): string | null {
+  // Supports:
+  //   /join/<token>
+  //   /join/<token>/ (rare)
+  // Does NOT rely on Next router matching the dynamic segment.
+  const p = String(pathname || "").trim();
+  const m = p.match(/^\/join\/([^\/?#]+)\/?$/i);
+  if (!m) return null;
+
+  const raw = String(m[1] || "").trim();
+  if (!raw) return null;
+
+  // If email client encoded it, decode safely
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export default function JoinClient({ token }: Props) {
   const [state, setState] = useState<
     "idle" | "redeeming" | "success" | "error"
   >(token ? "redeeming" : "idle");
   const [error, setError] = useState<string | null>(null);
 
-  const safeToken = useMemo(() => (token ? String(token).trim() : ""), [token]);
+  const [resolvedToken, setResolvedToken] = useState<string>("");
+
+  // Resolve token from:
+  //  1) prop
+  //  2) pathname (/join/<token>)
+  //  3) query (?token=...)
+  useEffect(() => {
+    const propTok = token ? String(token).trim() : "";
+    if (propTok) {
+      setResolvedToken(propTok);
+      setState("redeeming");
+      return;
+    }
+
+    if (typeof window === "undefined") return;
+
+    const fromPath = extractTokenFromPathname(window.location.pathname);
+    if (fromPath && String(fromPath).trim()) {
+      setResolvedToken(String(fromPath).trim());
+      setState("redeeming");
+      return;
+    }
+
+    const sp = new URLSearchParams(window.location.search || "");
+    const fromQuery = String(sp.get("token") || sp.get("invite") || sp.get("t") || "").trim();
+    if (fromQuery) {
+      setResolvedToken(fromQuery);
+      setState("redeeming");
+      return;
+    }
+
+    setResolvedToken("");
+    setState("idle");
+  }, [token]);
+
+  const safeToken = useMemo(() => String(resolvedToken || "").trim(), [resolvedToken]);
 
   useEffect(() => {
     if (!safeToken) return;
@@ -53,8 +108,7 @@ export default function JoinClient({ token }: Props) {
 
         if (!res.ok || !data || (data as any).ok !== true) {
           const msg =
-            (data && "error" in data && data.error) ||
-            `HTTP_${res.status}`;
+            (data && "error" in data && data.error) || `HTTP_${res.status}`;
           setError(msg);
           setState("error");
           return;
@@ -65,7 +119,6 @@ export default function JoinClient({ token }: Props) {
         const redirectTo =
           ("redirectTo" in data && data.redirectTo) || "/login";
 
-        // small delay so user sees success state if needed
         window.location.href = redirectTo;
       } catch (e: any) {
         if (cancelled) return;
