@@ -8,10 +8,8 @@ import { ensureInviteTables } from "@/lib/db/ensure-invites";
 import { nowIso } from "@/lib/tokens";
 import { getPlanLimits, normalizePlan, type PlanKey } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
-import { getAppUrl, sendEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 type Ctx = {
   agencyId: string;
@@ -260,10 +258,18 @@ export async function GET(req: NextRequest) {
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
 
-    if (msg === "UNAUTHENTICATED") return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
 
     console.error("AGENCY_USERS_GET_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
@@ -320,7 +326,12 @@ export async function POST(req: NextRequest) {
       nowIso()
     )) as InviteRow | undefined;
 
-    // We cannot resend an existing invite because we don't store the raw token (only hash).
+    const origin = req.nextUrl.origin;
+    const expiresAt = addDaysIso(7);
+
+    // ✅ Use path-based join URLs so tokens can’t get “lost”
+    const joinUrlBase = `${origin}/join`;
+
     if (existingInvite?.id) {
       return NextResponse.json({
         ok: true,
@@ -331,13 +342,13 @@ export async function POST(req: NextRequest) {
           expires_at: existingInvite.expires_at,
         },
         link: null,
-        hint: "Invite already exists. Revoke it and create a new one to resend the email.",
+        hint: `Invite already exists. Revoke it and create a new one to generate a fresh link.`,
+        join_url: joinUrlBase,
       });
     }
 
     const id = crypto.randomUUID();
     const token = randomToken();
-    const expiresAt = addDaysIso(7);
 
     const { hashToken } = await import("@/lib/tokens");
     const token_hash = hashToken(token);
@@ -353,38 +364,29 @@ export async function POST(req: NextRequest) {
       expiresAt
     );
 
-    const acceptUrl = `${getAppUrl()}/accept-invite?token=${encodeURIComponent(token)}`;
-
-    // Send invite email
-    await sendEmail({
-      to: email,
-      subject: "You’ve been invited to Louis.Ai",
-      html: `
-        <div style="font-family: ui-sans-serif, system-ui; line-height: 1.5">
-          <h2>You’re invited</h2>
-          <p>Click below to join the workspace. You’ll set your password on the next screen.</p>
-          <p style="margin: 24px 0;">
-            <a href="${acceptUrl}" style="background:#111;color:#fff;padding:10px 14px;border-radius:999px;text-decoration:none;display:inline-block;">
-              Accept invite
-            </a>
-          </p>
-          <p style="color:#666;font-size:12px;">This link expires in 7 days.</p>
-        </div>
-      `,
-    });
+    // ✅ path token, not query token
+    const link = `${joinUrlBase}/${encodeURIComponent(token)}`;
 
     return NextResponse.json({
       ok: true,
       invite: { id, email, created_at: nowIso(), expires_at: expiresAt },
-      link: acceptUrl,
+      link,
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
 
-    if (msg === "UNAUTHENTICATED") return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
 
     console.error("AGENCY_USERS_POST_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
@@ -429,7 +431,10 @@ export async function PATCH(req: NextRequest) {
     const nextStatus = body?.status != null ? normalizeStatus(body.status) : currentStatus;
 
     if (currentRole === "admin" && ctx.role !== "owner") return forbidden("ONLY_OWNER_CAN_EDIT_ADMINS");
-    if (body?.role != null && String(body.role ?? "").toLowerCase() === "owner") return forbidden("OWNERSHIP_TRANSFER_NOT_SUPPORTED_HERE");
+
+    if (body?.role != null && String(body.role ?? "").toLowerCase() === "owner") {
+      return forbidden("OWNERSHIP_TRANSFER_NOT_SUPPORTED_HERE");
+    }
 
     const currentBillableActive = currentStatus === "active" && currentRole === "member";
     const nextBillableActive = nextStatus === "active" && nextRole === "member";
@@ -458,15 +463,28 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      user: { id: row.id, email: row.email, role: nextRole, status: nextStatus },
+      user: {
+        id: row.id,
+        email: row.email,
+        role: nextRole,
+        status: nextStatus,
+      },
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
 
-    if (msg === "UNAUTHENTICATED") return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
 
     console.error("AGENCY_USERS_PATCH_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
@@ -486,6 +504,7 @@ export async function DELETE(req: NextRequest) {
     const userId = String(url.searchParams.get("userId") ?? "").trim();
     const inviteId = String(url.searchParams.get("inviteId") ?? "").trim();
 
+    // keep body fallback for clients that still send JSON
     const body = (await req.json().catch(() => ({}))) as any;
     const bodyUserId = String(body?.userId ?? "").trim();
     const bodyInviteId = String(body?.inviteId ?? "").trim();
@@ -504,6 +523,7 @@ export async function DELETE(req: NextRequest) {
         ctx.agencyId,
         targetInviteId
       );
+
       return NextResponse.json({ ok: true });
     }
 
@@ -530,10 +550,18 @@ export async function DELETE(req: NextRequest) {
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
 
-    if (msg === "UNAUTHENTICATED") return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
-    if (msg === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return NextResponse.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_ADMIN_OR_OWNER" }, { status: 403 });
+    }
+    if (msg === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ ok: false, error: "FORBIDDEN_NOT_OWNER" }, { status: 403 });
+    }
 
     console.error("AGENCY_USERS_DELETE_ERROR", err);
     return NextResponse.json({ ok: false, error: "INTERNAL_ERROR", message: msg }, { status: 500 });
