@@ -1,11 +1,12 @@
-// app/join/[token]/page.tsx
+// app/join/[...token]/page.tsx
 import JoinClient from "../JoinClient";
 
 type Props = {
-  params: { token?: string };
+  params: { token?: string[] };
 };
 
 export default function JoinTokenPage({ params }: Props) {
-  const token = String(params?.token ?? "").trim() || null;
-  return <JoinClient token={token} />;
+  const token = Array.isArray(params?.token) ? params.token[0] : "";
+  const cleaned = String(token ?? "").trim() || null;
+  return <JoinClient token={cleaned} />;
 }
