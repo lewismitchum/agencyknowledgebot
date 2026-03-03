@@ -1,6 +1,7 @@
 // app/api/agency/invites/accept/route.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { nowIso, hashToken } from "@/lib/tokens";
@@ -33,13 +34,27 @@ async function ensureInviteTables(db: Db) {
   `);
 
   // Columns drift-safe
-  const cols = (await db.all(`PRAGMA table_info(agency_invites)`)) as Array<{ name?: string }>;
+  const cols = (await db.all(`PRAGMA table_info(agency_invites)`)) as Array<{
+    name?: string;
+  }>;
   const have = new Set((cols || []).map((c) => String(c?.name || "")));
 
-  if (!have.has("accepted_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN accepted_at TEXT`).catch(() => {});
-  if (!have.has("revoked_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN revoked_at TEXT`).catch(() => {});
-  if (!have.has("expires_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN expires_at TEXT`).catch(() => {});
-  if (!have.has("created_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN created_at TEXT`).catch(() => {});
+  if (!have.has("accepted_at"))
+    await db
+      .run(`ALTER TABLE agency_invites ADD COLUMN accepted_at TEXT`)
+      .catch(() => {});
+  if (!have.has("revoked_at"))
+    await db
+      .run(`ALTER TABLE agency_invites ADD COLUMN revoked_at TEXT`)
+      .catch(() => {});
+  if (!have.has("expires_at"))
+    await db
+      .run(`ALTER TABLE agency_invites ADD COLUMN expires_at TEXT`)
+      .catch(() => {});
+  if (!have.has("created_at"))
+    await db
+      .run(`ALTER TABLE agency_invites ADD COLUMN created_at TEXT`)
+      .catch(() => {});
 }
 
 async function ensureUserColumns(db: Db) {
@@ -47,9 +62,15 @@ async function ensureUserColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
+  await db
+    .run("ALTER TABLE users ADD COLUMN email_verified INTEGER")
+    .catch(() => {});
+  await db
+    .run("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    .catch(() => {});
+  await db
+    .run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER")
+    .catch(() => {});
 }
 
 function isEmail(s: string) {
@@ -62,7 +83,11 @@ export async function GET(req: NextRequest) {
   // /api/agency/invites/accept?token=...
   const url = new URL(req.url);
   const token = String(url.searchParams.get("token") ?? "").trim();
-  if (!token) return NextResponse.json({ ok: false, error: "MISSING_TOKEN" }, { status: 400 });
+  if (!token)
+    return NextResponse.json(
+      { ok: false, error: "MISSING_TOKEN" },
+      { status: 400 }
+    );
 
   // Proxy into POST logic
   return POST(
@@ -70,7 +95,7 @@ export async function GET(req: NextRequest) {
       method: "POST",
       headers: req.headers,
       body: JSON.stringify({ token }),
-    }) as unknown as NextRequest,
+    }) as unknown as NextRequest
   );
 }
 
@@ -85,7 +110,10 @@ export async function POST(req: NextRequest) {
     const token = String(body?.token ?? "").trim();
 
     if (!token) {
-      return NextResponse.json({ ok: false, error: "MISSING_TOKEN" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "MISSING_TOKEN" },
+        { status: 400 }
+      );
     }
 
     const token_hash = hashToken(token);
@@ -95,7 +123,7 @@ export async function POST(req: NextRequest) {
        FROM agency_invites
        WHERE token_hash = ?
        LIMIT 1`,
-      token_hash,
+      token_hash
     )) as
       | {
           id: string;
@@ -108,15 +136,20 @@ export async function POST(req: NextRequest) {
       | undefined;
 
     if (!invite?.id) {
-      return NextResponse.json({ ok: false, error: "INVALID_OR_USED_INVITE" }, { status: 404 });
+      return NextResponse.json(
+        { ok: false, error: "INVALID_OR_USED_INVITE" },
+        { status: 404 }
+      );
     }
 
     if (invite.revoked_at) {
-      return NextResponse.json({ ok: false, error: "INVITE_REVOKED" }, { status: 410 });
+      return NextResponse.json(
+        { ok: false, error: "INVITE_REVOKED" },
+        { status: 410 }
+      );
     }
 
     if (invite.accepted_at) {
-      // already accepted; still send them to join flow
       return NextResponse.json({
         ok: true,
         alreadyAccepted: true,
@@ -129,12 +162,18 @@ export async function POST(req: NextRequest) {
     // expires check (string ISO)
     const exp = invite.expires_at ? Date.parse(invite.expires_at) : NaN;
     if (invite.expires_at && Number.isFinite(exp) && Date.now() > exp) {
-      return NextResponse.json({ ok: false, error: "INVITE_EXPIRED" }, { status: 410 });
+      return NextResponse.json(
+        { ok: false, error: "INVITE_EXPIRED" },
+        { status: 410 }
+      );
     }
 
     const email = String(invite.email ?? "").trim().toLowerCase();
     if (!isEmail(email)) {
-      return NextResponse.json({ ok: false, error: "INVITE_EMAIL_INVALID" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "INVITE_EMAIL_INVALID" },
+        { status: 400 }
+      );
     }
 
     // Create user in that agency if missing; otherwise keep existing but ensure pending
@@ -144,11 +183,11 @@ export async function POST(req: NextRequest) {
        WHERE agency_id = ? AND lower(email) = lower(?)
        LIMIT 1`,
       invite.agency_id,
-      email,
+      email
     )) as { id: string; role: string | null; status: string | null } | undefined;
 
     if (!existingUser?.id) {
-      const userId = crypto.randomUUID();
+      const userId = randomUUID();
       await db.run(
         `INSERT INTO users
          (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at)
@@ -161,7 +200,7 @@ export async function POST(req: NextRequest) {
         "pending",
         0,
         nowIso(),
-        nowIso(),
+        nowIso()
       );
     } else {
       // If they exist but are blocked, don't override
@@ -178,7 +217,7 @@ export async function POST(req: NextRequest) {
            WHERE id = ? AND agency_id = ?`,
           nowIso(),
           existingUser.id,
-          invite.agency_id,
+          invite.agency_id
         );
       }
     }
@@ -189,13 +228,14 @@ export async function POST(req: NextRequest) {
        SET accepted_at = ?
        WHERE id = ?`,
       nowIso(),
-      invite.id,
+      invite.id
     );
 
-    // Optional: send welcome email (non-blocking) – “you’ve requested access”
-    const agency = (await db.get(`SELECT name FROM agencies WHERE id = ? LIMIT 1`, invite.agency_id)) as
-      | { name?: string | null }
-      | undefined;
+    // Optional: send welcome email (non-blocking)
+    const agency = (await db.get(
+      `SELECT name FROM agencies WHERE id = ? LIMIT 1`,
+      invite.agency_id
+    )) as { name?: string | null } | undefined;
 
     const agencyName = String(agency?.name ?? "").trim();
     if (agencyName) {
@@ -213,7 +253,7 @@ export async function POST(req: NextRequest) {
     console.error("ACCEPT_INVITE_ERROR", err);
     return NextResponse.json(
       { ok: false, error: "INTERNAL_ERROR", message: String(err?.message ?? err) },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }

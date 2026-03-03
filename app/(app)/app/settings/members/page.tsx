@@ -3,7 +3,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -53,7 +59,9 @@ function prettyRole(r: string | null) {
   return "Member";
 }
 
-function statusBadgeVariant(s: string | null): "secondary" | "outline" | "destructive" {
+function statusBadgeVariant(
+  s: string | null
+): "secondary" | "outline" | "destructive" {
   const v = (s || "").toLowerCase();
   if (v === "active") return "secondary";
   if (v === "pending") return "outline";
@@ -82,14 +90,21 @@ function normStatus(s: string | null): "active" | "pending" | "blocked" {
   return "pending";
 }
 
-function SegButton(props: { active: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
+function SegButton(props: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <button
       disabled={props.disabled}
       onClick={props.onClick}
       className={[
         "rounded-full border px-3 py-1.5 text-xs",
-        props.active ? "bg-accent text-foreground" : "bg-background text-muted-foreground hover:bg-accent",
+        props.active
+          ? "bg-accent text-foreground"
+          : "bg-background text-muted-foreground hover:bg-accent",
         props.disabled ? "opacity-50 cursor-not-allowed hover:bg-background" : "",
       ].join(" ")}
       type="button"
@@ -123,17 +138,21 @@ export default function MembersPage() {
 
   const [toast, setToast] = useState<string>("");
   const [lastInviteLink, setLastInviteLink] = useState<string>("");
+  const [lastInviteEmailError, setLastInviteEmailError] = useState<string>("");
 
   const myRole = useMemo(() => normRole(meRole), [meRole]);
   const myStatus = useMemo(() => normStatus(meStatus), [meStatus]);
 
-  const canManageMembers = myStatus === "active" && (myRole === "owner" || myRole === "admin");
+  const canManageMembers =
+    myStatus === "active" && (myRole === "owner" || myRole === "admin");
   const canTransferOwnership = myStatus === "active" && myRole === "owner";
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return members;
-    return members.filter((m) => (m.email || "").toLowerCase().includes(needle));
+    return members.filter((m) =>
+      (m.email || "").toLowerCase().includes(needle)
+    );
   }, [members, q]);
 
   const canCreateInvite = useMemo(() => {
@@ -163,7 +182,9 @@ export default function MembersPage() {
     }
 
     if (typeof j?.mode === "string" && j.mode === "invite") {
-      showToast(`Seat limit reached (${used} used, ${reserved} reserved, limit ${limit}). Upgrade in Billing.`);
+      showToast(
+        `Seat limit reached (${used} used, ${reserved} reserved, limit ${limit}). Upgrade in Billing.`
+      );
       return;
     }
 
@@ -211,7 +232,9 @@ export default function MembersPage() {
       }
 
       if (!(nRole === "owner" || nRole === "admin")) {
-        setBootError("Owner/Admin only. You don’t have permission to manage members.");
+        setBootError(
+          "Owner/Admin only. You don’t have permission to manage members."
+        );
         return;
       }
 
@@ -226,9 +249,13 @@ export default function MembersPage() {
         const j = await r.json().catch(() => null);
         const code = String(j?.error || "");
         if (code === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
-          setBootError("Owner/Admin only. You don’t have permission to manage members.");
+          setBootError(
+            "Owner/Admin only. You don’t have permission to manage members."
+          );
         } else if (code === "FORBIDDEN_NOT_ACTIVE") {
-          setBootError("Your account is pending approval. You can’t manage members yet.");
+          setBootError(
+            "Your account is pending approval. You can’t manage members yet."
+          );
         } else {
           setBootError(code || "Forbidden");
         }
@@ -259,7 +286,11 @@ export default function MembersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function updateMember(userId: string, status: "pending" | "active" | "blocked", role: "owner" | "member" | "admin") {
+  async function updateMember(
+    userId: string,
+    status: "pending" | "active" | "blocked",
+    role: "owner" | "member" | "admin"
+  ) {
     setSavingId(userId);
     try {
       const r = await fetch("/api/agency/users", {
@@ -288,7 +319,11 @@ export default function MembersPage() {
         if (code === "SEAT_LIMIT_REACHED") {
           const used = Number(j?.seats?.used ?? seats?.used ?? 0);
           const limit = j?.seats?.limit ?? seats?.limit ?? null;
-          showToast(limit == null ? "Seat limit reached." : `Seat limit reached (${used} / ${limit}). Upgrade in Billing.`);
+          showToast(
+            limit == null
+              ? "Seat limit reached."
+              : `Seat limit reached (${used} / ${limit}). Upgrade in Billing.`
+          );
           await loadAll();
           return;
         }
@@ -307,7 +342,9 @@ export default function MembersPage() {
     if (!canManageMembers) return;
     if (meUserId && userId === meUserId) return;
 
-    const ok = window.confirm(`Remove ${email} from your agency?\n\nThey will lose access immediately.`);
+    const ok = window.confirm(
+      `Remove ${email} from your agency?\n\nThey will lose access immediately.`
+    );
     if (!ok) return;
 
     setSavingId(userId);
@@ -339,9 +376,11 @@ export default function MembersPage() {
   async function revokeInvite(inviteId: string) {
     setSavingId(inviteId);
     try {
-      const r = await fetch(`/api/agency/users?inviteId=${encodeURIComponent(inviteId)}`, {
+      const r = await fetch("/api/agency/invites", {
         method: "DELETE",
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
+        body: JSON.stringify({ invite_id: inviteId }),
       });
 
       if (r.status === 401) {
@@ -355,6 +394,7 @@ export default function MembersPage() {
         return;
       }
 
+      showToast("Invite revoked.");
       await loadAll();
     } finally {
       setSavingId(null);
@@ -366,8 +406,11 @@ export default function MembersPage() {
     if (!email) return;
 
     setInviteBusy(true);
+    setLastInviteLink("");
+    setLastInviteEmailError("");
+
     try {
-      const r = await fetch("/api/agency/users", {
+      const r = await fetch("/api/agency/invites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -390,12 +433,8 @@ export default function MembersPage() {
           return;
         }
 
-        if (code === "SEAT_LIMIT_REACHED") {
-          const used = Number(j?.seats?.used ?? seats?.used ?? 0);
-          const reserved = Number(j?.seats?.reserved ?? seats?.reserved ?? 0);
-          const limit = j?.seats?.limit ?? seats?.limit ?? null;
-
-          showToast(limit == null ? "Seat limit reached." : `Seat limit reached (${used} used, ${reserved} reserved, limit ${limit}).`);
+        if (code === "SEAT_LIMIT_REACHED" || code === "SEAT_LIMIT_EXCEEDED") {
+          seatLimitToast(j);
           await loadAll();
           return;
         }
@@ -406,18 +445,30 @@ export default function MembersPage() {
 
       setInviteEmail("");
 
-      const link = String(j?.link ?? "");
+      const link = String(j?.join_url ?? j?.link ?? "");
+      const emailOk = j?.email_ok;
+      const emailErr = String(j?.email_error ?? "");
+
       if (link) {
         setLastInviteLink(link);
+        if (emailOk === false && emailErr) setLastInviteEmailError(emailErr);
+
         try {
           await navigator.clipboard.writeText(link);
-          showToast("Invite created. Link copied to clipboard.");
+          showToast(
+            emailOk === false
+              ? "Invite created. Email failed — link copied."
+              : "Invite created. Link copied to clipboard."
+          );
         } catch {
-          showToast("Invite created.");
+          showToast(
+            emailOk === false ? "Invite created. Email failed." : "Invite created."
+          );
         }
       } else {
-        setLastInviteLink("");
-        showToast("Invite created.");
+        showToast(
+          emailOk === false ? "Invite created. Email failed." : "Invite created."
+        );
       }
 
       await loadAll();
@@ -457,7 +508,9 @@ export default function MembersPage() {
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <h1 className="text-3xl font-semibold tracking-tight">Members</h1>
-            <p className="mt-2 text-muted-foreground">Approve users, block access, manage roles, and track seats.</p>
+            <p className="mt-2 text-muted-foreground">
+              Approve users, block access, manage roles, and track seats.
+            </p>
           </div>
           <div className="flex gap-2">
             <Button asChild variant="outline" className="rounded-full">
@@ -476,7 +529,11 @@ export default function MembersPage() {
             <Button asChild className="rounded-full">
               <Link href="/app/settings">Go back</Link>
             </Button>
-            <Button variant="outline" className="rounded-full" onClick={() => loadAll()}>
+            <Button
+              variant="outline"
+              className="rounded-full"
+              onClick={() => loadAll()}
+            >
               Retry
             </Button>
           </div>
@@ -490,7 +547,9 @@ export default function MembersPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Members</h1>
-          <p className="mt-2 text-muted-foreground">Approve users, block access, manage roles, and track seats.</p>
+          <p className="mt-2 text-muted-foreground">
+            Approve users, block access, manage roles, and track seats.
+          </p>
         </div>
         <div className="flex gap-2">
           <Button asChild variant="outline" className="rounded-full">
@@ -517,7 +576,10 @@ export default function MembersPage() {
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Seats & Invites</CardTitle>
-          <CardDescription>Plan enforcement is server-side. Reserved = pending members + pending invites.</CardDescription>
+          <CardDescription>
+            Plan enforcement is server-side. Reserved = pending members + pending
+            invites.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -561,7 +623,8 @@ export default function MembersPage() {
 
           {!canCreateInvite ? (
             <div className="rounded-2xl border bg-background/40 p-3 text-xs text-muted-foreground">
-              Invites disabled: seat limit reached. Revoke pending invites or upgrade in Billing.
+              Invites disabled: seat limit reached. Revoke pending invites or
+              upgrade in Billing.
               <div className="mt-2">
                 <Button asChild size="sm" className="rounded-full">
                   <Link href="/app/billing">Upgrade</Link>
@@ -574,7 +637,9 @@ export default function MembersPage() {
             <div className="rounded-2xl border bg-background/40 p-3 text-xs">
               <div className="font-medium">Last invite link</div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <code className="rounded-lg border bg-background px-2 py-1 text-[11px]">{lastInviteLink}</code>
+                <code className="rounded-lg border bg-background px-2 py-1 text-[11px]">
+                  {lastInviteLink}
+                </code>
                 <Button
                   variant="outline"
                   className="rounded-full"
@@ -590,8 +655,19 @@ export default function MembersPage() {
                   Copy
                 </Button>
               </div>
+
+              {lastInviteEmailError ? (
+                <div className="mt-2 rounded-xl border border-yellow-200 bg-yellow-50 p-2 text-[11px] text-yellow-900">
+                  <div className="font-medium">Email failed to send</div>
+                  <div className="mt-1">{lastInviteEmailError}</div>
+                  <div className="mt-1 text-yellow-800/80">
+                    Link is still valid — paste it manually.
+                  </div>
+                </div>
+              ) : null}
+
               <div className="mt-1 text-muted-foreground">
-                (Tip: your invites list won’t show tokens — copy the link when you create the invite.)
+                (Tip: invite links aren’t shown later — copy it when created.)
               </div>
             </div>
           ) : null}
@@ -612,9 +688,12 @@ export default function MembersPage() {
                       >
                         <div className="space-y-1">
                           <div className="font-medium">{inv.email}</div>
-                          <div className="text-xs text-muted-foreground">Expires: {formatWhen(inv.expires_at)}</div>
+                          <div className="text-xs text-muted-foreground">
+                            Expires: {formatWhen(inv.expires_at)}
+                          </div>
                           <div className="mt-1 text-xs text-muted-foreground">
-                            For security, invite links are only shown once (when created).
+                            For security, invite links are only shown once (when
+                            created).
                           </div>
                         </div>
                         <div className="mt-3 flex gap-2 md:mt-0">
@@ -640,7 +719,9 @@ export default function MembersPage() {
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Directory</CardTitle>
-          <CardDescription>Admins can manage members. Only owner can transfer ownership.</CardDescription>
+          <CardDescription>
+            Admins can manage members. Only owner can transfer ownership.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -658,9 +739,13 @@ export default function MembersPage() {
 
           <div className="space-y-3">
             {loading ? (
-              <div className="text-sm text-muted-foreground">Loading members…</div>
+              <div className="text-sm text-muted-foreground">
+                Loading members…
+              </div>
             ) : filtered.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No members found.</div>
+              <div className="text-sm text-muted-foreground">
+                No members found.
+              </div>
             ) : (
               filtered.map((m) => {
                 const status = normStatus(m.status);
@@ -671,9 +756,11 @@ export default function MembersPage() {
                 const isOwner = role === "owner";
                 const isAdmin = role === "admin";
 
-                const disableActivate = !canActivateAnotherMember && status !== "active";
+                const disableActivate =
+                  !canActivateAnotherMember && status !== "active";
 
-                const canEditTarget = canManageMembers && !isMe && !(myRole === "admin" && isOwner);
+                const canEditTarget =
+                  canManageMembers && !isMe && !(myRole === "admin" && isOwner);
 
                 const canRoleToggle = canEditTarget && !isOwner;
                 const canStatusToggle = canEditTarget;
@@ -688,7 +775,10 @@ export default function MembersPage() {
                     <div className="space-y-1">
                       <div className="font-medium">{m.email}</div>
                       <div className="flex flex-wrap items-center gap-2 text-sm">
-                        <Badge variant={statusBadgeVariant(m.status)} className="rounded-full">
+                        <Badge
+                          variant={statusBadgeVariant(m.status)}
+                          className="rounded-full"
+                        >
                           {prettyStatus(m.status)}
                         </Badge>
                         <Badge variant="outline" className="rounded-full">
@@ -704,7 +794,9 @@ export default function MembersPage() {
 
                     <div className="mt-3 flex flex-col gap-2 md:mt-0 md:items-end">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs text-muted-foreground">Status</span>
+                        <span className="text-xs text-muted-foreground">
+                          Status
+                        </span>
                         <SegButton
                           active={status === "pending"}
                           disabled={busy || !canStatusToggle}
@@ -729,7 +821,9 @@ export default function MembersPage() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs text-muted-foreground">Role</span>
+                        <span className="text-xs text-muted-foreground">
+                          Role
+                        </span>
                         <SegButton
                           active={!isAdmin && !isOwner}
                           disabled={busy || !canRoleToggle}
@@ -748,8 +842,18 @@ export default function MembersPage() {
                         <Button
                           variant="outline"
                           className="rounded-full"
-                          disabled={busy || !canTransferOwnership || isMe || status !== "active" || isOwner}
-                          onClick={() => showToast("Ownership transfer is not supported in this UI yet.")}
+                          disabled={
+                            busy ||
+                            !canTransferOwnership ||
+                            isMe ||
+                            status !== "active" ||
+                            isOwner
+                          }
+                          onClick={() =>
+                            showToast(
+                              "Ownership transfer is not supported in this UI yet."
+                            )
+                          }
                         >
                           Make owner
                         </Button>
@@ -766,7 +870,8 @@ export default function MembersPage() {
 
                       {!canActivateAnotherMember && status !== "active" ? (
                         <div className="text-xs text-muted-foreground">
-                          Activation disabled: seat limit reached. Revoke invites or upgrade.
+                          Activation disabled: seat limit reached. Revoke invites
+                          or upgrade.
                           <span className="ml-2">
                             <Link className="underline" href="/app/billing">
                               Billing
@@ -782,7 +887,8 @@ export default function MembersPage() {
           </div>
 
           <div className="pt-2 text-xs text-muted-foreground">
-            Notes: Members can’t access app routes unless they pass <span className="font-medium">requireActiveMember</span>.
+            Notes: Members can’t access app routes unless they pass{" "}
+            <span className="font-medium">requireActiveMember</span>.
           </div>
         </CardContent>
       </Card>
