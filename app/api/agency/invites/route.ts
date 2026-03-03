@@ -1,10 +1,10 @@
 // app/api/agency/invites/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID } from "crypto";
+import { randomUUID, randomBytes } from "crypto";
 import { getDb, type Db } from "@/lib/db";
 import { requireOwnerOrAdmin } from "@/lib/authz";
 import { ensureInviteTables } from "@/lib/db/ensure-invites";
-import { makeToken, hashToken, isoFromNowMinutes, nowIso } from "@/lib/tokens";
+import { hashToken, isoFromNowMinutes, nowIso } from "@/lib/tokens";
 import { getAppUrl, sendEmail } from "@/lib/email";
 import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { ensureSchema } from "@/lib/schema";
@@ -54,6 +54,11 @@ async function countActivePendingInvites(
   )) as { c: number } | undefined;
 
   return Number(row?.c ?? 0);
+}
+
+function makeInviteTokenHex() {
+  // 32 bytes => 64 hex chars. URL-safe everywhere (no + / =).
+  return randomBytes(32).toString("hex");
 }
 
 export async function POST(req: NextRequest) {
@@ -134,7 +139,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const token = makeToken();
+    const token = makeInviteTokenHex();
+    if (!token || token.length < 40) {
+      // should never happen
+      return NextResponse.json(
+        { error: "Failed to generate invite token" },
+        { status: 500 }
+      );
+    }
+
     const token_hash = hashToken(token);
     const inviteId = randomUUID();
     const expires_at = isoFromNowMinutes(60 * 24 * 7);
@@ -152,16 +165,11 @@ export async function POST(req: NextRequest) {
 
     const appUrl = getAppUrl();
 
-    // Path-style join link (doesn't rely on query params)
-    const joinUrl = `${appUrl}/join/${encodeURIComponent(token)}`;
+    // Path-style (robust)
+    const joinUrl = `${appUrl}/join/${token}`;
 
-    // Query fallback (some older flows / manual paste)
-    const joinUrlQuery = `${appUrl}/join?token=${encodeURIComponent(token)}`;
-
-    // Back-compat (if you still have an /accept-invite page somewhere)
-    const acceptInviteUrl = `${appUrl}/accept-invite?token=${encodeURIComponent(
-      token
-    )}`;
+    // Query fallback
+    const joinUrlQuery = `${appUrl}/join?token=${token}`;
 
     let email_ok = true;
     let email_error: string | null = null;
@@ -214,7 +222,6 @@ export async function POST(req: NextRequest) {
       email_error,
       join_url: joinUrl,
       join_url_query: joinUrlQuery,
-      accept_invite_url: acceptInviteUrl,
       expires_at,
     });
   } catch (err: any) {
