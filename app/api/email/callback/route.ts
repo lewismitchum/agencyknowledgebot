@@ -4,6 +4,9 @@ import { google } from "googleapis";
 import { getDb } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { encrypt } from "@/lib/crypto";
+import { ensureSchema } from "@/lib/schema";
+import { getAgencyPlan } from "@/lib/enforcement";
+import { normalizePlan, requireFeature } from "@/lib/plans";
 
 export const runtime = "nodejs";
 
@@ -21,14 +24,24 @@ function toIntOrNull(v: any): number | null {
   return Math.trunc(n);
 }
 
+async function ensureEmailAuthColumns(db: any) {
+  await db.run(`ALTER TABLE users ADD COLUMN gmail_connected INTEGER`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN gmail_connected_at TEXT`).catch(() => {});
+}
+
 export async function GET(req: NextRequest) {
   try {
     const session = await requireActiveMember(req);
 
-    // Corp only
-    if (session.plan !== "corporation") {
-      return NextResponse.redirect(safeUrl("/app/billing"));
-    }
+    const db = await getDb();
+    await ensureSchema(db);
+    await ensureEmailAuthColumns(db);
+
+    // Server-side feature gate (corp)
+    const rawPlan = await getAgencyPlan(db, session.agencyId, session.plan);
+    const planKey = normalizePlan(rawPlan);
+    const gate = requireFeature(planKey, "email");
+    if (!gate.ok) return NextResponse.redirect(safeUrl("/app/billing"));
 
     const url = new URL(req.url);
     const code = String(url.searchParams.get("code") || "").trim();
@@ -85,8 +98,6 @@ export async function GET(req: NextRequest) {
       mailboxEmail = null;
     }
 
-    const db = await getDb();
-
     // Drift-safe email_accounts table (minimal columns your other routes rely on)
     await db.exec(`
       CREATE TABLE IF NOT EXISTS email_accounts (
@@ -118,8 +129,9 @@ export async function GET(req: NextRequest) {
     const existing = await db.get(
       `SELECT id, refresh_token
        FROM email_accounts
-       WHERE agency_id = ? AND user_id = ?`,
-      [session.agencyId, session.userId],
+       WHERE agency_id = ? AND user_id = ?
+       LIMIT 1`,
+      [session.agencyId, session.userId]
     );
 
     const accountId = existing?.id ? String(existing.id) : crypto.randomUUID();
@@ -163,7 +175,17 @@ export async function GET(req: NextRequest) {
         typeof tokens.token_type === "string" ? tokens.token_type : null,
         now,
         now,
-      ],
+      ]
+    );
+
+    // ✅ flip connected flag for deterministic UI
+    await db.run(
+      `UPDATE users
+       SET gmail_connected = 1, gmail_connected_at = ?
+       WHERE id = ? AND agency_id = ?`,
+      new Date().toISOString(),
+      session.userId,
+      session.agencyId
     );
 
     // Back to email UI
