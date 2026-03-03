@@ -25,6 +25,11 @@ function looksLikeBlocked(msg: string) {
   return s.includes("blocked") || s.includes("account_blocked");
 }
 
+function getQuery() {
+  if (typeof window === "undefined") return new URLSearchParams();
+  return new URLSearchParams(window.location.search || "");
+}
+
 export default function LoginPage() {
   const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 
@@ -39,8 +44,23 @@ export default function LoginPage() {
 
   const [lastEmail, setLastEmail] = useState<string>("");
 
+  const [prefillEmail, setPrefillEmail] = useState<string>("");
+  const [prefillAgency, setPrefillAgency] = useState<string>("");
+  const [nextPath, setNextPath] = useState<string>("/app");
+
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const q = getQuery();
+    const email = String(q.get("email") || "").trim();
+    const agency = String(q.get("agency") || "").trim();
+    const next = String(q.get("next") || "").trim();
+
+    if (email) setPrefillEmail(email);
+    if (agency) setPrefillAgency(agency);
+    if (next) setNextPath(next);
+  }, []);
 
   useEffect(() => {
     if (!siteKey) return;
@@ -109,10 +129,11 @@ export default function LoginPage() {
     const fd = new FormData(e.currentTarget);
     const email = String(fd.get("email") || "").trim();
     const password = String(fd.get("password") || "");
+    const agency = String(fd.get("agency") || "").trim();
 
     setLastEmail(email);
 
-    if (!email || !password) {
+    if (!email || !password || !agency) {
       setErr("Missing fields");
       return;
     }
@@ -140,13 +161,13 @@ export default function LoginPage() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         redirect: "manual",
-        body: JSON.stringify({ email, password, turnstile_token: tsToken }),
+        body: JSON.stringify({ email, password, agency, next: nextPath, turnstile_token: tsToken }),
       });
 
       if (r.status >= 300 && r.status < 400) {
         const loc = r.headers.get("location") || "";
         setOk("Logged in.");
-        window.location.href = loc || "/app/chat";
+        window.location.href = loc || nextPath || "/app";
         return;
       }
 
@@ -165,14 +186,12 @@ export default function LoginPage() {
         const msg = String(j?.message || j?.error || raw || "Login failed").trim();
         const redirectTo = String(j?.redirectTo || j?.redirect_to || "").trim();
 
-        // ✅ NOT VERIFIED → send them to check-email (prefill email)
         if (looksLikeNotVerified(code) || looksLikeNotVerified(msg)) {
           const q = encodeURIComponent(email.trim().toLowerCase());
           window.location.href = `/check-email?email=${q}`;
           return;
         }
 
-        // pending / blocked
         if (
           r.status === 403 &&
           (code === "PENDING_APPROVAL" ||
@@ -189,7 +208,7 @@ export default function LoginPage() {
         return;
       }
 
-      const redirectTo = (j && (j.redirectTo || j.redirect_to)) || "/app/chat";
+      const redirectTo = (j && (j.redirectTo || j.redirect_to)) || nextPath || "/app";
       setOk("Logged in.");
       window.location.href = redirectTo;
     } catch (e: any) {
@@ -216,7 +235,7 @@ export default function LoginPage() {
         <div className="mx-auto grid max-w-xl gap-6">
           <div className="rounded-3xl border bg-card p-8 shadow-sm">
             <h1 className="text-2xl font-semibold tracking-tight">Log in</h1>
-            <p className="mt-2 text-sm text-muted-foreground">Welcome back.</p>
+            <p className="mt-2 text-sm text-muted-foreground">Pick your agency, then log in.</p>
 
             {err ? (
               <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm">
@@ -247,6 +266,21 @@ export default function LoginPage() {
 
             <form className="mt-6 space-y-4" onSubmit={onSubmit}>
               <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="agency">
+                  Agency name
+                </label>
+                <input
+                  id="agency"
+                  name="agency"
+                  type="text"
+                  required
+                  defaultValue={prefillAgency}
+                  className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="Let’s Alter Minds"
+                />
+              </div>
+
+              <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="email">
                   Email
                 </label>
@@ -256,6 +290,7 @@ export default function LoginPage() {
                   type="email"
                   required
                   autoComplete="email"
+                  defaultValue={prefillEmail}
                   className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
                   placeholder="you@agency.com"
                 />

@@ -5,8 +5,12 @@ import { signSession } from "@/lib/auth";
 export const SESSION_COOKIE = "louis_session";
 
 /**
- * Session MUST include per-user identity (userId + userEmail) to prevent
- * everyone resolving to the agency email (which causes cross-user bot visibility).
+ * Session should include:
+ * - agencyId (workspace selection)
+ * - userId/userEmail (membership row in users table)
+ * - identityId/identityEmail (global account identity)
+ *
+ * Backward compatible: identity fields are optional for older callers.
  */
 export function setSessionCookie(
   res: NextResponse,
@@ -14,17 +18,29 @@ export function setSessionCookie(
     agencyId: string;
     agencyEmail: string;
 
-    // ✅ per-user identity
+    // membership (users row)
     userId: string;
     userEmail: string;
+
+    // global identity (new)
+    identityId?: string;
+    identityEmail?: string;
   }
 ) {
+  const userEmail = String(opts.userEmail || "").trim().toLowerCase();
+  const identityEmail = String(opts.identityEmail || userEmail).trim().toLowerCase();
+
   const token = signSession({
     agencyId: opts.agencyId,
     agencyEmail: opts.agencyEmail,
+
     userId: opts.userId,
-    userEmail: String(opts.userEmail || "").trim().toLowerCase(),
-  });
+    userEmail,
+
+    // new fields (only include when present)
+    ...(opts.identityId ? { identityId: opts.identityId } : {}),
+    ...(identityEmail ? { identityEmail } : {}),
+  } as any);
 
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,

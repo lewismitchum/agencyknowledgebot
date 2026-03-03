@@ -3,201 +3,142 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 type Props = {
   token: string | null;
 };
 
-type AcceptResp =
-  | {
-      ok: true;
-      redirectTo?: string;
-      alreadyAccepted?: boolean;
-      agency_id?: string;
-      email?: string;
-      status?: string;
-    }
-  | {
-      ok: false;
-      error: string;
-      message?: string;
-    };
+type State =
+  | { status: "boot" }
+  | { status: "missing_token" }
+  | { status: "checking" }
+  | { status: "error"; message: string }
+  | { status: "ok"; redirectTo: string };
 
-function extractTokenFromPathname(pathname: string): string | null {
-  // Supports:
-  //   /join/<token>
-  //   /join/<token>/ (rare)
-  // Does NOT rely on Next router matching the dynamic segment.
-  const p = String(pathname || "").trim();
-  const m = p.match(/^\/join\/([^\/?#]+)\/?$/i);
-  if (!m) return null;
-
-  const raw = String(m[1] || "").trim();
-  if (!raw) return null;
-
-  // If email client encoded it, decode safely
+function pickTokenFromWindowSearch(): string {
   try {
-    return decodeURIComponent(raw);
+    const sp = new URLSearchParams(window.location.search || "");
+    return (
+      sp.get("token") ||
+      sp.get("invite") ||
+      sp.get("t") ||
+      sp.get("code") ||
+      ""
+    ).trim();
   } catch {
-    return raw;
+    return "";
   }
 }
 
-export default function JoinClient({ token }: Props) {
-  const [state, setState] = useState<
-    "idle" | "redeeming" | "success" | "error"
-  >(token ? "redeeming" : "idle");
-  const [error, setError] = useState<string | null>(null);
+export default function JoinClient(props: Props) {
+  const token = useMemo(() => {
+    return String(props.token ?? "").trim();
+  }, [props.token]);
 
-  const [resolvedToken, setResolvedToken] = useState<string>("");
-
-  // Resolve token from:
-  //  1) prop
-  //  2) pathname (/join/<token>)
-  //  3) query (?token=...)
-  useEffect(() => {
-    const propTok = token ? String(token).trim() : "";
-    if (propTok) {
-      setResolvedToken(propTok);
-      setState("redeeming");
-      return;
-    }
-
-    if (typeof window === "undefined") return;
-
-    const fromPath = extractTokenFromPathname(window.location.pathname);
-    if (fromPath && String(fromPath).trim()) {
-      setResolvedToken(String(fromPath).trim());
-      setState("redeeming");
-      return;
-    }
-
-    const sp = new URLSearchParams(window.location.search || "");
-    const fromQuery = String(sp.get("token") || sp.get("invite") || sp.get("t") || "").trim();
-    if (fromQuery) {
-      setResolvedToken(fromQuery);
-      setState("redeeming");
-      return;
-    }
-
-    setResolvedToken("");
-    setState("idle");
-  }, [token]);
-
-  const safeToken = useMemo(() => String(resolvedToken || "").trim(), [resolvedToken]);
+  const [state, setState] = useState<State>({ status: "boot" });
 
   useEffect(() => {
-    if (!safeToken) return;
-
     let cancelled = false;
 
     async function run() {
-      try {
-        setState("redeeming");
-        setError(null);
+      const t = token || pickTokenFromWindowSearch();
 
-        const res = await fetch("/api/agency/invites/accept", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: safeToken }),
+      if (!t) {
+        setState({ status: "missing_token" });
+        return;
+      }
+
+      setState({ status: "checking" });
+
+      try {
+        const r = await fetch(`/api/agency/invites/accept?token=${encodeURIComponent(t)}`, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
         });
 
-        const data = (await res.json().catch(() => null)) as AcceptResp | null;
+        const j = await r.json().catch(() => null);
 
-        if (cancelled) return;
-
-        if (!res.ok || !data || (data as any).ok !== true) {
-          const msg =
-            (data && "error" in data && data.error) || `HTTP_${res.status}`;
-          setError(msg);
-          setState("error");
+        if (!r.ok) {
+          const msg = String(j?.error || j?.message || `Invite failed (HTTP ${r.status})`);
+          if (!cancelled) setState({ status: "error", message: msg });
           return;
         }
 
-        setState("success");
+        const redirectTo = String(j?.redirectTo || j?.redirect_to || "").trim();
+        if (!redirectTo) {
+          if (!cancelled) setState({ status: "error", message: "Invite accepted but missing redirectTo." });
+          return;
+        }
 
-        const redirectTo =
-          ("redirectTo" in data && data.redirectTo) || "/login";
+        if (!cancelled) setState({ status: "ok", redirectTo });
 
         window.location.href = redirectTo;
       } catch (e: any) {
-        if (cancelled) return;
-        setError(String(e?.message ?? e));
-        setState("error");
+        if (!cancelled) setState({ status: "error", message: e?.message || "Network error" });
       }
     }
 
     run();
-
     return () => {
       cancelled = true;
     };
-  }, [safeToken]);
+  }, [token]);
 
   return (
-    <main className="mx-auto flex w-full max-w-xl flex-col gap-6 px-4 py-10">
-      <div className="rounded-2xl border bg-white p-6 shadow-sm">
-        <h1 className="text-xl font-semibold">Join Agency</h1>
+    <div className="mx-auto w-full max-w-xl px-4 py-10">
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle>Joining workspace</CardTitle>
+              <CardDescription className="mt-1">Finalizing your invite…</CardDescription>
+            </div>
+            <Badge variant="secondary">Louis.Ai</Badge>
+          </div>
+        </CardHeader>
 
-        {!safeToken ? (
-          <>
-            <p className="mt-2 text-sm text-muted-foreground">
-              This invite link is missing a token. Ask your owner/admin for a
-              fresh invite link.
-            </p>
+        <CardContent className="space-y-4">
+          {state.status === "missing_token" ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                This invite link is missing a token. Ask the owner/admin to resend the invite.
+              </p>
+              <div className="flex gap-2">
+                <Button asChild variant="secondary">
+                  <Link href="/login">Go to login</Link>
+                </Button>
+                <Button asChild variant="ghost">
+                  <Link href="/request-access">Request access</Link>
+                </Button>
+              </div>
+            </>
+          ) : null}
 
-            <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-              Missing token.
-            </div>
-          </>
-        ) : state === "redeeming" ? (
-          <>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Redeeming your invite…
-            </p>
-            <div className="mt-6 rounded-xl border bg-muted/30 p-4 text-sm">
-              Working…
-            </div>
-          </>
-        ) : state === "error" ? (
-          <>
-            <p className="mt-2 text-sm text-muted-foreground">
-              We couldn’t redeem that invite.
-            </p>
-            <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-              {error ?? "UNKNOWN_ERROR"}
-            </div>
+          {state.status === "checking" || state.status === "boot" ? (
+            <p className="text-sm text-muted-foreground">Checking invite…</p>
+          ) : null}
 
-            <div className="mt-6 flex flex-col gap-2 text-sm">
-              <Link href="/login" className="underline hover:text-foreground">
-                Try logging in
-              </Link>
-              <Link href="/signup" className="underline hover:text-foreground">
-                Or create an account
-              </Link>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Invite accepted. Redirecting…
-            </p>
-            <div className="mt-6 rounded-xl border bg-muted/30 p-4 text-sm">
-              Redirecting…
-            </div>
-          </>
-        )}
-      </div>
+          {state.status === "ok" ? <p className="text-sm text-muted-foreground">Redirecting…</p> : null}
 
-      <div className="text-center text-sm text-muted-foreground">
-        <Link href="/login" className="underline hover:text-foreground">
-          Go to login
-        </Link>
-        {" · "}
-        <Link href="/signup" className="underline hover:text-foreground">
-          Create account
-        </Link>
-      </div>
-    </main>
+          {state.status === "error" ? (
+            <>
+              <p className="text-sm text-destructive">{state.message}</p>
+              <div className="flex gap-2">
+                <Button asChild variant="secondary">
+                  <Link href="/login">Go to login</Link>
+                </Button>
+                <Button variant="outline" onClick={() => window.location.reload()}>
+                  Retry
+                </Button>
+              </div>
+            </>
+          ) : null}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

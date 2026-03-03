@@ -10,23 +10,45 @@ import { enforceRateLimit } from "@/lib/rate-limit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function readBody(req: NextRequest): Promise<{ email?: string; password?: string; turnstile_token?: string }> {
+async function readBody(req: NextRequest): Promise<{
+  email?: string;
+  password?: string;
+  agency?: string;
+  next?: string;
+  turnstile_token?: string;
+}> {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     const j = await req.json().catch(() => ({}));
-    return { email: j?.email, password: j?.password, turnstile_token: j?.turnstile_token };
+    return {
+      email: j?.email,
+      password: j?.password,
+      agency: j?.agency,
+      next: j?.next,
+      turnstile_token: j?.turnstile_token,
+    };
   }
   const text = await req.text().catch(() => "");
   const params = new URLSearchParams(text);
   return {
     email: params.get("email") || undefined,
     password: params.get("password") || undefined,
+    agency: params.get("agency") || undefined,
+    next: params.get("next") || undefined,
     turnstile_token: params.get("turnstile_token") || undefined,
   };
 }
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function normNext(s: any) {
+  const v = String(s ?? "").trim();
+  if (!v) return "/app";
+  if (!v.startsWith("/")) return "/app";
+  if (v.startsWith("//")) return "/app";
+  return v;
 }
 
 async function ensureUserColumns(db: Db) {
@@ -37,6 +59,22 @@ async function ensureUserColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN identity_id TEXT").catch(() => {});
+}
+
+async function ensureIdentityTables(db: Db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS identities (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      password_hash TEXT,
+      email_verified INTEGER DEFAULT 0,
+      created_at TEXT,
+      updated_at TEXT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_identities_email ON identities(lower(email));
+  `);
 }
 
 async function verifyTurnstile(token: string, ip: string | null) {
@@ -61,64 +99,6 @@ async function verifyTurnstile(token: string, ip: string | null) {
   return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
 }
 
-/**
- * Ensures there is at least one owner for the agency.
- * Rule: if there are no users yet for this agency, the agency email becomes owner+active.
- */
-async function ensureFirstOwner(db: Db, agency: { id: string; email: string }) {
-  await ensureUserColumns(db);
-
-  const countRow = (await db.get(
-    `SELECT COUNT(*) as c
-     FROM users
-     WHERE agency_id = ?`,
-    agency.id
-  )) as { c: number } | undefined;
-
-  const c = Number(countRow?.c ?? 0);
-  const normalizedEmail = agency.email.trim().toLowerCase();
-
-  if (c > 0) return;
-
-  const existing = (await db.get(
-    `SELECT id
-     FROM users
-     WHERE agency_id = ? AND lower(email) = ?
-     LIMIT 1`,
-    agency.id,
-    normalizedEmail
-  )) as { id: string } | undefined;
-
-  const t = nowIso();
-
-  if (existing?.id) {
-    await db.run(
-      `UPDATE users
-       SET role = 'owner',
-           status = 'active',
-           email_verified = 1,
-           has_completed_onboarding = COALESCE(has_completed_onboarding, 0),
-           updated_at = ?
-       WHERE id = ? AND agency_id = ?`,
-      t,
-      existing.id,
-      agency.id
-    );
-    return;
-  }
-
-  const id = crypto.randomUUID();
-  await db.run(
-    `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at)
-     VALUES (?, ?, ?, 1, 'owner', 'active', 0, ?, ?)`,
-    id,
-    agency.id,
-    normalizedEmail,
-    t,
-    t
-  );
-}
-
 function normRole(r: any): "owner" | "admin" | "member" {
   const v = String(r ?? "").toLowerCase();
   if (v === "owner") return "owner";
@@ -133,11 +113,81 @@ function normStatus(s: any): "active" | "pending" | "blocked" {
   return "pending";
 }
 
+/**
+ * Back-compat migration:
+ * If identity does not exist yet, but there's a legacy users.password_hash for this email,
+ * allow login by that hash ONCE, then create identity and attach identity_id to all matching users rows.
+ */
+async function getOrMigrateIdentityByEmail(db: Db, email: string, password: string) {
+  await ensureIdentityTables(db);
+
+  const existing = (await db.get(
+    `SELECT id, email, password_hash, email_verified
+     FROM identities
+     WHERE lower(email) = lower(?)
+     LIMIT 1`,
+    email
+  )) as { id: string; email: string; password_hash: string | null; email_verified: number | null } | undefined;
+
+  if (existing?.id) return { mode: "identity" as const, identity: existing };
+
+  // try legacy hash
+  const legacy = (await db.get(
+    `SELECT password_hash
+     FROM users
+     WHERE lower(email) = lower(?)
+       AND password_hash IS NOT NULL
+       AND trim(password_hash) != ''
+     LIMIT 1`,
+    email
+  )) as { password_hash: string } | undefined;
+
+  const legacyHash = String(legacy?.password_hash ?? "").trim();
+  if (!legacyHash) return { mode: "none" as const, identity: null };
+
+  const ok = await bcrypt.compare(password, legacyHash);
+  if (!ok) return { mode: "none" as const, identity: null };
+
+  const id = crypto.randomUUID();
+  const t = nowIso();
+
+  await db.run(
+    `INSERT INTO identities (id, email, password_hash, email_verified, created_at, updated_at)
+     VALUES (?, ?, ?, 1, ?, ?)`,
+    id,
+    email.trim().toLowerCase(),
+    legacyHash,
+    t,
+    t
+  );
+
+  // best-effort attach identity_id to existing membership rows
+  await db.run(
+    `UPDATE users
+     SET identity_id = COALESCE(identity_id, ?),
+         updated_at = COALESCE(updated_at, ?)
+     WHERE lower(email) = lower(?)`,
+    id,
+    t,
+    email
+  );
+
+  const created = (await db.get(
+    `SELECT id, email, password_hash, email_verified
+     FROM identities
+     WHERE id = ?
+     LIMIT 1`,
+    id
+  )) as { id: string; email: string; password_hash: string | null; email_verified: number | null } | undefined;
+
+  return { mode: "migrated" as const, identity: created ?? null };
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { email, password, turnstile_token } = await readBody(req);
+    const { email, password, agency, next, turnstile_token } = await readBody(req);
 
-    if (!email?.trim() || !password?.trim()) {
+    if (!email?.trim() || !password?.trim() || !agency?.trim()) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
     }
 
@@ -146,7 +196,6 @@ export async function POST(req: NextRequest) {
       req.headers.get("x-real-ip") ||
       "unknown";
 
-    // ✅ Rate limit BEFORE captcha + DB work (per IP)
     try {
       await enforceRateLimit({
         userId: `ip:${ip}`,
@@ -155,7 +204,7 @@ export async function POST(req: NextRequest) {
         perMinute: 10,
         perHour: 200,
       });
-    } catch (e: any) {
+    } catch {
       return NextResponse.json({ error: "Too many attempts. Try again shortly." }, { status: 429 });
     }
 
@@ -167,90 +216,87 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db).catch((e) => console.error("SCHEMA_ENSURE_FAILED", e));
     await ensureUserColumns(db);
+    await ensureIdentityTables(db);
 
     const normalizedEmail = email.trim().toLowerCase();
+    const agencyNeedle = agency.trim().toLowerCase();
+    const nextPath = normNext(next);
 
-    const agency = (await db.get(
-      "SELECT id, email, password_hash, email_verified FROM agencies WHERE lower(email) = ? LIMIT 1",
-      normalizedEmail
-    )) as
-      | { id: string; email: string; password_hash: string | null; email_verified: number | null }
-      | undefined;
+    // Select agency by NAME (for now). If you have slug later, add OR lower(slug)=?
+    const agencyRow = (await db.get(
+      `SELECT id, email, name
+       FROM agencies
+       WHERE lower(name) = lower(?)
+       LIMIT 1`,
+      agencyNeedle
+    )) as { id: string; email: string; name: string | null } | undefined;
 
-    if (!agency?.id) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-
-    const hash = String(agency.password_hash ?? "").trim();
-    if (!hash) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-
-    const ok = await bcrypt.compare(password, hash);
-    if (!ok) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-
-    const verified = Number(agency.email_verified ?? 0);
-    if (verified === 0) {
-      return NextResponse.json({ error: "Please verify your email before logging in." }, { status: 403 });
+    if (!agencyRow?.id) {
+      return NextResponse.json({ error: "Agency not found" }, { status: 404 });
     }
 
-    await ensureFirstOwner(db, { id: agency.id, email: agency.email });
+    // Identity auth (or migrate from legacy user hash)
+    const identRes = await getOrMigrateIdentityByEmail(db, normalizedEmail, String(password));
+    const identity = identRes.identity;
 
-    // Find the user row for THIS email in this agency
-    let user = (await db.get(
-      `SELECT id, email, email_verified, role, status, has_completed_onboarding
+    if (!identity?.id) {
+      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+    }
+
+    const identityHash = String(identity.password_hash ?? "").trim();
+    if (!identityHash) {
+      // identity exists but hasn't set password yet (invite completion should set it)
+      return NextResponse.json(
+        {
+          error: "NO_PASSWORD_SET",
+          message: "You need to set a password before logging in.",
+          redirectTo: `/set-password?email=${encodeURIComponent(normalizedEmail)}&agency=${encodeURIComponent(agencyRow.name || agency)}`,
+        },
+        { status: 403 }
+      );
+    }
+
+    const ok = await bcrypt.compare(String(password), identityHash);
+    if (!ok) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+
+    // Membership row (users table) must exist for this agency
+    const user = (await db.get(
+      `SELECT id, email, role, status, has_completed_onboarding
        FROM users
-       WHERE agency_id = ? AND lower(email) = ?
+       WHERE agency_id = ? AND lower(email) = lower(?)
        LIMIT 1`,
-      agency.id,
+      agencyRow.id,
       normalizedEmail
     )) as
       | {
           id: string;
           email: string;
-          email_verified: number;
           role: string | null;
           status: string | null;
           has_completed_onboarding: number | null;
         }
       | undefined;
 
-    // If missing, create as MEMBER + PENDING (BUT do not log them in)
     if (!user?.id) {
-      const id = crypto.randomUUID();
-      const t = nowIso();
+      return NextResponse.json({ error: "No access to that agency" }, { status: 403 });
+    }
+
+    // Attach identity_id if missing (best-effort)
+    if (user && user.id) {
       await db.run(
-        `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at)
-         VALUES (?, ?, ?, 1, 'member', 'pending', 0, ?, ?)`,
-        id,
-        agency.id,
-        normalizedEmail,
-        t,
-        t
-      );
-      user = {
-        id,
-        email: normalizedEmail,
-        email_verified: 1,
-        role: "member",
-        status: "pending",
-        has_completed_onboarding: 0,
-      };
-    } else {
-      // Deterministic default for legacy rows: NULL => 0
-      if (user.has_completed_onboarding == null) {
-        await db.run(
-          `UPDATE users
-           SET has_completed_onboarding = 0,
-               updated_at = COALESCE(updated_at, datetime('now'))
-           WHERE agency_id = ? AND id = ?`,
-          agency.id,
-          user.id
-        );
-        user.has_completed_onboarding = 0;
-      }
+        `UPDATE users
+         SET identity_id = COALESCE(identity_id, ?),
+             updated_at = COALESCE(updated_at, ?)
+         WHERE id = ?`,
+        identity.id,
+        nowIso(),
+        user.id
+      ).catch(() => {});
     }
 
     const role = normRole(user.role);
     const status = normStatus(user.status);
 
-    // ✅ Critical gate: pending/blocked users cannot obtain a session
     if (status !== "active") {
       return NextResponse.json(
         {
@@ -265,15 +311,19 @@ export async function POST(req: NextRequest) {
 
     const res = NextResponse.json({
       ok: true,
-      redirectTo: "/app/chat",
+      redirectTo: nextPath || "/app",
       user: { id: user.id, email: user.email, role, status },
+      identity: { id: identity.id, email: normalizedEmail },
+      agency: { id: agencyRow.id, name: agencyRow.name ?? agency },
     });
 
     setSessionCookie(res, {
-      agencyId: agency.id,
-      agencyEmail: agency.email,
+      agencyId: agencyRow.id,
+      agencyEmail: String(agencyRow.email || "").trim(),
       userId: user.id,
-      userEmail: user.email,
+      userEmail: normalizedEmail,
+      identityId: identity.id,
+      identityEmail: normalizedEmail,
     });
 
     return res;

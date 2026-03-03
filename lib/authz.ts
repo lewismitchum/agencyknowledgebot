@@ -14,8 +14,15 @@ import { normalizePlan, type PlanKey } from "@/lib/plans";
 export type AuthedContext = {
   agencyId: string;
   agencyEmail: string;
+
+  // membership row (users table)
   userId: string;
   userEmail: string;
+
+  // global identity (optional; new)
+  identityId?: string;
+  identityEmail?: string;
+
   role: "owner" | "admin" | "member";
   status: "active" | "pending" | "blocked";
   plan: PlanKey;
@@ -39,10 +46,10 @@ export class AuthzError extends Error {
 async function ensureUserRoleColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN identity_id TEXT").catch(() => {});
 }
 
 async function ensureAgencyPlanColumn(db: Db) {
-  // Some old schemas can be missing this column; keep reads from crashing.
   await db.run("ALTER TABLE agencies ADD COLUMN plan TEXT").catch(() => {});
 }
 
@@ -51,7 +58,6 @@ export function isOwnerOrAdmin(ctx: Pick<AuthedContext, "role">) {
 }
 
 export function isBillableMember(ctx: Pick<AuthedContext, "role">) {
-  // Owner/admin should NOT count toward seat limits.
   return ctx.role !== "owner" && ctx.role !== "admin";
 }
 
@@ -66,16 +72,19 @@ export async function requireActiveMember(req: NextRequest): Promise<AuthedConte
   const agencyId = String(session.agencyId);
   const agencyEmail = String(session.agencyEmail);
 
-  const agency = (await db.get(
-    `SELECT plan FROM agencies WHERE id = ? LIMIT 1`,
-    agencyId
-  )) as { plan?: string | null } | undefined;
+  const agency = (await db.get(`SELECT plan FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
+    | { plan?: string | null }
+    | undefined;
 
-  // ✅ prefer per-user identity
   const sessionUserId = (session as any).userId ? String((session as any).userId) : "";
   const sessionUserEmail = (session as any).userEmail
     ? String((session as any).userEmail).trim().toLowerCase()
     : "";
+
+  const identityId = (session as any).identityId ? String((session as any).identityId) : undefined;
+  const identityEmail = (session as any).identityEmail
+    ? String((session as any).identityEmail).trim().toLowerCase()
+    : undefined;
 
   let user = sessionUserId ? await getUserById(agencyId, sessionUserId) : null;
 
@@ -83,13 +92,12 @@ export async function requireActiveMember(req: NextRequest): Promise<AuthedConte
     user = await getUserByEmail(agencyId, sessionUserEmail);
   }
 
-  // Back-compat fallback (older cookies) — not ideal for members, but keeps old sessions alive.
+  // Back-compat: older cookies
   if (!user) {
     user = await getUserByEmail(agencyId, agencyEmail);
   }
 
   if (!user) {
-    // last resort: create as PENDING (safe)
     const seedEmail = sessionUserEmail || agencyEmail;
     user = await getOrCreateUser(agencyId, seedEmail);
   }
@@ -106,6 +114,8 @@ export async function requireActiveMember(req: NextRequest): Promise<AuthedConte
     agencyEmail,
     userId: user.id,
     userEmail: String((user as any).email || "").toLowerCase(),
+    identityId,
+    identityEmail,
     role,
     status,
     plan: normalizePlan(agency?.plan ?? null),
