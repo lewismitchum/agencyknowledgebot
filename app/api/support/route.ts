@@ -1,80 +1,193 @@
 // app/api/support/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { getDb, type Db } from "@/lib/db";
-import { ensureSchema } from "@/lib/schema";
-import { sendSupportEmail } from "@/lib/email";
+import { NextResponse } from "next/server";
+import { getDb } from "@/lib/db";
+import { getSessionFromRequest } from "@/lib/auth";
 
-export const runtime = "nodejs";
-
-function nowIso() {
-  return new Date().toISOString();
+function json(data: any, status = 200) {
+  return new NextResponse(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
-export async function POST(req: NextRequest) {
-  try {
-    const db: Db = await getDb();
-    await ensureSchema(db);
+function safeStr(v: any, max = 4000) {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  return s.length > max ? s.slice(0, max) : s;
+}
 
-    const body = await req.json().catch(() => null);
-
-    const fromEmail = typeof body?.email === "string" ? body.email.trim() : "";
-    const fromName = typeof body?.name === "string" ? body.name.trim() : "";
-    const message = typeof body?.message === "string" ? body.message.trim() : "";
-    const pageUrl = typeof body?.pageUrl === "string" ? body.pageUrl.trim() : "";
-
-    if (!message) {
-      return NextResponse.json({ ok: false, error: "Message is required" }, { status: 400 });
-    }
-
-    // Always store the ticket (email can fail; we still keep the request)
-    const idRow = (await db.get(
-      `SELECT lower(hex(randomblob(16))) AS id`
-    )) as { id: string } | undefined;
-
-    const ticketId = idRow?.id || Math.random().toString(16).slice(2);
-    const createdAt = nowIso();
-
-    await db.run(
-      `INSERT INTO support_tickets (id, created_at, from_email, from_name, message, page_url, email_sent, email_error)
-       VALUES (?, ?, ?, ?, ?, ?, 0, NULL)`,
-      ticketId,
-      createdAt,
-      fromEmail || null,
-      fromName || null,
-      message,
-      pageUrl || null
+async function ensureSupportSchema(db: any) {
+  // drift-safe: create if missing
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS support_tickets (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      agency_id TEXT,
+      user_id TEXT,
+      name TEXT,
+      email TEXT,
+      message TEXT NOT NULL,
+      page_url TEXT,
+      user_agent TEXT,
+      ip TEXT,
+      email_sent INTEGER NOT NULL DEFAULT 0,
+      email_error TEXT
     );
+  `);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_agency_id ON support_tickets(agency_id);`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_user_id ON support_tickets(user_id);`);
+}
 
-    // Best-effort email (do not fail the ticket)
-    let emailSent = false;
-    let emailError: string | null = null;
+function newId() {
+  // simple, collision-resistant enough for a ticket id
+  return `st_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
-    try {
-      await sendSupportEmail({
-        fromEmail,
-        fromName,
-        message,
-        pageUrl,
-      });
-      emailSent = true;
-    } catch (e: any) {
-      emailSent = false;
-      emailError = String(e?.message ?? e ?? "Email failed");
-      console.error("Support email failed:", emailError);
-    }
+async function sendSupportEmail(args: {
+  to: string;
+  subject: string;
+  text: string;
+  replyTo?: string;
+}) {
+  const key = process.env.RESEND_API_KEY?.trim();
+  if (!key) return { ok: false, skipped: true as const, error: "RESEND_API_KEY not set" };
 
-    await db.run(
-      `UPDATE support_tickets
-       SET email_sent = ?, email_error = ?
-       WHERE id = ?`,
-      emailSent ? 1 : 0,
-      emailError,
-      ticketId
-    );
+  // Use a verified-from if you have it. If not, set SUPPORT_FROM to something verified in Resend.
+  const from =
+    process.env.SUPPORT_FROM?.trim() ||
+    "Louis.Ai Support <support@letsalterminds.org>";
 
-    return NextResponse.json({ ok: true, id: ticketId, email_sent: emailSent });
-  } catch (err: any) {
-    console.error("Support request failed:", err?.message || err);
-    return NextResponse.json({ ok: false, error: "Failed to submit support request" }, { status: 500 });
+  const payload: any = {
+    from,
+    to: [args.to],
+    subject: args.subject,
+    text: args.text,
+  };
+
+  if (args.replyTo) payload.reply_to = args.replyTo;
+
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const t = await r.text().catch(() => "");
+  if (!r.ok) {
+    return {
+      ok: false,
+      skipped: false as const,
+      error: `Resend error (${r.status}): ${t || r.statusText}`,
+    };
   }
+
+  return { ok: true };
+}
+
+export async function POST(req: Request) {
+  let session: any = null;
+  try {
+    session = await getSessionFromRequest(req as any);
+  } catch {
+    session = null;
+  }
+
+  let body: any = null;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON" }, 400);
+  }
+
+  const name = safeStr(body?.name, 200);
+  const email = safeStr(body?.email, 320);
+  const message = safeStr(body?.message, 8000);
+  const pageUrl = safeStr(body?.pageUrl, 2000);
+
+  if (!message) return json({ ok: false, error: "Message is required" }, 400);
+
+  const ua = safeStr(req.headers.get("user-agent"), 800);
+  const ip =
+    safeStr(req.headers.get("x-forwarded-for"), 200) ||
+    safeStr(req.headers.get("x-real-ip"), 200);
+
+  const ticketId = newId();
+
+  const db = await getDb();
+  await ensureSupportSchema(db);
+
+  // insert first (always)
+  await db.run(
+    `
+      INSERT INTO support_tickets (
+        id, agency_id, user_id, name, email, message, page_url, user_agent, ip, email_sent, email_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+    `,
+    [
+      ticketId,
+      session?.agencyId ?? null,
+      session?.userId ?? null,
+      name || null,
+      email || null,
+      message,
+      pageUrl || null,
+      ua || null,
+      ip || null,
+    ],
+  );
+
+  // attempt email (optional)
+  const to = process.env.SUPPORT_TO?.trim() || "support@letsalterminds.org";
+
+  const replyTo =
+    email && email.includes("@") ? email : undefined;
+
+  const subject = `Louis.Ai Support: ${ticketId}`;
+  const text =
+    [
+      `Ticket: ${ticketId}`,
+      session?.agencyId ? `Agency: ${session.agencyId}` : "",
+      session?.userId ? `User: ${session.userId}` : "",
+      name ? `Name: ${name}` : "",
+      email ? `Email: ${email}` : "",
+      pageUrl ? `Page: ${pageUrl}` : "",
+      ip ? `IP: ${ip}` : "",
+      ua ? `UA: ${ua}` : "",
+      "",
+      "Message:",
+      message,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+  let emailSent = false;
+  let emailErr: string | null = null;
+
+  try {
+    const r = await sendSupportEmail({ to, subject, text, replyTo });
+    if (r.ok) {
+      emailSent = true;
+    } else if (!r.skipped) {
+      emailErr = r.error || "Email delivery failed";
+    }
+  } catch (e: any) {
+    emailErr = String(e?.message ?? e ?? "Email delivery failed");
+  }
+
+  if (emailSent || emailErr) {
+    await db.run(
+      `UPDATE support_tickets SET email_sent = ?, email_error = ? WHERE id = ?`,
+      [emailSent ? 1 : 0, emailErr, ticketId],
+    );
+  }
+
+  return json({
+    ok: true,
+    ticket_id: ticketId,
+    email_sent: emailSent,
+  });
 }
