@@ -12,6 +12,19 @@ import { Badge } from "@/components/ui/badge";
 type Msg = { role: "user" | "assistant"; text: string };
 type BotRow = { id: string; name: string };
 
+type UploadResp = {
+  ok?: boolean;
+  bot_id?: string;
+  uploaded?: Array<{ document_id: string; filename: string; openai_file_id: string }>;
+  error?: string;
+  message?: string;
+};
+
+type Attachment = {
+  document_id: string;
+  filename: string;
+};
+
 function formatCountdown(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
   const h = Math.floor(s / 3600);
@@ -265,6 +278,12 @@ export default function ChatPage() {
   const [bootError, setBootError] = useState("");
   const [accessBlocked, setAccessBlocked] = useState<"pending" | "blocked" | null>(null);
 
+  // Attachments
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [attachError, setAttachError] = useState("");
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const selectedBotName = useMemo(
@@ -450,9 +469,83 @@ export default function ChatPage() {
     setLoading(false);
     setInput("");
     setMessages([]);
+    setAttachments([]);
+    setAttachError("");
 
     setSelectedBotId(nextId);
     setBotIdInUrl(nextId);
+  }
+
+  function openFilePicker() {
+    if (!selectedBotId) return;
+    if (uploadingAttachments) return;
+    setAttachError("");
+    fileInputRef.current?.click();
+  }
+
+  async function uploadFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    if (!selectedBotId) return;
+    if (accessBlocked) return;
+
+    setAttachError("");
+    setUploadingAttachments(true);
+
+    try {
+      const fd = new FormData();
+      fd.set("bot_id", selectedBotId);
+      for (const f of Array.from(files)) {
+        fd.append("files", f);
+      }
+
+      const r = await fetch("/api/upload", {
+        method: "POST",
+        credentials: "include",
+        body: fd,
+      });
+
+      if (r.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const j = (await safeJson(r)) as UploadResp;
+
+      if (!r.ok || !j?.ok) {
+        const msg = String(j?.message || j?.error || `Upload failed (${r.status})`);
+        setAttachError(msg);
+        return;
+      }
+
+      const rows = Array.isArray(j.uploaded) ? j.uploaded : [];
+      const next: Attachment[] = rows
+        .map((x) => ({
+          document_id: String(x?.document_id || "").trim(),
+          filename: String(x?.filename || "file").trim(),
+        }))
+        .filter((x) => x.document_id);
+
+      if (next.length) {
+        setAttachments((prev) => {
+          const merged = [...prev, ...next];
+          const seen = new Set<string>();
+          return merged.filter((a) => {
+            if (seen.has(a.document_id)) return false;
+            seen.add(a.document_id);
+            return true;
+          });
+        });
+      }
+    } catch (e: any) {
+      setAttachError(String(e?.message ?? e ?? "Upload failed"));
+    } finally {
+      setUploadingAttachments(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function removeAttachment(documentId: string) {
+    setAttachments((prev) => prev.filter((a) => a.document_id !== documentId));
   }
 
   async function send() {
@@ -463,16 +556,23 @@ export default function ChatPage() {
     if (dailyRemaining !== null && dailyRemaining === 0 && dailyResetsInSeconds > 0) return;
 
     const userMsg = input.trim();
+    const attachIds = attachments.map((a) => a.document_id).filter(Boolean);
+
     setInput("");
     setMessages((m: Msg[]) => [...m, { role: "user", text: userMsg }]);
     setLoading(true);
+    setAttachError("");
 
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ message: userMsg, bot_id: selectedBotId }),
+        body: JSON.stringify({
+          message: userMsg,
+          bot_id: selectedBotId,
+          attachments: attachIds.length ? attachIds : undefined,
+        }),
       });
 
       if (r.status === 405) {
@@ -514,6 +614,9 @@ export default function ChatPage() {
 
       setMessages((m: Msg[]) => [...m, { role: "assistant", text: String(j?.answer ?? j?.text ?? "") }]);
 
+      // clear attachments after a successful send (so next prompt starts clean)
+      setAttachments([]);
+
       setUsageLoaded(true);
 
       // Prefer usage block (new). Fall back to daily_remaining (legacy).
@@ -554,12 +657,20 @@ export default function ChatPage() {
       }
     } catch {}
     setMessages([]);
+    setAttachments([]);
+    setAttachError("");
   }
 
   const dailyKnown = usageLoaded;
   const dailyBlocked = dailyRemaining !== null && dailyResetsInSeconds > 0 && dailyRemaining === 0;
 
-  const canSend = !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0;
+  const canSend =
+    !!selectedBotId &&
+    !loading &&
+    !accessBlocked &&
+    !dailyBlocked &&
+    input.trim().length > 0 &&
+    !uploadingAttachments;
 
   if (accessBlocked) {
     const title = accessBlocked === "blocked" ? "Access blocked" : "Pending approval";
@@ -654,12 +765,7 @@ export default function ChatPage() {
                 <Button asChild size="sm" className="rounded-full">
                   <Link href="/app/docs">Upload docs</Link>
                 </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="rounded-full"
-                  onClick={() => window.location.reload()}
-                >
+                <Button size="sm" variant="outline" className="rounded-full" onClick={() => window.location.reload()}>
                   Refresh
                 </Button>
               </div>
@@ -714,7 +820,11 @@ export default function ChatPage() {
                         m.role === "user" ? "bg-foreground text-background" : "bg-background/60 text-foreground"
                       }`}
                     >
-                      {m.role === "assistant" ? <AssistantMarkdown text={m.text} /> : <span className="whitespace-pre-wrap">{m.text}</span>}
+                      {m.role === "assistant" ? (
+                        <AssistantMarkdown text={m.text} />
+                      ) : (
+                        <span className="whitespace-pre-wrap">{m.text}</span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -724,6 +834,57 @@ export default function ChatPage() {
                 <div ref={bottomRef} />
               </div>
             )}
+          </div>
+
+          {/* Attachments row */}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => uploadFiles(e.target.files).catch(() => {})}
+            />
+
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-full"
+              onClick={openFilePicker}
+              disabled={!selectedBotId || uploadingAttachments || dailyBlocked}
+              title="Attach files (images/videos/docs)"
+            >
+              {uploadingAttachments ? "Uploading…" : "Attach"}
+            </Button>
+
+            {attachments.length ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {attachments.slice(0, 8).map((a) => (
+                  <span
+                    key={a.document_id}
+                    className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs"
+                    title={a.document_id}
+                  >
+                    <span className="max-w-[220px] truncate">{a.filename || "file"}</span>
+                    <button
+                      type="button"
+                      className="rounded-full border px-2 py-0.5 text-[11px] hover:bg-muted"
+                      onClick={() => removeAttachment(a.document_id)}
+                      aria-label="Remove attachment"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {attachments.length > 8 ? (
+                  <span className="text-xs text-muted-foreground">+{attachments.length - 8} more</span>
+                ) : null}
+              </div>
+            ) : (
+              <span className="text-xs text-muted-foreground">No attachments</span>
+            )}
+
+            {attachError ? <div className="w-full text-xs text-destructive">{attachError}</div> : null}
           </div>
 
           <Textarea
@@ -738,14 +899,14 @@ export default function ChatPage() {
                 ? "Ask anything… (Upload docs for internal answers)"
                 : "Ask a question… (Ctrl/⌘ + Enter to send)"
             }
-            disabled={!selectedBotId || dailyBlocked}
+            disabled={!selectedBotId || dailyBlocked || uploadingAttachments}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send();
             }}
           />
 
           <Button onClick={send} disabled={!canSend}>
-            {loading ? "Sending…" : dailyBlocked ? "Daily limit reached" : "Send"}
+            {loading ? "Sending…" : uploadingAttachments ? "Uploading…" : dailyBlocked ? "Daily limit reached" : "Send"}
           </Button>
         </CardContent>
       </Card>
