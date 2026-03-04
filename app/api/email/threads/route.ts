@@ -3,8 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireActiveMember } from "@/lib/authz";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { getValidGmailClient } from "@/lib/email-google";
+import { getDb, type Db } from "@/lib/db";
+import { ensureSchema } from "@/lib/schema";
+import { getAgencyPlan } from "@/lib/enforcement";
+import { normalizePlan, requireFeature } from "@/lib/plans";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function extractHeader(headers: any[] | undefined, key: string) {
   const hit = headers?.find((h) => String(h?.name || "").toLowerCase() === key.toLowerCase());
@@ -49,10 +54,17 @@ export async function GET(req: NextRequest) {
     where = "requireActiveMember";
     const session = await requireActiveMember(req);
 
-    // Corp only
-    if (session.plan !== "corporation") {
+    where = "plan_gate";
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
+    const rawPlan = await getAgencyPlan(db, session.agencyId, session.plan);
+    const planKey = normalizePlan(rawPlan);
+
+    const gate = requireFeature(planKey, "email");
+    if (!gate.ok) {
       return NextResponse.json(
-        { ok: false, error: "Email inbox is available on Corporation.", code: "upgrade_required" },
+        { ok: false, error: "Email inbox is available on Corporation.", code: "upgrade_required", plan: planKey },
         { status: 403 },
       );
     }
@@ -96,7 +108,6 @@ export async function GET(req: NextRequest) {
                 : "Gmail auth error.",
           code,
           where,
-          details: gmailRes,
         },
         { status },
       );
@@ -144,6 +155,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
+      plan: planKey,
       email: gmailRes.email ?? null,
       threads: threads.filter((t) => t.id),
     });
