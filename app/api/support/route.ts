@@ -3,6 +3,9 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { getSessionFromRequest } from "@/lib/auth";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 function json(data: any, status = 200) {
   return new NextResponse(JSON.stringify(data), {
     status,
@@ -16,8 +19,12 @@ function safeStr(v: any, max = 4000) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function newId() {
+  return `st_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 async function ensureSupportSchema(db: any) {
-  // drift-safe: create if missing
+  // Create table first
   await db.exec(`
     CREATE TABLE IF NOT EXISTS support_tickets (
       id TEXT PRIMARY KEY,
@@ -34,29 +41,18 @@ async function ensureSupportSchema(db: any) {
       email_error TEXT
     );
   `);
+
+  // Drift-safe indexes
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_agency_id ON support_tickets(agency_id);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_user_id ON support_tickets(user_id);`);
 }
 
-function newId() {
-  // simple, collision-resistant enough for a ticket id
-  return `st_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-async function sendSupportEmail(args: {
-  to: string;
-  subject: string;
-  text: string;
-  replyTo?: string;
-}) {
+async function sendSupportEmail(args: { to: string; subject: string; text: string; replyTo?: string }) {
   const key = process.env.RESEND_API_KEY?.trim();
-  if (!key) return { ok: false, skipped: true as const, error: "RESEND_API_KEY not set" };
+  if (!key) return { ok: false as const, skipped: true as const, error: "RESEND_API_KEY not set" };
 
-  // Use a verified-from if you have it. If not, set SUPPORT_FROM to something verified in Resend.
-  const from =
-    process.env.SUPPORT_FROM?.trim() ||
-    "Louis.Ai Support <support@letsalterminds.org>";
+  const from = process.env.SUPPORT_FROM?.trim() || "Louis.Ai Support <support@letsalterminds.org>";
 
   const payload: any = {
     from,
@@ -64,7 +60,6 @@ async function sendSupportEmail(args: {
     subject: args.subject,
     text: args.text,
   };
-
   if (args.replyTo) payload.reply_to = args.replyTo;
 
   const r = await fetch("https://api.resend.com/emails", {
@@ -78,77 +73,70 @@ async function sendSupportEmail(args: {
 
   const t = await r.text().catch(() => "");
   if (!r.ok) {
-    return {
-      ok: false,
-      skipped: false as const,
-      error: `Resend error (${r.status}): ${t || r.statusText}`,
-    };
+    return { ok: false as const, skipped: false as const, error: `Resend error (${r.status}): ${t || r.statusText}` };
   }
 
-  return { ok: true };
+  return { ok: true as const };
 }
 
 export async function POST(req: Request) {
-  let session: any = null;
   try {
-    session = await getSessionFromRequest(req as any);
-  } catch {
-    session = null;
-  }
+    // session optional (support page works for logged out too)
+    let session: any = null;
+    try {
+      session = await (getSessionFromRequest as any)(req);
+    } catch {
+      session = null;
+    }
 
-  let body: any = null;
-  try {
-    body = await req.json();
-  } catch {
-    return json({ ok: false, error: "Invalid JSON" }, 400);
-  }
+    let body: any = null;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ ok: false, error: "Invalid JSON" }, 400);
+    }
 
-  const name = safeStr(body?.name, 200);
-  const email = safeStr(body?.email, 320);
-  const message = safeStr(body?.message, 8000);
-  const pageUrl = safeStr(body?.pageUrl, 2000);
+    const name = safeStr(body?.name, 200);
+    const email = safeStr(body?.email, 320);
+    const message = safeStr(body?.message, 8000);
+    const pageUrl = safeStr(body?.pageUrl, 2000);
 
-  if (!message) return json({ ok: false, error: "Message is required" }, 400);
+    if (!message) return json({ ok: false, error: "Message is required" }, 400);
 
-  const ua = safeStr(req.headers.get("user-agent"), 800);
-  const ip =
-    safeStr(req.headers.get("x-forwarded-for"), 200) ||
-    safeStr(req.headers.get("x-real-ip"), 200);
+    const ua = safeStr(req.headers.get("user-agent"), 800);
+    const ip =
+      safeStr(req.headers.get("x-forwarded-for"), 200) ||
+      safeStr(req.headers.get("x-real-ip"), 200);
 
-  const ticketId = newId();
+    const ticketId = newId();
 
-  const db = await getDb();
-  await ensureSupportSchema(db);
+    const db = await getDb();
+    await ensureSupportSchema(db);
 
-  // insert first (always)
-  await db.run(
-    `
-      INSERT INTO support_tickets (
-        id, agency_id, user_id, name, email, message, page_url, user_agent, ip, email_sent, email_error
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
-    `,
-    [
-      ticketId,
-      session?.agencyId ?? null,
-      session?.userId ?? null,
-      name || null,
-      email || null,
-      message,
-      pageUrl || null,
-      ua || null,
-      ip || null,
-    ],
-  );
+    await db.run(
+      `
+        INSERT INTO support_tickets (
+          id, agency_id, user_id, name, email, message, page_url, user_agent, ip, email_sent, email_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+      `,
+      [
+        ticketId,
+        session?.agencyId ?? null,
+        session?.userId ?? null,
+        name || null,
+        email || null,
+        message,
+        pageUrl || null,
+        ua || null,
+        ip || null,
+      ],
+    );
 
-  // attempt email (optional)
-  const to = process.env.SUPPORT_TO?.trim() || "support@letsalterminds.org";
+    const to = process.env.SUPPORT_TO?.trim() || "support@letsalterminds.org";
+    const replyTo = email && email.includes("@") ? email : undefined;
 
-  const replyTo =
-    email && email.includes("@") ? email : undefined;
-
-  const subject = `Louis.Ai Support: ${ticketId}`;
-  const text =
-    [
+    const subject = `Louis.Ai Support: ${ticketId}`;
+    const text = [
       `Ticket: ${ticketId}`,
       session?.agencyId ? `Agency: ${session.agencyId}` : "",
       session?.userId ? `User: ${session.userId}` : "",
@@ -164,30 +152,29 @@ export async function POST(req: Request) {
       .filter(Boolean)
       .join("\n");
 
-  let emailSent = false;
-  let emailErr: string | null = null;
+    let emailSent = false;
+    let emailErr: string | null = null;
 
-  try {
-    const r = await sendSupportEmail({ to, subject, text, replyTo });
-    if (r.ok) {
-      emailSent = true;
-    } else if (!r.skipped) {
-      emailErr = r.error || "Email delivery failed";
+    try {
+      const r = await sendSupportEmail({ to, subject, text, replyTo });
+      if (r.ok) emailSent = true;
+      else if (!r.skipped) emailErr = r.error || "Email delivery failed";
+    } catch (e: any) {
+      emailErr = String(e?.message ?? e ?? "Email delivery failed");
     }
+
+    if (emailSent || emailErr) {
+      await db.run(`UPDATE support_tickets SET email_sent = ?, email_error = ? WHERE id = ?`, [
+        emailSent ? 1 : 0,
+        emailErr,
+        ticketId,
+      ]);
+    }
+
+    return json({ ok: true, ticket_id: ticketId, email_sent: emailSent });
   } catch (e: any) {
-    emailErr = String(e?.message ?? e ?? "Email delivery failed");
+    console.error("SUPPORT_API_ERROR", e);
+    // Return the real error string so you can fix immediately
+    return json({ ok: false, error: String(e?.message ?? e ?? "Server error") }, 500);
   }
-
-  if (emailSent || emailErr) {
-    await db.run(
-      `UPDATE support_tickets SET email_sent = ?, email_error = ? WHERE id = ?`,
-      [emailSent ? 1 : 0, emailErr, ticketId],
-    );
-  }
-
-  return json({
-    ok: true,
-    ticket_id: ticketId,
-    email_sent: emailSent,
-  });
 }
