@@ -23,26 +23,47 @@ function newId() {
   return `st_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+async function columnExists(db: any, table: string, col: string): Promise<boolean> {
+  try {
+    const rows = await db.all(`PRAGMA table_info(${table});`, []);
+    return Array.isArray(rows) && rows.some((r: any) => String(r?.name) === col);
+  } catch {
+    return false;
+  }
+}
+
+async function addColumnIfMissing(db: any, table: string, col: string, sqlType: string) {
+  const ok = await columnExists(db, table, col);
+  if (ok) return;
+  try {
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${sqlType};`);
+  } catch {
+    // ignore drift race / readonly replicas / duplicate add
+  }
+}
+
 async function ensureSupportSchema(db: any) {
-  // Create table first
+  // Create base table (older installs may already have it with fewer columns)
   await db.exec(`
     CREATE TABLE IF NOT EXISTS support_tickets (
       id TEXT PRIMARY KEY,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-      agency_id TEXT,
-      user_id TEXT,
-      name TEXT,
-      email TEXT,
-      message TEXT NOT NULL,
-      page_url TEXT,
-      user_agent TEXT,
-      ip TEXT,
-      email_sent INTEGER NOT NULL DEFAULT 0,
-      email_error TEXT
+      message TEXT NOT NULL
     );
   `);
 
-  // Drift-safe indexes
+  // Drift-safe columns (backfill adds)
+  await addColumnIfMissing(db, "support_tickets", "agency_id", "TEXT");
+  await addColumnIfMissing(db, "support_tickets", "user_id", "TEXT");
+  await addColumnIfMissing(db, "support_tickets", "name", "TEXT");
+  await addColumnIfMissing(db, "support_tickets", "email", "TEXT");
+  await addColumnIfMissing(db, "support_tickets", "page_url", "TEXT");
+  await addColumnIfMissing(db, "support_tickets", "user_agent", "TEXT");
+  await addColumnIfMissing(db, "support_tickets", "ip", "TEXT");
+  await addColumnIfMissing(db, "support_tickets", "email_sent", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing(db, "support_tickets", "email_error", "TEXT");
+
+  // Ensure indexes (safe)
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_agency_id ON support_tickets(agency_id);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_user_id ON support_tickets(user_id);`);
@@ -81,7 +102,6 @@ async function sendSupportEmail(args: { to: string; subject: string; text: strin
 
 export async function POST(req: Request) {
   try {
-    // session optional (support page works for logged out too)
     let session: any = null;
     try {
       session = await (getSessionFromRequest as any)(req);
@@ -104,15 +124,14 @@ export async function POST(req: Request) {
     if (!message) return json({ ok: false, error: "Message is required" }, 400);
 
     const ua = safeStr(req.headers.get("user-agent"), 800);
-    const ip =
-      safeStr(req.headers.get("x-forwarded-for"), 200) ||
-      safeStr(req.headers.get("x-real-ip"), 200);
+    const ip = safeStr(req.headers.get("x-forwarded-for"), 200) || safeStr(req.headers.get("x-real-ip"), 200);
 
     const ticketId = newId();
 
     const db = await getDb();
     await ensureSupportSchema(db);
 
+    // Insert drift-safe: list only columns that now exist (we ensured them above)
     await db.run(
       `
         INSERT INTO support_tickets (
@@ -174,7 +193,6 @@ export async function POST(req: Request) {
     return json({ ok: true, ticket_id: ticketId, email_sent: emailSent });
   } catch (e: any) {
     console.error("SUPPORT_API_ERROR", e);
-    // Return the real error string so you can fix immediately
     return json({ ok: false, error: String(e?.message ?? e ?? "Server error") }, 500);
   }
 }
