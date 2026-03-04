@@ -124,11 +124,9 @@ function MobileTabLink({
 function MobileNav({
   activeBotId,
   notifUnread,
-  isAuthed,
 }: {
   activeBotId: string;
   notifUnread: number;
-  isAuthed: boolean;
 }) {
   const pathname = usePathname();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -144,7 +142,9 @@ function MobileNav({
   const isActive = (p: string) => pathname === p;
   const starts = (p: string) => pathname.startsWith(p);
 
-  const show = isAuthed && starts("/app");
+  // ✅ Always show on /app routes (do NOT depend on /api/me).
+  // If /api/me fails or is slow on mobile, you still need navigation.
+  const show = starts("/app");
 
   // Prevent content being hidden behind the bottom nav on mobile.
   useEffect(() => {
@@ -181,7 +181,6 @@ function MobileNav({
         "pb-[env(safe-area-inset-bottom)]",
       ].join(" ")}
     >
-      {/* ✅ Scrollable tab row */}
       <div className="mx-auto w-full max-w-6xl px-2 py-2">
         <div
           className={[
@@ -224,7 +223,6 @@ function MobileNav({
             badge={notifUnread}
           />
 
-          {/* ✅ Keep “More” as the last tab, still scrollable */}
           <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
             <SheetTrigger asChild>
               <button
@@ -548,12 +546,10 @@ export default function Navbar() {
             <span className="hidden text-sm text-muted-foreground md:block">Docs-prioritized AI for agencies</span>
           </Link>
 
-          {/* Desktop nav */}
           <nav className="hidden items-center gap-2 md:flex">
             <NavLink href="/app">Dashboard</NavLink>
             <NavLink href="/app/chat">Chat</NavLink>
 
-            {/* Docs dropdown (shows docs list) */}
             <div className="relative" ref={docsPanelRef}>
               <button
                 type="button"
@@ -693,7 +689,7 @@ export default function Navbar() {
         </div>
       </header>
 
-      <MobileNav activeBotId={activeBotId} notifUnread={notifUnread} isAuthed={isAuthed} />
+      <MobileNav activeBotId={activeBotId} notifUnread={notifUnread} />
     </>
   );
 }
