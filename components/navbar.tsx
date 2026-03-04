@@ -80,11 +80,6 @@ function UnreadPill({ count }: { count: number }) {
   );
 }
 
-/**
- * IMPORTANT:
- * On some mobile setups (esp iOS + overflow containers), Next <Link> inside fixed/scroll areas can feel "dead".
- * So for mobile tabs we use router.push() on a real <button> to guarantee navigation.
- */
 function MobileTabButton({
   onGo,
   label,
@@ -104,7 +99,7 @@ function MobileTabButton({
       onClick={onGo}
       className={[
         "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
-        "min-w-[72px] shrink-0",
+        "min-w-[68px] shrink-0",
         "active:scale-[0.98]",
         active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       ].join(" ")}
@@ -132,6 +127,7 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
   const pathname = usePathname();
   const router = useRouter();
   const [moreOpen, setMoreOpen] = useState(false);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setMoreOpen(false);
@@ -144,8 +140,19 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
   const isActive = (p: string) => pathname === p;
   const starts = (p: string) => pathname.startsWith(p);
 
-  // Always show on /app routes (never depend on /api/me for nav visibility)
   const show = starts("/app");
+
+  // Make sure the active tab is visible by auto-scrolling it into view.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const activeEl = el.querySelector('[data-active="true"]') as HTMLElement | null;
+    if (!activeEl) return;
+
+    // Try to center the active tab
+    const left = activeEl.offsetLeft - el.clientWidth / 2 + activeEl.clientWidth / 2;
+    el.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
+  }, [pathname]);
 
   // Prevent content being hidden behind the bottom nav on mobile.
   useEffect(() => {
@@ -178,180 +185,217 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
     <div
       className={[
         "fixed bottom-0 left-0 right-0 z-50 md:hidden",
-        "border-t bg-background/80 backdrop-blur",
+        "border-t bg-background/90 backdrop-blur",
         "pb-[env(safe-area-inset-bottom)]",
       ].join(" ")}
     >
       <div className="mx-auto w-full max-w-6xl px-2 py-2">
+        {/* ✅ Clearly scrollable + snap */}
         <div
+          ref={scrollerRef}
           className={[
             "flex items-stretch gap-1",
             "overflow-x-auto overscroll-x-contain",
             "[-webkit-overflow-scrolling:touch]",
+            "snap-x snap-mandatory",
             "scrollbar-none",
+            "pr-4", // gives a tiny hint there's more to scroll
           ].join(" ")}
-          style={{
-            WebkitOverflowScrolling: "touch" as any,
-            touchAction: "pan-x",
-          }}
+          style={{ touchAction: "pan-x" }}
         >
-          <MobileTabButton
-            label="Dash"
-            icon={<LayoutDashboard className="h-5 w-5" />}
-            active={isActive("/app")}
-            onGo={() => router.push("/app")}
-          />
-          <MobileTabButton
-            label="Chat"
-            icon={<MessageSquare className="h-5 w-5" />}
-            active={starts("/app/chat")}
-            onGo={() => router.push("/app/chat")}
-          />
-          <MobileTabButton
-            label="Docs"
-            icon={<FileText className="h-5 w-5" />}
-            active={starts("/app/docs")}
-            onGo={() => router.push(docsHref)}
-          />
-          <MobileTabButton
-            label="Schedule"
-            icon={<CalendarDays className="h-5 w-5" />}
-            active={starts("/app/schedule")}
-            onGo={() => router.push("/app/schedule")}
-          />
-          <MobileTabButton
-            label="Notifs"
-            icon={<Bell className="h-5 w-5" />}
-            active={starts("/app/notifications")}
-            badge={notifUnread}
-            onGo={() => router.push("/app/notifications")}
-          />
-
-          <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
-            <SheetTrigger asChild>
-              <button
-                type="button"
-                className={[
-                  "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
-                  "min-w-[72px] shrink-0",
-                  "active:scale-[0.98]",
-                  moreOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-                aria-label="More"
-              >
-                <span
-                  className={[
-                    "relative inline-flex h-9 w-9 items-center justify-center rounded-xl",
-                    moreOpen ? "bg-muted" : "hover:bg-muted/60",
-                  ].join(" ")}
-                >
-                  <MoreHorizontal className="h-5 w-5" />
-                </span>
-                <span className="leading-none">More</span>
-              </button>
-            </SheetTrigger>
-
-            <SheetContent side="bottom" className="rounded-t-2xl">
-              <div className="mx-auto w-full max-w-2xl">
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="text-sm font-semibold">More</div>
-                  <div className="text-xs text-muted-foreground">Quick access</div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
-                      starts("/app/bots") ? "bg-muted" : "",
-                    ].join(" ")}
-                    onClick={() => {
-                      setMoreOpen(false);
-                      router.push("/app/bots");
-                    }}
-                  >
-                    <Bot className="h-4 w-4" />
-                    Bots
-                  </button>
-
-                  <button
-                    type="button"
-                    className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
-                      starts("/app/billing") ? "bg-muted" : "",
-                    ].join(" ")}
-                    onClick={() => {
-                      setMoreOpen(false);
-                      router.push("/app/billing");
-                    }}
-                  >
-                    <CreditCard className="h-4 w-4" />
-                    Billing
-                  </button>
-
-                  <button
-                    type="button"
-                    className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
-                      starts("/app/email") ? "bg-muted" : "",
-                    ].join(" ")}
-                    onClick={() => {
-                      setMoreOpen(false);
-                      router.push("/app/email");
-                    }}
-                  >
-                    <Mail className="h-4 w-4" />
-                    Email
-                  </button>
-
-                  <button
-                    type="button"
-                    className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
-                      starts("/app/spreadsheets") ? "bg-muted" : "",
-                    ].join(" ")}
-                    onClick={() => {
-                      setMoreOpen(false);
-                      router.push("/app/spreadsheets");
-                    }}
-                  >
-                    <SheetIcon className="h-4 w-4" />
-                    Sheets
-                  </button>
-
-                  <button
-                    type="button"
-                    className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
-                      starts("/app/support") ? "bg-muted" : "",
-                    ].join(" ")}
-                    onClick={() => {
-                      setMoreOpen(false);
-                      router.push("/app/support");
-                    }}
-                  >
-                    <LifeBuoy className="h-4 w-4" />
-                    Support
-                  </button>
-
-                  <button
-                    type="button"
-                    className="flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted"
-                    onClick={() => {
-                      setMoreOpen(false);
-                      router.push("/launch");
-                    }}
-                  >
-                    <Rocket className="h-4 w-4" />
-                    Launch
-                  </button>
-                </div>
-
-                <div className="mt-3 text-xs text-muted-foreground">Tap a tab to navigate. Swipe to scroll tabs.</div>
+          <div className="flex items-stretch gap-1">
+            <div className="snap-start">
+              <div data-active={isActive("/app") ? "true" : "false"}>
+                <MobileTabButton
+                  label="Dash"
+                  icon={<LayoutDashboard className="h-5 w-5" />}
+                  active={isActive("/app")}
+                  onGo={() => router.push("/app")}
+                />
               </div>
-            </SheetContent>
-          </Sheet>
+            </div>
+
+            <div className="snap-start">
+              <div data-active={starts("/app/chat") ? "true" : "false"}>
+                <MobileTabButton
+                  label="Chat"
+                  icon={<MessageSquare className="h-5 w-5" />}
+                  active={starts("/app/chat")}
+                  onGo={() => router.push("/app/chat")}
+                />
+              </div>
+            </div>
+
+            <div className="snap-start">
+              <div data-active={starts("/app/docs") ? "true" : "false"}>
+                <MobileTabButton
+                  label="Docs"
+                  icon={<FileText className="h-5 w-5" />}
+                  active={starts("/app/docs")}
+                  onGo={() => router.push(docsHref)}
+                />
+              </div>
+            </div>
+
+            <div className="snap-start">
+              <div data-active={starts("/app/schedule") ? "true" : "false"}>
+                <MobileTabButton
+                  label="Schedule"
+                  icon={<CalendarDays className="h-5 w-5" />}
+                  active={starts("/app/schedule")}
+                  onGo={() => router.push("/app/schedule")}
+                />
+              </div>
+            </div>
+
+            <div className="snap-start">
+              <div data-active={starts("/app/notifications") ? "true" : "false"}>
+                <MobileTabButton
+                  label="Notifs"
+                  icon={<Bell className="h-5 w-5" />}
+                  active={starts("/app/notifications")}
+                  badge={notifUnread}
+                  onGo={() => router.push("/app/notifications")}
+                />
+              </div>
+            </div>
+
+            <div className="snap-start">
+              <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
+                <SheetTrigger asChild>
+                  <button
+                    type="button"
+                    className={[
+                      "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
+                      "min-w-[68px] shrink-0",
+                      "active:scale-[0.98]",
+                      moreOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                    aria-label="More"
+                  >
+                    <span
+                      className={[
+                        "relative inline-flex h-9 w-9 items-center justify-center rounded-xl",
+                        moreOpen ? "bg-muted" : "hover:bg-muted/60",
+                      ].join(" ")}
+                    >
+                      <MoreHorizontal className="h-5 w-5" />
+                    </span>
+                    <span className="leading-none">More</span>
+                  </button>
+                </SheetTrigger>
+
+                <SheetContent side="bottom" className="rounded-t-2xl">
+                  <div className="mx-auto w-full max-w-2xl">
+                    <div className="mb-3 flex items-center justify-between">
+                      <div className="text-sm font-semibold">More</div>
+                      <div className="text-xs text-muted-foreground">Quick access</div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        className={[
+                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
+                          starts("/app/bots") ? "bg-muted" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/app/bots");
+                        }}
+                      >
+                        <Bot className="h-4 w-4" />
+                        Bots
+                      </button>
+
+                      <button
+                        type="button"
+                        className={[
+                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
+                          starts("/app/billing") ? "bg-muted" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/app/billing");
+                        }}
+                      >
+                        <CreditCard className="h-4 w-4" />
+                        Billing
+                      </button>
+
+                      <button
+                        type="button"
+                        className={[
+                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
+                          starts("/app/email") ? "bg-muted" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/app/email");
+                        }}
+                      >
+                        <Mail className="h-4 w-4" />
+                        Email
+                      </button>
+
+                      <button
+                        type="button"
+                        className={[
+                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
+                          starts("/app/spreadsheets") ? "bg-muted" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/app/spreadsheets");
+                        }}
+                      >
+                        <SheetIcon className="h-4 w-4" />
+                        Sheets
+                      </button>
+
+                      <button
+                        type="button"
+                        className={[
+                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
+                          starts("/app/support") ? "bg-muted" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/app/support");
+                        }}
+                      >
+                        <LifeBuoy className="h-4 w-4" />
+                        Support
+                      </button>
+
+                      <button
+                        type="button"
+                        className="flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted"
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/launch");
+                        }}
+                      >
+                        <Rocket className="h-4 w-4" />
+                        Launch
+                      </button>
+                    </div>
+
+                    <div className="mt-3 text-xs text-muted-foreground">
+                      Swipe the bottom tabs left/right to see everything.
+                    </div>
+                  </div>
+                </SheetContent>
+              </Sheet>
+            </div>
+
+            {/* tiny end padding */}
+            <div className="w-2 shrink-0" />
+          </div>
         </div>
+
+        {/* ✅ subtle gradient hint that it scrolls */}
+        <div className="pointer-events-none absolute bottom-0 right-0 h-[72px] w-10 bg-gradient-to-l from-background/90 to-transparent" />
       </div>
     </div>
   );
@@ -569,12 +613,10 @@ export default function Navbar() {
             <span className="hidden text-sm text-muted-foreground md:block">Docs-prioritized AI for agencies</span>
           </Link>
 
-          {/* Desktop nav */}
           <nav className="hidden items-center gap-2 md:flex">
             <NavLink href="/app">Dashboard</NavLink>
             <NavLink href="/app/chat">Chat</NavLink>
 
-            {/* Docs dropdown (shows docs list) */}
             <div className="relative" ref={docsPanelRef}>
               <button
                 type="button"
@@ -714,7 +756,6 @@ export default function Navbar() {
         </div>
       </header>
 
-      {/* Mobile bottom nav */}
       <MobileNav activeBotId={activeBotId} notifUnread={notifUnread} />
     </>
   );
