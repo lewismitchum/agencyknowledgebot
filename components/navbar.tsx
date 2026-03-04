@@ -97,7 +97,8 @@ function MobileTabLink({
     <Link
       href={href}
       className={[
-        "relative flex flex-1 flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
+        "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
+        "min-w-[72px] shrink-0",
         active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       ].join(" ")}
       aria-current={active ? "page" : undefined}
@@ -143,11 +144,9 @@ function MobileNav({
   const isActive = (p: string) => pathname === p;
   const starts = (p: string) => pathname.startsWith(p);
 
-  // Bottom nav shows only for authed users in /app routes
   const show = isAuthed && starts("/app");
 
-  // ✅ Critical fix: prevent content being hidden behind the bottom nav on mobile.
-  // We do it here so you don't need to touch layouts/pages.
+  // Prevent content being hidden behind the bottom nav on mobile.
   useEffect(() => {
     if (!show) return;
 
@@ -158,8 +157,7 @@ function MobileNav({
           document.body.style.paddingBottom = "";
           return;
         }
-        // Safe-area aware; works on iOS.
-        document.body.style.paddingBottom = "calc(env(safe-area-inset-bottom) + 72px)";
+        document.body.style.paddingBottom = "calc(env(safe-area-inset-bottom) + 76px)";
       } catch {
         // ignore
       }
@@ -183,143 +181,156 @@ function MobileNav({
         "pb-[env(safe-area-inset-bottom)]",
       ].join(" ")}
     >
-      <div className="mx-auto flex w-full max-w-6xl items-stretch gap-1 px-2 py-2">
-        <MobileTabLink
-          href="/app"
-          label="Dash"
-          icon={<LayoutDashboard className="h-5 w-5" />}
-          active={isActive("/app")}
-        />
-        <MobileTabLink
-          href="/app/chat"
-          label="Chat"
-          icon={<MessageSquare className="h-5 w-5" />}
-          active={starts("/app/chat")}
-        />
-        <MobileTabLink
-          href={docsHref}
-          label="Docs"
-          icon={<FileText className="h-5 w-5" />}
-          active={starts("/app/docs")}
-        />
-        <MobileTabLink
-          href="/app/schedule"
-          label="Schedule"
-          icon={<CalendarDays className="h-5 w-5" />}
-          active={starts("/app/schedule")}
-        />
-        <MobileTabLink
-          href="/app/notifications"
-          label="Notifs"
-          icon={<Bell className="h-5 w-5" />}
-          active={starts("/app/notifications")}
-          badge={notifUnread}
-        />
+      {/* ✅ Scrollable tab row */}
+      <div className="mx-auto w-full max-w-6xl px-2 py-2">
+        <div
+          className={[
+            "flex items-stretch gap-1",
+            "overflow-x-auto overscroll-x-contain",
+            "[-webkit-overflow-scrolling:touch]",
+            "scrollbar-none",
+          ].join(" ")}
+          style={{ WebkitOverflowScrolling: "touch" as any }}
+        >
+          <MobileTabLink
+            href="/app"
+            label="Dash"
+            icon={<LayoutDashboard className="h-5 w-5" />}
+            active={isActive("/app")}
+          />
+          <MobileTabLink
+            href="/app/chat"
+            label="Chat"
+            icon={<MessageSquare className="h-5 w-5" />}
+            active={starts("/app/chat")}
+          />
+          <MobileTabLink
+            href={docsHref}
+            label="Docs"
+            icon={<FileText className="h-5 w-5" />}
+            active={starts("/app/docs")}
+          />
+          <MobileTabLink
+            href="/app/schedule"
+            label="Schedule"
+            icon={<CalendarDays className="h-5 w-5" />}
+            active={starts("/app/schedule")}
+          />
+          <MobileTabLink
+            href="/app/notifications"
+            label="Notifs"
+            icon={<Bell className="h-5 w-5" />}
+            active={starts("/app/notifications")}
+            badge={notifUnread}
+          />
 
-        <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
-          <SheetTrigger asChild>
-            <button
-              type="button"
-              className={[
-                "relative flex flex-1 flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
-                moreOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground",
-              ].join(" ")}
-              aria-label="More"
-            >
-              <span
+          {/* ✅ Keep “More” as the last tab, still scrollable */}
+          <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
+            <SheetTrigger asChild>
+              <button
+                type="button"
                 className={[
-                  "relative inline-flex h-9 w-9 items-center justify-center rounded-xl",
-                  moreOpen ? "bg-muted" : "hover:bg-muted/60",
+                  "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
+                  "min-w-[72px] shrink-0",
+                  moreOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground",
                 ].join(" ")}
+                aria-label="More"
               >
-                <MoreHorizontal className="h-5 w-5" />
-              </span>
-              <span className="leading-none">More</span>
-            </button>
-          </SheetTrigger>
+                <span
+                  className={[
+                    "relative inline-flex h-9 w-9 items-center justify-center rounded-xl",
+                    moreOpen ? "bg-muted" : "hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  <MoreHorizontal className="h-5 w-5" />
+                </span>
+                <span className="leading-none">More</span>
+              </button>
+            </SheetTrigger>
 
-          <SheetContent side="bottom" className="rounded-t-2xl">
-            <div className="mx-auto w-full max-w-2xl">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="text-sm font-semibold">More</div>
-                <div className="text-xs text-muted-foreground">Quick access</div>
+            <SheetContent side="bottom" className="rounded-t-2xl">
+              <div className="mx-auto w-full max-w-2xl">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-sm font-semibold">More</div>
+                  <div className="text-xs text-muted-foreground">Quick access</div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Link
+                    href="/app/bots"
+                    className={[
+                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      starts("/app/bots") ? "bg-muted" : "",
+                    ].join(" ")}
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <Bot className="h-4 w-4" />
+                    Bots
+                  </Link>
+
+                  <Link
+                    href="/app/billing"
+                    className={[
+                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      starts("/app/billing") ? "bg-muted" : "",
+                    ].join(" ")}
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <CreditCard className="h-4 w-4" />
+                    Billing
+                  </Link>
+
+                  <Link
+                    href="/app/email"
+                    className={[
+                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      starts("/app/email") ? "bg-muted" : "",
+                    ].join(" ")}
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <Mail className="h-4 w-4" />
+                    Email
+                  </Link>
+
+                  <Link
+                    href="/app/spreadsheets"
+                    className={[
+                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      starts("/app/spreadsheets") ? "bg-muted" : "",
+                    ].join(" ")}
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <SheetIcon className="h-4 w-4" />
+                    Sheets
+                  </Link>
+
+                  <Link
+                    href="/app/support"
+                    className={[
+                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      starts("/app/support") ? "bg-muted" : "",
+                    ].join(" ")}
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <LifeBuoy className="h-4 w-4" />
+                    Support
+                  </Link>
+
+                  <Link
+                    href="/launch"
+                    className="flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted"
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <Rocket className="h-4 w-4" />
+                    Launch
+                  </Link>
+                </div>
+
+                <div className="mt-3 text-xs text-muted-foreground">Swipe the bottom tabs left/right.</div>
               </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <Link
-                  href="/app/bots"
-                  className={[
-                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
-                    starts("/app/bots") ? "bg-muted" : "",
-                  ].join(" ")}
-                  onClick={() => setMoreOpen(false)}
-                >
-                  <Bot className="h-4 w-4" />
-                  Bots
-                </Link>
-
-                <Link
-                  href="/app/billing"
-                  className={[
-                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
-                    starts("/app/billing") ? "bg-muted" : "",
-                  ].join(" ")}
-                  onClick={() => setMoreOpen(false)}
-                >
-                  <CreditCard className="h-4 w-4" />
-                  Billing
-                </Link>
-
-                <Link
-                  href="/app/email"
-                  className={[
-                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
-                    starts("/app/email") ? "bg-muted" : "",
-                  ].join(" ")}
-                  onClick={() => setMoreOpen(false)}
-                >
-                  <Mail className="h-4 w-4" />
-                  Email
-                </Link>
-
-                <Link
-                  href="/app/spreadsheets"
-                  className={[
-                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
-                    starts("/app/spreadsheets") ? "bg-muted" : "",
-                  ].join(" ")}
-                  onClick={() => setMoreOpen(false)}
-                >
-                  <SheetIcon className="h-4 w-4" />
-                  Sheets
-                </Link>
-
-                <Link
-                  href="/app/support"
-                  className={[
-                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
-                    starts("/app/support") ? "bg-muted" : "",
-                  ].join(" ")}
-                  onClick={() => setMoreOpen(false)}
-                >
-                  <LifeBuoy className="h-4 w-4" />
-                  Support
-                </Link>
-
-                <Link
-                  href="/launch"
-                  className="flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted"
-                  onClick={() => setMoreOpen(false)}
-                >
-                  <Rocket className="h-4 w-4" />
-                  Launch
-                </Link>
-              </div>
-
-              <div className="mt-3 text-xs text-muted-foreground">Tip: bottom tabs are primary nav on mobile.</div>
-            </div>
-          </SheetContent>
-        </Sheet>
+            </SheetContent>
+          </Sheet>
+        </div>
       </div>
     </div>
   );
@@ -628,7 +639,6 @@ export default function Navbar() {
             <NavLink href="/app/schedule">Schedule</NavLink>
             <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
 
-            {/* Notifications (with unread badge) */}
             <Link
               href="/app/notifications"
               className={[
