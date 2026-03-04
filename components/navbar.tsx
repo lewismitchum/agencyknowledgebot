@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/mode-toggle";
@@ -80,25 +80,32 @@ function UnreadPill({ count }: { count: number }) {
   );
 }
 
-function MobileTabLink({
-  href,
+/**
+ * IMPORTANT:
+ * On some mobile setups (esp iOS + overflow containers), Next <Link> inside fixed/scroll areas can feel "dead".
+ * So for mobile tabs we use router.push() on a real <button> to guarantee navigation.
+ */
+function MobileTabButton({
+  onGo,
   label,
   icon,
   active,
   badge,
 }: {
-  href: string;
+  onGo: () => void;
   label: string;
   icon: React.ReactNode;
   active: boolean;
   badge?: number;
 }) {
   return (
-    <Link
-      href={href}
+    <button
+      type="button"
+      onClick={onGo}
       className={[
         "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
         "min-w-[72px] shrink-0",
+        "active:scale-[0.98]",
         active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       ].join(" ")}
       aria-current={active ? "page" : undefined}
@@ -117,18 +124,13 @@ function MobileTabLink({
         ) : null}
       </span>
       <span className="leading-none">{label}</span>
-    </Link>
+    </button>
   );
 }
 
-function MobileNav({
-  activeBotId,
-  notifUnread,
-}: {
-  activeBotId: string;
-  notifUnread: number;
-}) {
+function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnread: number }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
@@ -142,8 +144,7 @@ function MobileNav({
   const isActive = (p: string) => pathname === p;
   const starts = (p: string) => pathname.startsWith(p);
 
-  // ✅ Always show on /app routes (do NOT depend on /api/me).
-  // If /api/me fails or is slow on mobile, you still need navigation.
+  // Always show on /app routes (never depend on /api/me for nav visibility)
   const show = starts("/app");
 
   // Prevent content being hidden behind the bottom nav on mobile.
@@ -189,38 +190,41 @@ function MobileNav({
             "[-webkit-overflow-scrolling:touch]",
             "scrollbar-none",
           ].join(" ")}
-          style={{ WebkitOverflowScrolling: "touch" as any }}
+          style={{
+            WebkitOverflowScrolling: "touch" as any,
+            touchAction: "pan-x",
+          }}
         >
-          <MobileTabLink
-            href="/app"
+          <MobileTabButton
             label="Dash"
             icon={<LayoutDashboard className="h-5 w-5" />}
             active={isActive("/app")}
+            onGo={() => router.push("/app")}
           />
-          <MobileTabLink
-            href="/app/chat"
+          <MobileTabButton
             label="Chat"
             icon={<MessageSquare className="h-5 w-5" />}
             active={starts("/app/chat")}
+            onGo={() => router.push("/app/chat")}
           />
-          <MobileTabLink
-            href={docsHref}
+          <MobileTabButton
             label="Docs"
             icon={<FileText className="h-5 w-5" />}
             active={starts("/app/docs")}
+            onGo={() => router.push(docsHref)}
           />
-          <MobileTabLink
-            href="/app/schedule"
+          <MobileTabButton
             label="Schedule"
             icon={<CalendarDays className="h-5 w-5" />}
             active={starts("/app/schedule")}
+            onGo={() => router.push("/app/schedule")}
           />
-          <MobileTabLink
-            href="/app/notifications"
+          <MobileTabButton
             label="Notifs"
             icon={<Bell className="h-5 w-5" />}
             active={starts("/app/notifications")}
             badge={notifUnread}
+            onGo={() => router.push("/app/notifications")}
           />
 
           <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
@@ -230,6 +234,7 @@ function MobileNav({
                 className={[
                   "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
                   "min-w-[72px] shrink-0",
+                  "active:scale-[0.98]",
                   moreOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground",
                 ].join(" ")}
                 aria-label="More"
@@ -254,77 +259,95 @@ function MobileNav({
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <Link
-                    href="/app/bots"
+                  <button
+                    type="button"
                     className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                       starts("/app/bots") ? "bg-muted" : "",
                     ].join(" ")}
-                    onClick={() => setMoreOpen(false)}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      router.push("/app/bots");
+                    }}
                   >
                     <Bot className="h-4 w-4" />
                     Bots
-                  </Link>
+                  </button>
 
-                  <Link
-                    href="/app/billing"
+                  <button
+                    type="button"
                     className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                       starts("/app/billing") ? "bg-muted" : "",
                     ].join(" ")}
-                    onClick={() => setMoreOpen(false)}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      router.push("/app/billing");
+                    }}
                   >
                     <CreditCard className="h-4 w-4" />
                     Billing
-                  </Link>
+                  </button>
 
-                  <Link
-                    href="/app/email"
+                  <button
+                    type="button"
                     className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                       starts("/app/email") ? "bg-muted" : "",
                     ].join(" ")}
-                    onClick={() => setMoreOpen(false)}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      router.push("/app/email");
+                    }}
                   >
                     <Mail className="h-4 w-4" />
                     Email
-                  </Link>
+                  </button>
 
-                  <Link
-                    href="/app/spreadsheets"
+                  <button
+                    type="button"
                     className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                       starts("/app/spreadsheets") ? "bg-muted" : "",
                     ].join(" ")}
-                    onClick={() => setMoreOpen(false)}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      router.push("/app/spreadsheets");
+                    }}
                   >
                     <SheetIcon className="h-4 w-4" />
                     Sheets
-                  </Link>
+                  </button>
 
-                  <Link
-                    href="/app/support"
+                  <button
+                    type="button"
                     className={[
-                      "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                      "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                       starts("/app/support") ? "bg-muted" : "",
                     ].join(" ")}
-                    onClick={() => setMoreOpen(false)}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      router.push("/app/support");
+                    }}
                   >
                     <LifeBuoy className="h-4 w-4" />
                     Support
-                  </Link>
+                  </button>
 
-                  <Link
-                    href="/launch"
-                    className="flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted"
-                    onClick={() => setMoreOpen(false)}
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      router.push("/launch");
+                    }}
                   >
                     <Rocket className="h-4 w-4" />
                     Launch
-                  </Link>
+                  </button>
                 </div>
 
-                <div className="mt-3 text-xs text-muted-foreground">Swipe the bottom tabs left/right.</div>
+                <div className="mt-3 text-xs text-muted-foreground">Tap a tab to navigate. Swipe to scroll tabs.</div>
               </div>
             </SheetContent>
           </Sheet>
@@ -546,10 +569,12 @@ export default function Navbar() {
             <span className="hidden text-sm text-muted-foreground md:block">Docs-prioritized AI for agencies</span>
           </Link>
 
+          {/* Desktop nav */}
           <nav className="hidden items-center gap-2 md:flex">
             <NavLink href="/app">Dashboard</NavLink>
             <NavLink href="/app/chat">Chat</NavLink>
 
+            {/* Docs dropdown (shows docs list) */}
             <div className="relative" ref={docsPanelRef}>
               <button
                 type="button"
@@ -689,6 +714,7 @@ export default function Navbar() {
         </div>
       </header>
 
+      {/* Mobile bottom nav */}
       <MobileNav activeBotId={activeBotId} notifUnread={notifUnread} />
     </>
   );
