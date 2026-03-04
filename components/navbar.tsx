@@ -6,6 +6,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/mode-toggle";
 import { Badge } from "@/components/ui/badge";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import {
+  LayoutDashboard,
+  MessageSquare,
+  FileText,
+  CalendarDays,
+  Bell,
+  MoreHorizontal,
+  Bot,
+  CreditCard,
+  LifeBuoy,
+  Rocket,
+  Mail,
+  Sheet as SheetIcon,
+} from "lucide-react";
 
 type MeResponse =
   | { user: null }
@@ -62,6 +77,251 @@ function UnreadPill({ count }: { count: number }) {
     <span className="ml-2 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-foreground px-1.5 text-[11px] font-semibold text-background">
       {count > 99 ? "99+" : String(count)}
     </span>
+  );
+}
+
+function MobileTabLink({
+  href,
+  label,
+  icon,
+  active,
+  badge,
+}: {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  badge?: number;
+}) {
+  return (
+    <Link
+      href={href}
+      className={[
+        "relative flex flex-1 flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
+        active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+      ].join(" ")}
+      aria-current={active ? "page" : undefined}
+    >
+      <span
+        className={[
+          "relative inline-flex h-9 w-9 items-center justify-center rounded-xl",
+          active ? "bg-muted" : "hover:bg-muted/60",
+        ].join(" ")}
+      >
+        {icon}
+        {badge && badge > 0 ? (
+          <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-foreground px-1.5 text-[11px] font-semibold text-background">
+            {badge > 99 ? "99+" : String(badge)}
+          </span>
+        ) : null}
+      </span>
+      <span className="leading-none">{label}</span>
+    </Link>
+  );
+}
+
+function MobileNav({
+  activeBotId,
+  notifUnread,
+  isAuthed,
+}: {
+  activeBotId: string;
+  notifUnread: number;
+  isAuthed: boolean;
+}) {
+  const pathname = usePathname();
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  useEffect(() => {
+    setMoreOpen(false);
+  }, [pathname]);
+
+  const docsHref = useMemo(() => {
+    return `/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`;
+  }, [activeBotId]);
+
+  const isActive = (p: string) => pathname === p;
+  const starts = (p: string) => pathname.startsWith(p);
+
+  // Bottom nav shows only for authed users in /app routes
+  const show = isAuthed && starts("/app");
+
+  // ✅ Critical fix: prevent content being hidden behind the bottom nav on mobile.
+  // We do it here so you don't need to touch layouts/pages.
+  useEffect(() => {
+    if (!show) return;
+
+    function applyPadding() {
+      try {
+        const isDesktop = window.matchMedia("(min-width: 768px)").matches;
+        if (isDesktop) {
+          document.body.style.paddingBottom = "";
+          return;
+        }
+        // Safe-area aware; works on iOS.
+        document.body.style.paddingBottom = "calc(env(safe-area-inset-bottom) + 72px)";
+      } catch {
+        // ignore
+      }
+    }
+
+    applyPadding();
+    window.addEventListener("resize", applyPadding);
+    return () => {
+      window.removeEventListener("resize", applyPadding);
+      document.body.style.paddingBottom = "";
+    };
+  }, [show]);
+
+  if (!show) return null;
+
+  return (
+    <div
+      className={[
+        "fixed bottom-0 left-0 right-0 z-50 md:hidden",
+        "border-t bg-background/80 backdrop-blur",
+        "pb-[env(safe-area-inset-bottom)]",
+      ].join(" ")}
+    >
+      <div className="mx-auto flex w-full max-w-6xl items-stretch gap-1 px-2 py-2">
+        <MobileTabLink
+          href="/app"
+          label="Dash"
+          icon={<LayoutDashboard className="h-5 w-5" />}
+          active={isActive("/app")}
+        />
+        <MobileTabLink
+          href="/app/chat"
+          label="Chat"
+          icon={<MessageSquare className="h-5 w-5" />}
+          active={starts("/app/chat")}
+        />
+        <MobileTabLink
+          href={docsHref}
+          label="Docs"
+          icon={<FileText className="h-5 w-5" />}
+          active={starts("/app/docs")}
+        />
+        <MobileTabLink
+          href="/app/schedule"
+          label="Schedule"
+          icon={<CalendarDays className="h-5 w-5" />}
+          active={starts("/app/schedule")}
+        />
+        <MobileTabLink
+          href="/app/notifications"
+          label="Notifs"
+          icon={<Bell className="h-5 w-5" />}
+          active={starts("/app/notifications")}
+          badge={notifUnread}
+        />
+
+        <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
+          <SheetTrigger asChild>
+            <button
+              type="button"
+              className={[
+                "relative flex flex-1 flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
+                moreOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+              aria-label="More"
+            >
+              <span
+                className={[
+                  "relative inline-flex h-9 w-9 items-center justify-center rounded-xl",
+                  moreOpen ? "bg-muted" : "hover:bg-muted/60",
+                ].join(" ")}
+              >
+                <MoreHorizontal className="h-5 w-5" />
+              </span>
+              <span className="leading-none">More</span>
+            </button>
+          </SheetTrigger>
+
+          <SheetContent side="bottom" className="rounded-t-2xl">
+            <div className="mx-auto w-full max-w-2xl">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-sm font-semibold">More</div>
+                <div className="text-xs text-muted-foreground">Quick access</div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <Link
+                  href="/app/bots"
+                  className={[
+                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                    starts("/app/bots") ? "bg-muted" : "",
+                  ].join(" ")}
+                  onClick={() => setMoreOpen(false)}
+                >
+                  <Bot className="h-4 w-4" />
+                  Bots
+                </Link>
+
+                <Link
+                  href="/app/billing"
+                  className={[
+                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                    starts("/app/billing") ? "bg-muted" : "",
+                  ].join(" ")}
+                  onClick={() => setMoreOpen(false)}
+                >
+                  <CreditCard className="h-4 w-4" />
+                  Billing
+                </Link>
+
+                <Link
+                  href="/app/email"
+                  className={[
+                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                    starts("/app/email") ? "bg-muted" : "",
+                  ].join(" ")}
+                  onClick={() => setMoreOpen(false)}
+                >
+                  <Mail className="h-4 w-4" />
+                  Email
+                </Link>
+
+                <Link
+                  href="/app/spreadsheets"
+                  className={[
+                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                    starts("/app/spreadsheets") ? "bg-muted" : "",
+                  ].join(" ")}
+                  onClick={() => setMoreOpen(false)}
+                >
+                  <SheetIcon className="h-4 w-4" />
+                  Sheets
+                </Link>
+
+                <Link
+                  href="/app/support"
+                  className={[
+                    "flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted",
+                    starts("/app/support") ? "bg-muted" : "",
+                  ].join(" ")}
+                  onClick={() => setMoreOpen(false)}
+                >
+                  <LifeBuoy className="h-4 w-4" />
+                  Support
+                </Link>
+
+                <Link
+                  href="/launch"
+                  className="flex items-center gap-2 rounded-xl border p-3 text-sm hover:bg-muted"
+                  onClick={() => setMoreOpen(false)}
+                >
+                  <Rocket className="h-4 w-4" />
+                  Launch
+                </Link>
+              </div>
+
+              <div className="mt-3 text-xs text-muted-foreground">Tip: bottom tabs are primary nav on mobile.</div>
+            </div>
+          </SheetContent>
+        </Sheet>
+      </div>
+    </div>
   );
 }
 
@@ -263,201 +523,167 @@ export default function Navbar() {
   }, [bots, activeBotId]);
 
   return (
-    <header className="sticky top-0 z-50 border-b bg-background/70 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 md:px-6">
-        <Link href="/app" className="group flex items-center gap-2">
-          <div className="badge-glow relative overflow-hidden rounded-full px-3 py-1.5">
-            <div className="pointer-events-none absolute inset-0 opacity-60 [background:radial-gradient(600px_200px_at_20%_0%,hsl(var(--primary)/0.16),transparent_60%)]" />
-            <span className="relative text-sm font-semibold tracking-tight">
-              Louis<span className="text-muted-foreground">.Ai</span>
-            </span>
-          </div>
+    <>
+      <header className="sticky top-0 z-50 border-b bg-background/70 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 md:px-6">
+          <Link href="/app" className="group flex items-center gap-2">
+            <div className="badge-glow relative overflow-hidden rounded-full px-3 py-1.5">
+              <div className="pointer-events-none absolute inset-0 opacity-60 [background:radial-gradient(600px_200px_at_20%_0%,hsl(var(--primary)/0.16),transparent_60%)]" />
+              <span className="relative text-sm font-semibold tracking-tight">
+                Louis<span className="text-muted-foreground">.Ai</span>
+              </span>
+            </div>
 
-          <span className="hidden text-sm text-muted-foreground md:block">Docs-prioritized AI for agencies</span>
-        </Link>
+            <span className="hidden text-sm text-muted-foreground md:block">Docs-prioritized AI for agencies</span>
+          </Link>
 
-        {/* Desktop nav */}
-        <nav className="hidden items-center gap-2 md:flex">
-          <NavLink href="/app">Dashboard</NavLink>
-          <NavLink href="/app/chat">Chat</NavLink>
+          {/* Desktop nav */}
+          <nav className="hidden items-center gap-2 md:flex">
+            <NavLink href="/app">Dashboard</NavLink>
+            <NavLink href="/app/chat">Chat</NavLink>
 
-          {/* Docs dropdown (shows docs list) */}
-          <div className="relative" ref={docsPanelRef}>
-            <button
-              type="button"
-              onClick={() => setDocsOpen((v) => !v)}
+            {/* Docs dropdown (shows docs list) */}
+            <div className="relative" ref={docsPanelRef}>
+              <button
+                type="button"
+                onClick={() => setDocsOpen((v) => !v)}
+                className={[
+                  "text-sm transition-colors",
+                  "rounded-full px-3 py-1.5",
+                  pathname.startsWith("/app/docs")
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                ].join(" ")}
+              >
+                {activeBotLabel}
+              </button>
+
+              {docsOpen ? (
+                <div className="absolute right-0 mt-2 w-[360px] rounded-xl border bg-background p-3 shadow-lg">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Docs</div>
+
+                    <Link
+                      href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setDocsOpen(false)}
+                    >
+                      Open Docs page
+                    </Link>
+                  </div>
+
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Bot:</span>
+                      <select
+                        className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
+                        value={activeBotId}
+                        onChange={(e) => setActiveBotId(e.target.value)}
+                        disabled={loadingBots || bots.length === 0}
+                      >
+                        {bots.map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name} {b.owner_user_id == null ? "(Agency)" : "(Private)"}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 max-h-[280px] overflow-auto rounded-lg border">
+                    {loadingBots ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">Loading bots…</div>
+                    ) : botsError ? (
+                      <div className="px-3 py-2 text-sm text-red-500">{botsError}</div>
+                    ) : loadingDocs ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">Loading docs…</div>
+                    ) : docsError ? (
+                      <div className="px-3 py-2 text-sm text-red-500">{docsError}</div>
+                    ) : docs.length === 0 ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">No docs for this bot.</div>
+                    ) : (
+                      <div className="flex flex-col">
+                        {docs.map((d) => (
+                          <Link
+                            key={d.id}
+                            href={`/app/docs?bot_id=${encodeURIComponent(activeBotId)}&doc_id=${encodeURIComponent(
+                              d.id
+                            )}`}
+                            className="px-3 py-2 text-sm hover:bg-muted"
+                            title={d.filename}
+                            onClick={() => setDocsOpen(false)}
+                          >
+                            {shortFilename(d.filename)}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-2 text-[11px] text-muted-foreground">This list is scoped to the selected bot.</div>
+                </div>
+              ) : null}
+            </div>
+
+            <NavLink href="/app/schedule">Schedule</NavLink>
+            <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
+
+            {/* Notifications (with unread badge) */}
+            <Link
+              href="/app/notifications"
               className={[
                 "text-sm transition-colors",
                 "rounded-full px-3 py-1.5",
-                pathname.startsWith("/app/docs")
+                pathname === "/app/notifications"
                   ? "bg-muted text-foreground"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
               ].join(" ")}
             >
-              {activeBotLabel}
-            </button>
-
-            {docsOpen ? (
-              <div className="absolute right-0 mt-2 w-[360px] rounded-xl border bg-background p-3 shadow-lg">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Docs</div>
-
-                  <Link
-                    href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}
-                    className="text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() => setDocsOpen(false)}
-                  >
-                    Open Docs page
-                  </Link>
-                </div>
-
-                <div className="mt-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Bot:</span>
-                    <select
-                      className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
-                      value={activeBotId}
-                      onChange={(e) => setActiveBotId(e.target.value)}
-                      disabled={loadingBots || bots.length === 0}
-                    >
-                      {bots.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.name} {b.owner_user_id == null ? "(Agency)" : "(Private)"}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="mt-3 max-h-[280px] overflow-auto rounded-lg border">
-                  {loadingBots ? (
-                    <div className="px-3 py-2 text-sm text-muted-foreground">Loading bots…</div>
-                  ) : botsError ? (
-                    <div className="px-3 py-2 text-sm text-red-500">{botsError}</div>
-                  ) : loadingDocs ? (
-                    <div className="px-3 py-2 text-sm text-muted-foreground">Loading docs…</div>
-                  ) : docsError ? (
-                    <div className="px-3 py-2 text-sm text-red-500">{docsError}</div>
-                  ) : docs.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-muted-foreground">No docs for this bot.</div>
-                  ) : (
-                    <div className="flex flex-col">
-                      {docs.map((d) => (
-                        <Link
-                          key={d.id}
-                          href={`/app/docs?bot_id=${encodeURIComponent(activeBotId)}&doc_id=${encodeURIComponent(d.id)}`}
-                          className="px-3 py-2 text-sm hover:bg-muted"
-                          title={d.filename}
-                          onClick={() => setDocsOpen(false)}
-                        >
-                          {shortFilename(d.filename)}
-                        </Link>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-2 text-[11px] text-muted-foreground">This list is scoped to the selected bot.</div>
-              </div>
-            ) : null}
-          </div>
-
-          <NavLink href="/app/schedule">Schedule</NavLink>
-          <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
-
-          {/* Notifications (with unread badge) */}
-          <Link
-            href="/app/notifications"
-            className={[
-              "text-sm transition-colors",
-              "rounded-full px-3 py-1.5",
-              pathname === "/app/notifications"
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            ].join(" ")}
-          >
-            <span className="inline-flex items-center">
-              Notifications
-              <UnreadPill count={notifUnread} />
-            </span>
-          </Link>
-
-          {/* Email points to the unified page */}
-          <NavLink href="/app/email">Email</NavLink>
-
-          <NavLink href="/app/bots">Bots</NavLink>
-          <NavLink href="/app/support">Support</NavLink>
-          <NavLink href="/launch">Launch</NavLink>
-        </nav>
-
-        <div className="flex items-center gap-2">
-          {/* Mobile quick links */}
-          <div className="flex items-center gap-1 md:hidden">
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app">Dash</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/chat">Chat</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}>Docs</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/schedule">Schedule</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/spreadsheets">Sheets</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/notifications">
-                Notifs
+              <span className="inline-flex items-center">
+                Notifications
                 <UnreadPill count={notifUnread} />
-              </Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/email">Email</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/bots">Bots</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/app/support">Support</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm" className="rounded-full">
-              <Link href="/launch">Launch</Link>
-            </Button>
-          </div>
+              </span>
+            </Link>
 
-          <ModeToggle />
+            <NavLink href="/app/email">Email</NavLink>
+            <NavLink href="/app/bots">Bots</NavLink>
+            <NavLink href="/app/support">Support</NavLink>
+            <NavLink href="/launch">Launch</NavLink>
+          </nav>
 
-          {/* Auth area */}
-          {me === null ? (
-            <div className="hidden md:flex items-center gap-2">
-              <div className="h-8 w-24 rounded-full bg-muted" />
-            </div>
-          ) : isAuthed ? (
-            <div className="hidden md:flex items-center gap-2">
-              <Badge
-                variant={emailVerified ? "secondary" : "outline"}
-                className="rounded-full"
-                title={emailVerified ? "Email verified" : "Email not verified"}
-              >
-                {emailVerified ? "Verified" : "Unverified"}
-              </Badge>
+          <div className="flex items-center gap-2">
+            <ModeToggle />
 
-              <span className="max-w-[220px] truncate text-xs text-muted-foreground">{email}</span>
+            {me === null ? (
+              <div className="hidden md:flex items-center gap-2">
+                <div className="h-8 w-24 rounded-full bg-muted" />
+              </div>
+            ) : isAuthed ? (
+              <div className="hidden md:flex items-center gap-2">
+                <Badge
+                  variant={emailVerified ? "secondary" : "outline"}
+                  className="rounded-full"
+                  title={emailVerified ? "Email verified" : "Email not verified"}
+                >
+                  {emailVerified ? "Verified" : "Unverified"}
+                </Badge>
 
-              <Button variant="outline" size="sm" className="rounded-full" onClick={logout}>
-                Logout
+                <span className="max-w-[220px] truncate text-xs text-muted-foreground">{email}</span>
+
+                <Button variant="outline" size="sm" className="rounded-full" onClick={logout}>
+                  Logout
+                </Button>
+              </div>
+            ) : (
+              <Button asChild variant="outline" size="sm" className="hidden rounded-full md:inline-flex">
+                <Link href="/login">Login</Link>
               </Button>
-            </div>
-          ) : (
-            <Button asChild variant="outline" size="sm" className="hidden rounded-full md:inline-flex">
-              <Link href="/login">Login</Link>
-            </Button>
-          )}
+            )}
+          </div>
         </div>
-      </div>
-    </header>
+      </header>
+
+      <MobileNav activeBotId={activeBotId} notifUnread={notifUnread} isAuthed={isAuthed} />
+    </>
   );
 }
