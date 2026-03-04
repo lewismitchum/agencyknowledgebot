@@ -23,9 +23,17 @@ function newId() {
   return `st_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Turso/libSQL wrapper in this repo uses variadic params (db.run(sql, p1, p2, ...))
+async function dbAll(db: any, sql: string, params: any[] = []) {
+  return await db.all(sql, ...params);
+}
+async function dbRun(db: any, sql: string, params: any[] = []) {
+  return await db.run(sql, ...params);
+}
+
 async function columnExists(db: any, table: string, col: string): Promise<boolean> {
   try {
-    const rows = await db.all(`PRAGMA table_info(${table});`, []);
+    const rows = await dbAll(db, `PRAGMA table_info(${table});`);
     return Array.isArray(rows) && rows.some((r: any) => String(r?.name) === col);
   } catch {
     return false;
@@ -38,12 +46,12 @@ async function addColumnIfMissing(db: any, table: string, col: string, sqlType: 
   try {
     await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${sqlType};`);
   } catch {
-    // ignore drift race / readonly replicas / duplicate add
+    // ignore drift race / duplicate add / replica lag
   }
 }
 
 async function ensureSupportSchema(db: any) {
-  // Create base table (older installs may already have it with fewer columns)
+  // Minimal base table (older installs might already exist)
   await db.exec(`
     CREATE TABLE IF NOT EXISTS support_tickets (
       id TEXT PRIMARY KEY,
@@ -52,7 +60,7 @@ async function ensureSupportSchema(db: any) {
     );
   `);
 
-  // Drift-safe columns (backfill adds)
+  // Drift-safe columns
   await addColumnIfMissing(db, "support_tickets", "agency_id", "TEXT");
   await addColumnIfMissing(db, "support_tickets", "user_id", "TEXT");
   await addColumnIfMissing(db, "support_tickets", "name", "TEXT");
@@ -63,7 +71,7 @@ async function ensureSupportSchema(db: any) {
   await addColumnIfMissing(db, "support_tickets", "email_sent", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "support_tickets", "email_error", "TEXT");
 
-  // Ensure indexes (safe)
+  // Indexes
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_agency_id ON support_tickets(agency_id);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_user_id ON support_tickets(user_id);`);
@@ -131,8 +139,8 @@ export async function POST(req: Request) {
     const db = await getDb();
     await ensureSupportSchema(db);
 
-    // Insert drift-safe: list only columns that now exist (we ensured them above)
-    await db.run(
+    await dbRun(
+      db,
       `
         INSERT INTO support_tickets (
           id, agency_id, user_id, name, email, message, page_url, user_agent, ip, email_sent, email_error
@@ -183,7 +191,7 @@ export async function POST(req: Request) {
     }
 
     if (emailSent || emailErr) {
-      await db.run(`UPDATE support_tickets SET email_sent = ?, email_error = ? WHERE id = ?`, [
+      await dbRun(db, `UPDATE support_tickets SET email_sent = ?, email_error = ? WHERE id = ?`, [
         emailSent ? 1 : 0,
         emailErr,
         ticketId,
