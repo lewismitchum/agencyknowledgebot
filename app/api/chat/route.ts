@@ -15,6 +15,13 @@ const FALLBACK = "I don’t have that information in the docs yet.";
 type ChatBody = {
   bot_id?: string;
   message?: string;
+
+  // Optional: client may send doc IDs or OpenAI file IDs.
+  // We’ll accept either without breaking old clients.
+  attachments?: string[];
+  attachment_ids?: string[];
+  document_ids?: string[];
+  file_ids?: string[];
 };
 
 function summarizeThresholdForPlan(plan: string | null) {
@@ -166,7 +173,6 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
-  // Strongly "general" starters: bias away from internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -191,7 +197,6 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (generalStarters.some((s) => t.startsWith(s))) return false;
 
-  // If it explicitly references "our company/agency/client" etc, it's internal.
   const explicitOrgMarkers = [
     "our company",
     "our agency",
@@ -219,7 +224,6 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (explicitOrgMarkers.some((m) => t.includes(m))) return true;
 
-  // Internal-ish keywords, but *not* overly broad ones like "we/us/doc/bot/schedule/meeting".
   const internalHints = [
     "pricing",
     "proposal",
@@ -251,11 +255,7 @@ function looksInternalBusinessQuestion(message: string) {
 }
 
 /**
- * Robust evidence detection:
- * Responses API payload shapes vary. We deep-scan for:
- * - file_search tool outputs/results
- * - citations arrays
- * - annotations that include file_id / quote-ish objects
+ * Robust evidence detection (file_search results / citations / annotations)
  */
 function responseHasFileSearchEvidence(resp: any) {
   const seen = new Set<any>();
@@ -266,7 +266,6 @@ function responseHasFileSearchEvidence(resp: any) {
 
   function hasCitationLikeArray(v: any) {
     if (!Array.isArray(v) || v.length === 0) return false;
-    // Common patterns: {file_id,...}, {quote,...}, {source,...}, {document_id,...}
     return v.some((x) => {
       if (!isObj(x)) return false;
       const keys = Object.keys(x);
@@ -282,12 +281,11 @@ function responseHasFileSearchEvidence(resp: any) {
   }
 
   function walk(node: any, depth: number): boolean {
-    if (depth > 14) return false; // safety
+    if (depth > 14) return false;
     if (!isObj(node) && !Array.isArray(node)) return false;
     if (seen.has(node)) return false;
     seen.add(node);
 
-    // Direct: tool output blocks
     if (isObj(node)) {
       const toolName = (node.tool_name || node.name || node.tool)?.toString?.() ?? "";
       const type = (node.type || "")?.toString?.() ?? "";
@@ -301,12 +299,9 @@ function responseHasFileSearchEvidence(resp: any) {
         if (hasCitationLikeArray(citations)) return true;
       }
 
-      // Any nested citations/annotations
       const maybeCitations = node.citations ?? node.annotations;
       if (hasCitationLikeArray(maybeCitations)) return true;
 
-      // Some SDKs put annotations inside content blocks:
-      // output[].content[].annotations
       const content = node.content;
       if (Array.isArray(content)) {
         for (const c of content) {
@@ -316,7 +311,6 @@ function responseHasFileSearchEvidence(resp: any) {
       }
     }
 
-    // Recurse
     if (Array.isArray(node)) {
       for (const item of node) {
         if (walk(item, depth + 1)) return true;
@@ -348,9 +342,7 @@ function toUiDailyLimit(raw: unknown): number | null {
 }
 
 function buildMemoryInput(args: { priorSummary: string | null; messages: Array<{ role: string; content: string }> }) {
-  const head = args.priorSummary
-    ? `[Conversation Memory Summary]\n${args.priorSummary.trim()}\n\n`
-    : "";
+  const head = args.priorSummary ? `[Conversation Memory Summary]\n${args.priorSummary.trim()}\n\n` : "";
   const body = args.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
   return head + body;
 }
@@ -380,11 +372,54 @@ ${input}
 `.trim(),
   });
 
-  const text =
-    typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
-
-  // Hard cap (prevents summary bloat)
+  const text = typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
   return text.slice(0, 4000);
+}
+
+async function resolveAttachments(db: Db, args: { agencyId: string; botId: string; ids: string[] }) {
+  const unique = Array.from(
+    new Set(
+      (args.ids || [])
+        .map((x) => String(x || "").trim())
+        .filter(Boolean)
+        .slice(0, 6)
+    )
+  );
+
+  if (!unique.length) {
+    return { images: [] as Array<{ openai_file_id: string; title: string }>, videos: [] as string[] };
+  }
+
+  const images: Array<{ openai_file_id: string; title: string }> = [];
+  const videos: string[] = [];
+
+  // Accept either documents.id OR documents.openai_file_id
+  for (const id of unique) {
+    const row = (await db.get(
+      `SELECT id, title, mime_type, openai_file_id
+       FROM documents
+       WHERE agency_id = ?
+         AND bot_id = ?
+         AND (id = ? OR openai_file_id = ?)
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      args.agencyId,
+      args.botId,
+      id,
+      id
+    )) as { id?: string; title?: string | null; mime_type?: string | null; openai_file_id?: string | null } | undefined;
+
+    if (!row?.openai_file_id) continue;
+
+    const mime = String(row.mime_type ?? "").toLowerCase();
+    if (mime.startsWith("image/")) {
+      images.push({ openai_file_id: String(row.openai_file_id), title: String(row.title ?? "image") });
+    } else if (mime.startsWith("video/")) {
+      videos.push(String(row.title ?? "video"));
+    }
+  }
+
+  return { images, videos };
 }
 
 export async function GET() {
@@ -426,22 +461,43 @@ export async function POST(req: NextRequest) {
 
     if (!bot?.id) return Response.json({ error: "Bot not found" }, { status: 404 });
 
+    // Attachments (optional)
+    const rawAttach =
+      (Array.isArray(body?.attachments) ? body!.attachments : null) ??
+      (Array.isArray(body?.attachment_ids) ? body!.attachment_ids : null) ??
+      (Array.isArray(body?.document_ids) ? body!.document_ids : null) ??
+      (Array.isArray(body?.file_ids) ? body!.file_ids : null) ??
+      [];
+
+    const { images: imageFiles, videos: videoTitles } = await resolveAttachments(db, {
+      agencyId: ctx.agencyId,
+      botId: bot_id,
+      ids: rawAttach,
+    });
+
     const convo = await getOrCreateConversation(db, {
       agencyId: ctx.agencyId,
       userId: ctx.userId,
       botId: bot_id,
     });
 
-    // Insert user message
-    await insertMessage(db, convo.id, "user", message);
+    // Store user message (include small attachment note for continuity)
+    const attachNote =
+      imageFiles.length || videoTitles.length
+        ? `\n\n[Attachments]\n${
+            imageFiles.length ? `Images: ${imageFiles.map((x) => x.title).join(", ")}` : ""
+          }${imageFiles.length && videoTitles.length ? "\n" : ""}${
+            videoTitles.length ? `Videos: ${videoTitles.join(", ")}` : ""
+          }\n`
+        : "";
 
-    // Build input for model (summary + last 20 for response generation)
+    await insertMessage(db, convo.id, "user", message + attachNote);
+
+    // Build input for model (summary + last 20)
     const recent = await loadRecentMessages(db, convo.id, 20);
-    const tools = bot.vector_store_id
-      ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }]
-      : [];
+    const tools = bot.vector_store_id ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }] : [];
 
-    const openaiInput = buildMemoryInput({ priorSummary: convo.summary, messages: recent });
+    const openaiInputText = buildMemoryInput({ priorSummary: convo.summary, messages: recent });
 
     let answer: string;
 
@@ -450,9 +506,25 @@ export async function POST(req: NextRequest) {
     } else {
       const internal = looksInternalBusinessQuestion(message);
 
-      const mediaHint =
-        "If the user asks about the contents of an image/video file, be honest: you may not be able to see pixels/audio. " +
-        "Use file_search evidence only. If the docs don't contain the answer, say you don't have it in the docs yet.";
+      const hasImages = imageFiles.length > 0;
+      const hasVideos = videoTitles.length > 0;
+
+      const mediaHint = hasImages
+        ? "The user attached one or more images. You CAN analyze the images and answer questions about what’s in them."
+        : "If the user asks about the contents of an image/video file, be honest: you may not be able to see pixels/audio. Use file_search evidence only.";
+
+      const inputBlocks: any[] = [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: openaiInputText },
+            ...imageFiles.map((img) => ({
+              type: "input_image",
+              image_file_id: img.openai_file_id,
+            })),
+          ],
+        },
+      ];
 
       const resp = await openai.responses.create({
         model: "gpt-4.1-mini",
@@ -467,46 +539,41 @@ Behavior:
 - If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
 Do not add extra words before or after the fallback.
+${
+  hasVideos
+    ? "\nNote: The user attached video(s). Video understanding is not available yet unless transcript/frame data is provided."
+    : ""
+}
 `.trim(),
-        input: openaiInput,
+        input: inputBlocks,
         tools,
       });
 
-      const modelText =
-        typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
+      const modelText = typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
-      // Server-side guardrail:
-      // Only force fallback when it's internal AND we can be confident there was no doc evidence.
-      // (We do NOT want false negatives to cause "docs-only" behavior.)
       const hasEvidence = tools.length > 0 ? responseHasFileSearchEvidence(resp) : false;
 
       if (internal && tools.length === 0) {
-        // No vector store available => cannot consult docs => must fallback for internal.
         answer = FALLBACK;
       } else if (internal && tools.length > 0 && !hasEvidence) {
-        // Internal + vector store available but no evidence returned => fallback.
         answer = FALLBACK;
       } else {
-        // Non-internal OR internal with evidence => allow model answer.
         answer = modelText || (internal ? FALLBACK : "Sorry — I couldn’t generate a response.");
       }
     }
 
-    // Insert assistant message
     await insertMessage(db, convo.id, "assistant", answer);
 
-    // Count usage (1 user msg per call)
+    // Usage (1 per call)
     const usageRow = await incrementUsage(db, ctx.agencyId, dateKey, "messages", 1);
 
     // ===== Memory refresh (transactional, safe) =====
     const planKey = normalizePlan(plan);
     const threshold = summarizeThresholdForPlan(planKey);
 
-    // We add 2 per call (user+assistant)
     const newCount = Number(convo.message_count ?? 0) + 2;
 
     if (newCount >= threshold) {
-      // Build a stronger summary input: prior summary + last 120 messages (after inserting assistant)
       const msgsForSummary = await loadRecentMessages(db, convo.id, 120);
       const memoryInput = buildMemoryInput({ priorSummary: convo.summary, messages: msgsForSummary });
 
@@ -518,7 +585,6 @@ Do not add extra words before or after the fallback.
       }
 
       if (nextSummary && nextSummary.trim().length) {
-        // Transaction prevents partial state (summary saved but messages not cleared, etc.)
         await db.exec("BEGIN");
         try {
           await db.run(
@@ -535,7 +601,6 @@ Do not add extra words before or after the fallback.
           await db.exec("COMMIT");
         } catch (e) {
           await db.exec("ROLLBACK");
-          // If rollback happens, we keep messages + count below
           await db.run(
             `UPDATE conversations
              SET message_count = message_count + 2, updated_at = ?
@@ -545,7 +610,6 @@ Do not add extra words before or after the fallback.
           );
         }
       } else {
-        // Summarization failed — never wipe messages.
         await db.run(
           `UPDATE conversations
            SET message_count = message_count + 2, updated_at = ?
