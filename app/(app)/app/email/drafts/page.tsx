@@ -1,4 +1,4 @@
-// app/(app)/app/email/page.tsx
+// app/(app)/app/email/drafts/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -22,6 +22,10 @@ type OpenDraft = {
 
 function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
+}
+
+function getFetchJsonStatus(e: any): number | undefined {
+  return (e as any)?.status ?? (e as any)?.statusCode ?? (e as any)?.response?.status;
 }
 
 function cx(...parts: Array<string | false | null | undefined>) {
@@ -101,7 +105,7 @@ export default function EmailDraftsPage() {
       } catch (e: any) {
         if (cancelled) return;
 
-        if (isFetchJsonError(e) && e.status === 401) {
+        if (isFetchJsonError(e) && getFetchJsonStatus(e) === 401) {
           window.location.href = "/login";
           return;
         }
@@ -141,11 +145,12 @@ export default function EmailDraftsPage() {
       }
     } catch (e: any) {
       if (isFetchJsonError(e)) {
-        if (e.status === 401) {
+        const status = getFetchJsonStatus(e);
+        if (status === 401) {
           window.location.href = "/login";
           return;
         }
-        if (e.status === 409) {
+        if (status === 409) {
           setDraftsError("Not connected. Click Connect Gmail.");
           return;
         }
@@ -187,15 +192,16 @@ export default function EmailDraftsPage() {
       });
     } catch (e: any) {
       if (isFetchJsonError(e)) {
-        if (e.status === 401) {
+        const status = getFetchJsonStatus(e);
+        if (status === 401) {
           window.location.href = "/login";
           return;
         }
-        if (e.status === 409) {
+        if (status === 409) {
           setOpenError("Not connected. Click Connect Gmail.");
           return;
         }
-        if (e.status === 404) {
+        if (status === 404) {
           setOpenError("Draft not found.");
           return;
         }
@@ -394,15 +400,19 @@ export default function EmailDraftsPage() {
                             onClick={() => openDraftById(d.id).catch(() => {})}
                             className={cx(
                               "w-full rounded-2xl border px-3 py-3 text-left transition",
-                              active ? "border-primary/40 bg-primary/5" : "bg-background/40 hover:bg-muted",
+                              active ? "border-primary/40 bg-primary/5" : "bg-background/40 hover:bg-muted"
                             )}
                             title={d.subject || d.id}
                           >
                             <div className="flex items-center justify-between gap-3">
                               <div className="truncate text-[12px] text-muted-foreground">Draft</div>
-                              <div className="shrink-0 text-[11px] text-muted-foreground">{ts ? safeDateLabel(ts) : ""}</div>
+                              <div className="shrink-0 text-[11px] text-muted-foreground">
+                                {ts ? safeDateLabel(ts) : ""}
+                              </div>
                             </div>
-                            <div className="mt-1 truncate text-sm font-medium">{shortText(d.subject || "(no subject)", 72)}</div>
+                            <div className="mt-1 truncate text-sm font-medium">
+                              {shortText(d.subject || "(no subject)", 72)}
+                            </div>
                             <div className="mt-1 truncate text-[11px] font-mono text-muted-foreground">{d.id}</div>
                           </button>
                         );
@@ -430,7 +440,7 @@ export default function EmailDraftsPage() {
                     href="/app/email"
                     className={cx(
                       "rounded-xl border px-3 py-2 text-xs hover:bg-muted",
-                      !openId ? "pointer-events-none opacity-60" : "",
+                      !openId ? "pointer-events-none opacity-60" : ""
                     )}
                     title="Edit in Compose"
                   >
@@ -441,7 +451,9 @@ export default function EmailDraftsPage() {
 
               <div className="flex-1 overflow-auto p-6">
                 {openError ? (
-                  <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{openError}</div>
+                  <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {openError}
+                  </div>
                 ) : null}
 
                 {openLoading ? (
@@ -476,9 +488,7 @@ export default function EmailDraftsPage() {
                       </a>
                     </div>
 
-                    <div className="text-xs text-muted-foreground">
-                      Next: compose modal (Gmail-style) + draft autosave.
-                    </div>
+                    <div className="text-xs text-muted-foreground">Next: compose modal (Gmail-style) + draft autosave.</div>
                   </div>
                 )}
               </div>
