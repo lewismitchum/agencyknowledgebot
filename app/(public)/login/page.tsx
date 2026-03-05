@@ -82,7 +82,7 @@ export default function LoginPage() {
     const id = widgetIdRef.current;
     if (id && window.turnstile) {
       try {
-        window.turnstile.reset(id);
+        window.turnstile.reset?.(id);
       } catch {}
     }
     setTsToken("");
@@ -100,7 +100,7 @@ export default function LoginPage() {
 
     setResending(true);
     try {
-      const r = await fetchJson("/api/auth/resend-verification", {
+      const r = await fetch("/api/auth/resend-verification", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -156,7 +156,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const r = await fetchJson("/api/auth/login", {
+      const r = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
