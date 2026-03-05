@@ -69,7 +69,7 @@ export default function JoinClient(props: Props) {
       setState({ status: "checking" });
 
       try {
-        const r = await fetch(`/api/agency/invites/accept?token=${encodeURIComponent(token)}`, {
+        const r = await fetchJson(`/api/agency/invites/accept?token=${encodeURIComponent(token)}`, {
           method: "GET",
           credentials: "include",
           cache: "no-store",

@@ -35,7 +35,7 @@ export default function SupportPage() {
 
     setLoading(true);
     try {
-      const res = await fetch("/api/support", {
+      const res = await fetchJson("/api/support", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // no credentials needed for public

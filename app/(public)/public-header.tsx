@@ -9,7 +9,7 @@ export default function PublicHeader() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/me", { credentials: "include" });
+        const r = await fetchJson("/api/me", { credentials: "include" });
         setAuthed(r.ok);
       } catch {
         setAuthed(false);

@@ -102,7 +102,7 @@ export default function Navbar() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/me", { credentials: "include" });
+        const r = await fetchJson("/api/me", { credentials: "include" });
         if (!r.ok) {
           setMe({ user: null });
           return;
@@ -126,7 +126,7 @@ export default function Navbar() {
         setLoadingBots(true);
         setBotsError(null);
 
-        const r = await fetch("/api/bots", { credentials: "include", cache: "no-store" });
+        const r = await fetchJson("/api/bots", { credentials: "include", cache: "no-store" });
         const j = await r.json().catch(() => ({}));
 
         if (!r.ok) throw new Error(String(j?.error || "Failed to load bots"));
@@ -171,7 +171,7 @@ export default function Navbar() {
         setLoadingDocs(true);
         setDocsError(null);
 
-        const r = await fetch(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, {
+        const r = await fetchJson(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, {
           credentials: "include",
           cache: "no-store",
         });
@@ -198,7 +198,7 @@ export default function Navbar() {
   }, [isAuthed, activeBotId]);
 
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    await fetchJson("/api/auth/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login";
   }
 

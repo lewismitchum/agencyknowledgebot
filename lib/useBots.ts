@@ -28,7 +28,7 @@ export function useBots() {
     async function run() {
       setLoading(true);
       try {
-        const res = await fetch("/api/bots", { cache: "no-store" });
+        const res = await fetchJson("/api/bots", { cache: "no-store" });
         const data = await res.json();
         const list: Bot[] = Array.isArray(data?.bots) ? data.bots : [];
 

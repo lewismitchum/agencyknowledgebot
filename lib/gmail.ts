@@ -38,7 +38,7 @@ export async function refreshGoogleAccessToken(refreshToken: string) {
   body.set("refresh_token", refreshToken);
   body.set("grant_type", "refresh_token");
 
-  const r = await fetch("https://oauth2.googleapis.com/token", {
+  const r = await fetchJson("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -87,8 +87,8 @@ export async function ensureFreshAccessToken(args: {
   return { ok: true as const, access_token: ref.tokens.access_token };
 }
 
-async function gmailFetch(path: string, accessToken: string) {
-  const r = await fetch(`https://gmail.googleapis.com/gmail/v1/${path}`, {
+async function gmailfetchJson(path: string, accessToken: string) {
+  const r = await fetchJson(`https://gmail.googleapis.com/gmail/v1/${path}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   const j = await r.json().catch(() => null);
@@ -101,7 +101,7 @@ export async function listThreads(accessToken: string, maxResults = 20) {
   q.set("maxResults", String(n));
   q.set("includeSpamTrash", "false");
 
-  const res = await gmailFetch(`users/me/threads?${q.toString()}`, accessToken);
+  const res = await gmailfetchJson(`users/me/threads?${q.toString()}`, accessToken);
   if (!res.ok) return { ok: false as const, error: "GMAIL_LIST_THREADS_FAILED", details: res.json, status: res.status };
 
   const threads = Array.isArray(res.json?.threads) ? res.json.threads : [];
@@ -127,7 +127,7 @@ export async function getThread(accessToken: string, threadId: string) {
   q.set("metadataHeaders", "Subject");
   q.set("metadataHeaders", "Date");
 
-  const res = await gmailFetch(`users/me/threads/${encodeURIComponent(id)}?${q.toString()}`, accessToken);
+  const res = await gmailfetchJson(`users/me/threads/${encodeURIComponent(id)}?${q.toString()}`, accessToken);
   if (!res.ok) return { ok: false as const, error: "GMAIL_GET_THREAD_FAILED", details: res.json, status: res.status };
 
   const msgs = Array.isArray(res.json?.messages) ? res.json.messages : [];

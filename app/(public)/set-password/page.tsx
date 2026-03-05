@@ -40,7 +40,7 @@ function SetPasswordInner() {
 
     setBusy(true);
     try {
-      const r = await fetch("/api/agency/invites/accept", {
+      const r = await fetchJson("/api/agency/invites/accept", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",

@@ -68,7 +68,7 @@ export default function CheckEmailClient() {
     const normalized = normalizeEmail(email);
 
     try {
-      const r = await fetch("/api/auth/resend-verification", {
+      const r = await fetchJson("/api/auth/resend-verification", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

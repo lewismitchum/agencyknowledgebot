@@ -108,7 +108,7 @@ function BillingContent() {
   const allowedUserId = (process.env.NEXT_PUBLIC_TIER_SWITCHER_USER_ID || "").trim();
 
   async function loadMeOnce(signal?: AbortSignal) {
-    const res = await fetch("/api/me", { method: "GET", cache: "no-store", signal });
+    const res = await fetchJson("/api/me", { method: "GET", cache: "no-store", signal });
     const data = (await res.json().catch(() => ({}))) as MeResponse;
 
     if ((data as any)?.ok && (data as any)?.agency) {
@@ -196,7 +196,7 @@ function BillingContent() {
     try {
       setLoadingPlan(plan);
 
-      const res = await fetch("/api/billing/checkout", {
+      const res = await fetchJson("/api/billing/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ plan }),
@@ -222,7 +222,7 @@ function BillingContent() {
     try {
       setPortalLoading(true);
 
-      const res = await fetch("/api/billing/portal", { method: "POST" });
+      const res = await fetchJson("/api/billing/portal", { method: "POST" });
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok || !data?.url) {
@@ -244,7 +244,7 @@ function BillingContent() {
       setDevSaving(true);
       setDevPlan(plan);
 
-      const res = await fetch("/api/billing/dev-set-plan", {
+      const res = await fetchJson("/api/billing/dev-set-plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ plan }),

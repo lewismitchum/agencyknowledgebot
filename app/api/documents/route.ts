@@ -354,7 +354,7 @@ export async function POST(req: NextRequest) {
 
     const target = new URL("/api/upload", req.url);
 
-    const upstream = await fetch(target.toString(), {
+    const upstream = await fetchJson(target.toString(), {
       method: "POST",
       headers,
       body: formData,

@@ -79,7 +79,7 @@ export default function BotsPage() {
     setLoading(true);
     setMsg("");
     try {
-      const r = await fetch("/api/bots", { credentials: "include" });
+      const r = await fetchJson("/api/bots", { credentials: "include" });
       const j = (await safeJson(r)) as BotsResponse | any;
 
       if (!r.ok) {
@@ -109,7 +109,7 @@ export default function BotsPage() {
 
   async function loadMe() {
     try {
-      const r = await fetch("/api/me", { credentials: "include" });
+      const r = await fetchJson("/api/me", { credentials: "include" });
       const j = (await safeJson(r)) as any;
       if (!r.ok) return;
 
@@ -189,7 +189,7 @@ export default function BotsPage() {
     setRenamingId(bot.id);
 
     try {
-      const r = await fetch(`/api/bots/${encodeURIComponent(bot.id)}`, {
+      const r = await fetchJson(`/api/bots/${encodeURIComponent(bot.id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -236,7 +236,7 @@ export default function BotsPage() {
 
     setCreating(true);
     try {
-      const r = await fetch("/api/bots", {
+      const r = await fetchJson("/api/bots", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -283,7 +283,7 @@ export default function BotsPage() {
     setMsg("");
     setRepairingId(botId);
     try {
-      const r = await fetch("/api/admin/fix-vector-store", {
+      const r = await fetchJson("/api/admin/fix-vector-store", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -321,7 +321,7 @@ export default function BotsPage() {
 
     setDeletingId(bot.id);
     try {
-      const r = await fetch(`/api/bots/${encodeURIComponent(bot.id)}`, {
+      const r = await fetchJson(`/api/bots/${encodeURIComponent(bot.id)}`, {
         method: "DELETE",
         credentials: "include",
       });

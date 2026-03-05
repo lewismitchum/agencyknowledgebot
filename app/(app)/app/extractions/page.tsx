@@ -30,7 +30,7 @@ export default function ExtractionsPage() {
     setLoading(true);
     setError("");
     try {
-      const r = await fetch("/api/extractions", { credentials: "include", cache: "no-store" });
+      const r = await fetchJson("/api/extractions", { credentials: "include", cache: "no-store" });
       const raw = await r.text();
       let j: any = null;
       try {
@@ -75,7 +75,7 @@ export default function ExtractionsPage() {
     setRuns((cur) => cur.filter((x) => x.id !== id));
 
     try {
-      const r = await fetch("/api/extractions", {
+      const r = await fetchJson("/api/extractions", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         credentials: "include",

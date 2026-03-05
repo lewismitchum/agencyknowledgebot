@@ -11,7 +11,7 @@ export async function resendSendEmail(args: SendEmailArgs) {
   const apiKey = String(process.env.RESEND_API_KEY || "").trim();
   if (!apiKey) throw new Error("RESEND_API_KEY_MISSING");
 
-  const res = await fetch("https://api.resend.com/emails", {
+  const res = await fetchJson("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

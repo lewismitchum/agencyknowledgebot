@@ -29,7 +29,7 @@ export default function ResetPasswordClient() {
 
     setSubmitting(true);
     try {
-      const r = await fetch("/api/auth/reset-password", {
+      const r = await fetchJson("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, new_password: newPassword }),

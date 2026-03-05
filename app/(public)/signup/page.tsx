@@ -116,7 +116,7 @@ export default function SignupPage() {
     setLoading(true);
 
     try {
-      const r = await fetch("/api/auth/signup", {
+      const r = await fetchJson("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

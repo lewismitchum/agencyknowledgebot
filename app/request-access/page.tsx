@@ -111,7 +111,7 @@ export default function RequestAccessPage() {
       if (isEmail(a)) payload.agency_email = a.toLowerCase();
       else payload.agency_name = a;
 
-      const r = await fetch("/api/auth/request-join", {
+      const r = await fetchJson("/api/auth/request-join", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

@@ -91,7 +91,7 @@ async function sendSupportEmail(args: { to: string; subject: string; text: strin
   };
   if (args.replyTo) payload.reply_to = args.replyTo;
 
-  const r = await fetch("https://api.resend.com/emails", {
+  const r = await fetchJson("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,

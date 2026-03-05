@@ -28,7 +28,7 @@ export default function UsagePage() {
     let ok = true;
     (async () => {
       try {
-        const res = await fetch("/api/usage", { method: "GET" });
+        const res = await fetchJson("/api/usage", { method: "GET" });
         const json = (await res.json().catch(() => null)) as UsageResp | null;
         if (!ok) return;
         setData(json);

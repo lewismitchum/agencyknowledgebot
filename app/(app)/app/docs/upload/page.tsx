@@ -46,7 +46,7 @@ export default function DocsUploadPage() {
   }, []);
 
   async function refreshMe() {
-    const r = await fetch("/api/me", { credentials: "include" });
+    const r = await fetchJson("/api/me", { credentials: "include" });
 
     if (r.status === 401) {
       window.location.href = "/login";
@@ -84,7 +84,7 @@ export default function DocsUploadPage() {
     (async () => {
       setBotsLoading(true);
       try {
-        const r = await fetch("/api/bots", { credentials: "include" });
+        const r = await fetchJson("/api/bots", { credentials: "include" });
         const j = await r.json().catch(() => null);
 
         if (!r.ok) {
@@ -141,7 +141,7 @@ export default function DocsUploadPage() {
         form.append("bot_id", selectedBotId);
         form.append("file", f);
 
-        const r = await fetch("/api/documents", {
+        const r = await fetchJson("/api/documents", {
           method: "POST",
           body: form,
           credentials: "include",

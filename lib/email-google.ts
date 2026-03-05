@@ -96,7 +96,7 @@ async function refreshAccessToken(args: {
   body.set("refresh_token", args.refreshToken);
   body.set("grant_type", "refresh_token");
 
-  const r = await fetch("https://oauth2.googleapis.com/token", {
+  const r = await fetchJson("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),

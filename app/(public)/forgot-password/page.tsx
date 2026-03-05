@@ -78,7 +78,7 @@ export default function ForgotPasswordPage() {
     setLoading(true);
 
     try {
-      const r = await fetch("/api/auth/request-password-reset", {
+      const r = await fetchJson("/api/auth/request-password-reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

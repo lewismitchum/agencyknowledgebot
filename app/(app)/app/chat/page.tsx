@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
+import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type Msg = { role: "user" | "assistant"; text: string };
 type BotRow = { id: string; name: string };
@@ -72,6 +73,25 @@ function normalizeDailyRemaining(v: unknown): number | null {
   if (n >= 90000) return null;
   if (n < 0) return 0;
   return Math.floor(n);
+}
+
+function detectIanaTimezone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return String(tz || "").trim() || "America/Chicago";
+  } catch {
+    return "America/Chicago";
+  }
+}
+
+function parseMaybeJson(text: string): any {
+  const t = String(text || "").trim();
+  if (!t) return null;
+  try {
+    return JSON.parse(t);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -197,7 +217,8 @@ function AssistantMarkdown({ text }: { text: string }) {
       flushAllTextBlocks();
       const level = h[1].length;
       const content = h[2].trim();
-      const cls = level === 1 ? "text-base font-semibold" : level === 2 ? "text-sm font-semibold" : "text-sm font-medium";
+      const cls =
+        level === 1 ? "text-base font-semibold" : level === 2 ? "text-sm font-semibold" : "text-sm font-medium";
       const Tag: any = level === 1 ? "h3" : "h4";
       blocks.push(
         <Tag key={`h-${blocks.length}`} className={cls}>
@@ -262,6 +283,9 @@ export default function ChatPage() {
 
   const [documentsCount, setDocumentsCount] = useState(0);
 
+  // Timezone (for display + FormData upload header)
+  const [clientTimezone, setClientTimezone] = useState<string>("America/Chicago");
+
   // Usage
   const [usageLoaded, setUsageLoaded] = useState(false);
   const [dailyRemaining, setDailyRemaining] = useState<number | null>(null); // null => unlimited
@@ -293,9 +317,18 @@ export default function ChatPage() {
 
   const docsEmpty = documentsCount <= 0;
 
+  // For FormData uploads only (fetchJson doesn't touch multipart).
+  const tzHeader = useMemo(() => {
+    const tz = String(clientTimezone || "").trim() || "America/Chicago";
+    return { "X-User-Timezone": tz };
+  }, [clientTimezone]);
+
   useEffect(() => {
     const initialFromUrl = getBotIdFromUrl();
     if (initialFromUrl) setSelectedBotId(initialFromUrl);
+
+    // detect timezone early (travel-proof on client)
+    setClientTimezone(detectIanaTimezone());
   }, []);
 
   async function logout() {
@@ -310,28 +343,8 @@ export default function ChatPage() {
     (async () => {
       try {
         setBootError("");
-        const r = await fetch("/api/me", { credentials: "include" });
 
-        if (r.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-
-        if (r.status === 403) {
-          const j = await safeJson(r);
-          const message = String((j as any)?.message ?? "").toLowerCase();
-          setAccessBlocked(message.includes("blocked") ? "blocked" : "pending");
-          setMeStatus(message.includes("blocked") ? "blocked" : "pending");
-          return;
-        }
-
-        if (!r.ok) {
-          const raw = await r.text().catch(() => "");
-          setBootError(raw || `Failed to load session (${r.status})`);
-          return;
-        }
-
-        const j: any = await safeJson(r);
+        const j: any = await fetchJson("/api/me");
 
         setEmail(j?.user?.email ?? null);
         setEmailVerified(Boolean(j?.user?.email_verified));
@@ -361,11 +374,29 @@ export default function ChatPage() {
         const reset = Number(j?.daily_resets_in_seconds ?? 0);
         setDailyResetsInSeconds(reset);
       } catch (e: any) {
-        setBootError(e?.message || "Failed to load session");
+        if (e instanceof FetchJsonError) {
+          const status = e.info.status;
+          if (status === 401) {
+            window.location.href = "/login";
+            return;
+          }
+          if (status === 403) {
+            const body = parseMaybeJson(e.info.bodyText || "");
+            const message = String(body?.message ?? e.info.bodyText ?? "").toLowerCase();
+            const blocked = message.includes("blocked");
+            setAccessBlocked(blocked ? "blocked" : "pending");
+            setMeStatus(blocked ? "blocked" : "pending");
+            return;
+          }
+          setBootError(e.info.bodyText || `Failed to load session (${status})`);
+        } else {
+          setBootError(e?.message || "Failed to load session");
+        }
       } finally {
         setUsageLoaded(true);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* bots */
@@ -379,23 +410,7 @@ export default function ChatPage() {
     (async () => {
       try {
         setBootError("");
-        const r = await fetch("/api/bots", { credentials: "include" });
-
-        if (r.status === 401) return (window.location.href = "/login");
-
-        if (r.status === 403) {
-          setAccessBlocked("pending");
-          setBots([]);
-          return;
-        }
-
-        if (r.status === 405) {
-          setBootError(`405 from /api/bots (method mismatch). Check app/api/bots/route.ts exports GET.`);
-          setBots([]);
-          return;
-        }
-
-        const j: any = await safeJson(r);
+        const j: any = await fetchJson("/api/bots");
         const list: BotRow[] = Array.isArray(j?.bots) ? (j.bots as BotRow[]) : [];
         setBots(list);
 
@@ -413,8 +428,24 @@ export default function ChatPage() {
           setBotIdInUrl(next);
         }
       } catch (e: any) {
-        setBootError(`Failed to load bots: ${String(e?.message ?? e)}`);
-        setBots([]);
+        if (e instanceof FetchJsonError) {
+          if (e.info.status === 401) return (window.location.href = "/login");
+          if (e.info.status === 403) {
+            setAccessBlocked("pending");
+            setBots([]);
+            return;
+          }
+          if (e.info.status === 405) {
+            setBootError(`405 from /api/bots (method mismatch). Check app/api/bots/route.ts exports GET.`);
+            setBots([]);
+            return;
+          }
+          setBootError(`Failed to load bots: ${e.info.bodyText || `${e.info.status} ${e.info.statusText}`}`);
+          setBots([]);
+        } else {
+          setBootError(`Failed to load bots: ${String(e?.message ?? e)}`);
+          setBots([]);
+        }
       } finally {
         setBotsLoading(false);
       }
@@ -431,22 +462,19 @@ export default function ChatPage() {
       try {
         setBootError("");
         const url = `/api/conversation/messages?bot_id=${encodeURIComponent(selectedBotId)}`;
-        const r = await fetch(url, { credentials: "include" });
-
-        if (r.status === 405) {
-          setBootError(`405 from ${url}. You likely don't have GET implemented at app/api/conversation/messages/route.ts`);
-          setMessages([]);
-          return;
-        }
-
-        if (!r.ok) {
-          setMessages([]);
-          return;
-        }
-
-        const j: any = await safeJson(r);
+        const j: any = await fetchJson(url);
         setMessages(Array.isArray(j?.messages) ? (j.messages as Msg[]) : []);
-      } catch {
+      } catch (e: any) {
+        if (e instanceof FetchJsonError) {
+          if (e.info.status === 405) {
+            const url = `/api/conversation/messages?bot_id=${encodeURIComponent(selectedBotId)}`;
+            setBootError(
+              `405 from ${url}. You likely don't have GET implemented at app/api/conversation/messages/route.ts`
+            );
+            setMessages([]);
+            return;
+          }
+        }
         setMessages([]);
       }
     })();
@@ -498,9 +526,11 @@ export default function ChatPage() {
         fd.append("files", f);
       }
 
+      // Keep raw fetch here (multipart). Still send TZ header for travel-proof dateKey.
       const r = await fetch("/api/upload", {
         method: "POST",
         credentials: "include",
+        headers: { ...tzHeader },
         body: fd,
       });
 
@@ -564,48 +594,15 @@ export default function ChatPage() {
     setAttachError("");
 
     try {
-      const r = await fetch("/api/chat", {
+      const j: any = await fetchJson("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           message: userMsg,
           bot_id: selectedBotId,
           attachments: attachIds.length ? attachIds : undefined,
         }),
       });
-
-      if (r.status === 405) {
-        setMessages((m: Msg[]) => [
-          ...m,
-          {
-            role: "assistant",
-            text:
-              "405 from /api/chat. This usually means your server route doesn’t export POST at app/api/chat/route.ts, " +
-              "or another route is shadowing it (pages/api/chat.ts).",
-          },
-        ]);
-        return;
-      }
-
-      if (r.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-
-      if (r.status === 403) {
-        setAccessBlocked("pending");
-        setMessages((m: Msg[]) => [
-          ...m,
-          {
-            role: "assistant",
-            text: "Your account is pending approval by the agency owner. You’ll be able to chat once you’re approved.",
-          },
-        ]);
-        return;
-      }
-
-      const j: any = await safeJson(r);
 
       if (j?.bot_id && typeof j.bot_id === "string" && j.bot_id !== selectedBotId) {
         onChangeBot(j.bot_id);
@@ -632,6 +629,43 @@ export default function ChatPage() {
         setDailyRemaining(normalizeDailyRemaining(j?.daily_remaining));
       }
     } catch (e: any) {
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 405) {
+          setMessages((m: Msg[]) => [
+            ...m,
+            {
+              role: "assistant",
+              text:
+                "405 from /api/chat. This usually means your server route doesn’t export POST at app/api/chat/route.ts, " +
+                "or another route is shadowing it (pages/api/chat.ts).",
+            },
+          ]);
+          return;
+        }
+
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+
+        if (e.info.status === 403) {
+          setAccessBlocked("pending");
+          setMessages((m: Msg[]) => [
+            ...m,
+            {
+              role: "assistant",
+              text: "Your account is pending approval by the agency owner. You’ll be able to chat once you’re approved.",
+            },
+          ]);
+          return;
+        }
+
+        const body = parseMaybeJson(e.info.bodyText || "");
+        const msg = String(body?.message ?? e.info.bodyText ?? "").trim();
+        setMessages((m: Msg[]) => [...m, { role: "assistant", text: msg ? `Error: ${msg}` : "Request failed." }]);
+        return;
+      }
+
       setMessages((m: Msg[]) => [...m, { role: "assistant", text: `Network error: ${String(e?.message ?? e)}` }]);
     } finally {
       setLoading(false);
@@ -643,19 +677,19 @@ export default function ChatPage() {
     if (accessBlocked) return;
 
     try {
-      const r = await fetch("/api/conversation/reset", {
+      await fetchJson("/api/conversation/reset", {
         method: "POST",
-        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bot_id: selectedBotId }),
       });
-
-      if (r.status === 405) {
+    } catch (e: any) {
+      if (e instanceof FetchJsonError && e.info.status === 405) {
         setBootError(
           `405 from /api/conversation/reset. You likely don't have POST implemented at app/api/conversation/reset/route.ts`
         );
       }
-    } catch {}
+    }
+
     setMessages([]);
     setAttachments([]);
     setAttachError("");
@@ -665,12 +699,7 @@ export default function ChatPage() {
   const dailyBlocked = dailyRemaining !== null && dailyResetsInSeconds > 0 && dailyRemaining === 0;
 
   const canSend =
-    !!selectedBotId &&
-    !loading &&
-    !accessBlocked &&
-    !dailyBlocked &&
-    input.trim().length > 0 &&
-    !uploadingAttachments;
+    !!selectedBotId && !loading && !accessBlocked && !dailyBlocked && input.trim().length > 0 && !uploadingAttachments;
 
   if (accessBlocked) {
     const title = accessBlocked === "blocked" ? "Access blocked" : "Pending approval";
@@ -693,6 +722,7 @@ export default function ChatPage() {
               <Badge variant={accessBlocked === "blocked" ? "destructive" : "outline"}>
                 Status: {meStatus || accessBlocked}
               </Badge>
+              <Badge variant="outline">TZ: {clientTimezone}</Badge>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -748,6 +778,8 @@ export default function ChatPage() {
               <Badge variant="outline">Resets in {formatCountdown(dailyResetsInSeconds)}</Badge>
             ) : null}
 
+            <Badge variant="outline">TZ: {clientTimezone}</Badge>
+
             {documentsCount > 0 ? (
               <Badge variant="secondary">{documentsCount} docs</Badge>
             ) : (
@@ -759,7 +791,8 @@ export default function ChatPage() {
             <div className="rounded-2xl border border-white/10 bg-background/50 p-4 text-sm">
               <div className="font-medium">No docs uploaded yet</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                You can still ask general questions. For internal/workspace answers, upload at least one doc so Louis can cite it.
+                You can still ask general questions. For internal/workspace answers, upload at least one doc so Louis can
+                cite it.
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button asChild size="sm" className="rounded-full">

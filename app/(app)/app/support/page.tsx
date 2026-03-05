@@ -32,7 +32,7 @@ export default function SupportPage() {
     setErr(null);
 
     try {
-      const r = await fetch("/api/support", {
+      const r = await fetchJson("/api/support", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

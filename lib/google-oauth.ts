@@ -62,7 +62,7 @@ export async function exchangeGoogleCodeForTokens(code: string) {
   body.set("redirect_uri", cfg.redirectUri);
   body.set("grant_type", "authorization_code");
 
-  const r = await fetch("https://oauth2.googleapis.com/token", {
+  const r = await fetchJson("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -88,7 +88,7 @@ export async function exchangeGoogleCodeForTokens(code: string) {
 }
 
 export async function fetchGoogleUserEmail(accessToken: string) {
-  const r = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+  const r = await fetchJson("https://www.googleapis.com/oauth2/v2/userinfo", {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   const j = await r.json().catch(() => null);

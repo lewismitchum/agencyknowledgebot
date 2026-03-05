@@ -2,7 +2,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ModeToggle } from "@/components/mode-toggle";
 import { hasFeature } from "@/lib/plans";
@@ -39,6 +39,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const canSeeEmail = hasFeature(plan, "email");
   const canSeeSheets = hasFeature(plan, "spreadsheets");
 
+  const mobileScrollRef = useRef<HTMLDivElement | null>(null);
+
   // allow these inside /app without forcing a redirect loop
   const gateBypass = useMemo(() => {
     if (!pathname) return false;
@@ -59,7 +61,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const r = await fetch("/api/me", {
+        const r = await fetchJson("/api/me", {
           credentials: "include",
           cache: "no-store",
           headers: { "cache-control": "no-cache" },
@@ -104,7 +106,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     setOnboardingBusy(true);
 
     try {
-      await fetch("/api/onboarding/complete", {
+      await fetchJson("/api/onboarding/complete", {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
@@ -120,6 +122,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       setOnboardingBusy(false);
     }
   }
+
+  // Auto-scroll the mobile tab bar so the active tab stays visible.
+  useEffect(() => {
+    const el = mobileScrollRef.current;
+    if (!el) return;
+
+    const activeEl = el.querySelector('[data-active="true"]') as HTMLElement | null;
+    if (!activeEl) return;
+
+    const left = activeEl.offsetLeft - el.clientWidth / 2 + activeEl.clientWidth / 2;
+    el.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
+  }, [pathname]);
 
   // Minimal gate UI — prevents random 403 flashes on first paint
   if (gate !== "ok") {
@@ -286,27 +300,46 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           </header>
 
-          <main className="px-4 py-8 pb-24 md:px-8 md:pb-8">{children}</main>
+          <main className="px-4 py-8 pb-28 md:px-8 md:pb-8">{children}</main>
         </div>
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-white/10 bg-background/70 backdrop-blur md:hidden">
-        <div className="mx-auto flex max-w-7xl items-center justify-around px-3 py-3 text-sm">
-          <MobileItem href="/app" label="Home" active={pathname === "/app"} />
-          <MobileItem href="/app/chat" label="Chat" active={pathname === "/app/chat"} />
-          <MobileItem href="/app/docs" label="Docs" active={pathname?.startsWith("/app/docs")} />
-          <MobileItem href="/app/bots" label="Bots" active={pathname === "/app/bots"} />
-          <MobileItem href="/app/schedule" label="Schedule" active={pathname?.startsWith("/app/schedule")} />
-          <MobileItem href="/app/notifications" label="Notify" active={pathname?.startsWith("/app/notifications")} />
+      {/* Mobile bottom nav: scrollable so you can see all tabs */}
+      <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-white/10 bg-background/80 backdrop-blur md:hidden">
+        <div className="relative mx-auto max-w-7xl px-2 py-2">
+          <div
+            ref={mobileScrollRef}
+            className={[
+              "flex items-center gap-2",
+              "overflow-x-auto overscroll-x-contain",
+              "[-webkit-overflow-scrolling:touch]",
+              "scrollbar-none",
+              "pr-10", // hint that it scrolls
+            ].join(" ")}
+            style={{ touchAction: "pan-x" }}
+          >
+            <MobileItem href="/app" label="Home" active={pathname === "/app"} />
+            <MobileItem href="/app/chat" label="Chat" active={pathname === "/app/chat"} />
+            <MobileItem href="/app/docs" label="Docs" active={pathname?.startsWith("/app/docs")} />
+            <MobileItem href="/app/bots" label="Bots" active={pathname === "/app/bots"} />
+            <MobileItem href="/app/schedule" label="Schedule" active={pathname?.startsWith("/app/schedule")} />
+            <MobileItem href="/app/notifications" label="Notify" active={pathname?.startsWith("/app/notifications")} />
+            <MobileItem href="/app/extractions" label="Extract" active={pathname?.startsWith("/app/extractions")} />
 
-          {canSeeSheets ? (
-            <MobileItem href="/app/spreadsheets" label="Sheets" active={pathname?.startsWith("/app/spreadsheets")} />
-          ) : null}
+            {canSeeSheets ? (
+              <MobileItem href="/app/spreadsheets" label="Sheets" active={pathname?.startsWith("/app/spreadsheets")} />
+            ) : null}
 
-          {canSeeEmail ? <MobileItem href="/app/email" label="Email" active={pathname?.startsWith("/app/email")} /> : null}
+            {canSeeEmail ? <MobileItem href="/app/email" label="Email" active={pathname?.startsWith("/app/email")} /> : null}
 
-          <MobileItem href="/app/support" label="Help" active={pathname?.startsWith("/app/support")} />
-          <MobileItem href="/app/settings" label="Settings" active={pathname === "/app/settings"} />
+            <MobileItem href="/app/support" label="Help" active={pathname?.startsWith("/app/support")} />
+            <MobileItem href="/app/settings" label="Settings" active={pathname === "/app/settings"} />
+
+            <div className="h-1 w-4 shrink-0" />
+          </div>
+
+          {/* subtle gradient hint on right */}
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-background/90 to-transparent" />
         </div>
       </div>
     </div>
@@ -345,8 +378,11 @@ function MobileItem({ href, label, active }: { href: string; label: string; acti
   return (
     <Link
       href={href}
+      data-active={active ? "true" : "false"}
       className={[
-        "rounded-xl px-3 py-2 transition-colors",
+        "inline-flex shrink-0 items-center justify-center",
+        "min-w-[84px]",
+        "rounded-xl px-3 py-2 text-sm transition-colors",
         active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
       ].join(" ")}
     >

@@ -56,7 +56,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/me", { credentials: "include" });
+        const r = await fetchJson("/api/me", { credentials: "include" });
         if (r.status === 401) {
           window.location.href = "/login";
           return;
@@ -96,7 +96,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/agency/timezone", { credentials: "include", cache: "no-store" });
+        const r = await fetchJson("/api/agency/timezone", { credentials: "include", cache: "no-store" });
         const j = await r.json().catch(() => ({}));
         if (r.ok && j?.ok && j?.timezone) setTimezone(String(j.timezone));
       } catch {}
@@ -104,7 +104,7 @@ export default function SettingsPage() {
   }, []);
 
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    await fetchJson("/api/auth/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login";
   }
 
@@ -132,7 +132,7 @@ export default function SettingsPage() {
     setTzLoading(true);
     setTzError("");
     try {
-      const r = await fetch("/api/agency/timezone", {
+      const r = await fetchJson("/api/agency/timezone", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",

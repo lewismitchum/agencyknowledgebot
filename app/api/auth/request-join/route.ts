@@ -60,7 +60,7 @@ async function verifyTurnstile(token: string, ip: string | null) {
   form.set("response", token);
   if (ip) form.set("remoteip", ip);
 
-  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+  const r = await fetchJson("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form.toString(),

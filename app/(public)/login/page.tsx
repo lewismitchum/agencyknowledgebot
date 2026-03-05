@@ -100,7 +100,7 @@ export default function LoginPage() {
 
     setResending(true);
     try {
-      const r = await fetch("/api/auth/resend-verification", {
+      const r = await fetchJson("/api/auth/resend-verification", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -156,7 +156,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const r = await fetch("/api/auth/login", {
+      const r = await fetchJson("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

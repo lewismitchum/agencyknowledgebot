@@ -90,7 +90,7 @@ export default function BillingClient({
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/me", { credentials: "include" });
+        const r = await fetchJson("/api/me", { credentials: "include" });
         if (r.status === 401) {
           window.location.href = "/login";
           return;
@@ -121,7 +121,7 @@ export default function BillingClient({
 
     setBusyPlan(target);
     try {
-      const r = await fetch("/api/billing/checkout", {
+      const r = await fetchJson("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

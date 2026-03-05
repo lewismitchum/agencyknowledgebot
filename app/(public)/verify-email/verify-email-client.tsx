@@ -29,7 +29,7 @@ export default function VerifyEmailClient() {
     setStatus("verifying");
 
     try {
-      const r = await fetch("/api/auth/verify-email", {
+      const r = await fetchJson("/api/auth/verify-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),

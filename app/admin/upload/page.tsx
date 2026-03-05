@@ -41,7 +41,7 @@ export default function UploadPage() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/me", { credentials: "include" });
+        const r = await fetchJson("/api/me", { credentials: "include" });
 
         if (r.status === 401) {
           window.location.href = "/login";
@@ -66,7 +66,7 @@ export default function UploadPage() {
     (async () => {
       setBotsLoading(true);
       try {
-        const r = await fetch("/api/bots", { credentials: "include" });
+        const r = await fetchJson("/api/bots", { credentials: "include" });
         const j = await r.json().catch(() => null);
 
         if (!r.ok) {
@@ -133,7 +133,7 @@ export default function UploadPage() {
       form.append("bot_id", selectedBotIdState);
       for (const f of files) form.append("files", f);
 
-      const r = await fetch("/api/upload", {
+      const r = await fetchJson("/api/upload", {
         method: "POST",
         body: form,
         credentials: "include",

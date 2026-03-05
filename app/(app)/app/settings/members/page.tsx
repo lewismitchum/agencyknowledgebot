@@ -196,7 +196,7 @@ export default function MembersPage() {
     setLoading(true);
 
     try {
-      const meRes = await fetch("/api/me", { credentials: "include" });
+      const meRes = await fetchJson("/api/me", { credentials: "include" });
       if (meRes.status === 401) {
         window.location.href = "/login";
         return;
@@ -238,7 +238,7 @@ export default function MembersPage() {
         return;
       }
 
-      const r = await fetch("/api/agency/users", { credentials: "include" });
+      const r = await fetchJson("/api/agency/users", { credentials: "include" });
 
       if (r.status === 401) {
         window.location.href = "/login";
@@ -293,7 +293,7 @@ export default function MembersPage() {
   ) {
     setSavingId(userId);
     try {
-      const r = await fetch("/api/agency/users", {
+      const r = await fetchJson("/api/agency/users", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -349,7 +349,7 @@ export default function MembersPage() {
 
     setSavingId(userId);
     try {
-      const r = await fetch(`/api/agency/users/${encodeURIComponent(userId)}`, {
+      const r = await fetchJson(`/api/agency/users/${encodeURIComponent(userId)}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -376,7 +376,7 @@ export default function MembersPage() {
   async function revokeInvite(inviteId: string) {
     setSavingId(inviteId);
     try {
-      const r = await fetch("/api/agency/invites", {
+      const r = await fetchJson("/api/agency/invites", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -410,7 +410,7 @@ export default function MembersPage() {
     setLastInviteEmailError("");
 
     try {
-      const r = await fetch("/api/agency/invites", {
+      const r = await fetchJson("/api/agency/invites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

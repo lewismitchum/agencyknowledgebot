@@ -54,7 +54,7 @@ export default function TimezoneSettingsPage() {
     let ok = true;
     (async () => {
       try {
-        const res = await fetch("/api/settings/timezone", { method: "GET" });
+        const res = await fetchJson("/api/settings/timezone", { method: "GET" });
         const json = (await res.json().catch(() => null)) as ApiResp | null;
         if (!ok) return;
 
@@ -84,7 +84,7 @@ export default function TimezoneSettingsPage() {
 
     setSaving(true);
     try {
-      const res = await fetch("/api/settings/timezone", {
+      const res = await fetchJson("/api/settings/timezone", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ timezone: tz }),

@@ -35,7 +35,7 @@ export default function DashboardPage() {
 
     async function load() {
       try {
-        const r = await fetch("/api/onboarding", { credentials: "include", cache: "no-store" });
+        const r = await fetchJson("/api/onboarding", { credentials: "include", cache: "no-store" });
         const j = await r.json().catch(() => null);
         if (!r.ok) return;
 
