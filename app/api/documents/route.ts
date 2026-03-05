@@ -256,7 +256,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Daily uploads gating (centralized)
-    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, planKey, files.length);
+    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, ctx.userId, dateKey, planKey, files.length);
     if (!uploadsGate.ok) {
       return Response.json(
         {
@@ -354,7 +354,7 @@ export async function POST(req: NextRequest) {
 
     const target = new URL("/api/upload", req.url);
 
-    const upstream = await fetchJson(target.toString(), {
+    const upstream = await fetch(target.toString(), {
       method: "POST",
       headers,
       body: formData,

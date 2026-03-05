@@ -5,7 +5,7 @@ import { requireActiveMember } from "@/lib/authz";
 import { normalizePlan, getPlanLimits } from "@/lib/plans";
 import { openai } from "@/lib/openai";
 import { ensureSchema } from "@/lib/schema";
-import { ensureUsageDailySchema, incrementUsage, getUsageRow } from "@/lib/usage";
+import { ensureUsageDailySchema, incrementUserMessages, getUserUsageRow } from "@/lib/usage";
 import { enforceDailyMessages, getAgencyPlan } from "@/lib/enforcement";
 import { getEffectiveTimezone, ymdInTz, timeStringInTz } from "@/lib/timezone";
 
@@ -300,7 +300,7 @@ function buildMemoryInput(args: { priorSummary: string | null; messages: Array<{
 
   if (args.priorSummary && args.priorSummary.trim().length) {
     parts.push(
-`[SYSTEM MEMORY — DO NOT IGNORE]
+      `[SYSTEM MEMORY — DO NOT IGNORE]
 
 This is the persistent memory summary of the conversation so far.
 Treat it as authoritative context.
@@ -422,7 +422,8 @@ export async function POST(req: NextRequest) {
 
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
 
-    const gate = await enforceDailyMessages(db, ctx.agencyId, dateKey, plan);
+    // ✅ per-user daily messages
+    const gate = await enforceDailyMessages(db, ctx.agencyId, ctx.userId, dateKey, plan);
     if (!gate.ok) return Response.json(gate.body, { status: gate.status });
 
     const bot = (await db.get(
@@ -495,7 +496,6 @@ export async function POST(req: NextRequest) {
           role: "user",
           content: [
             { type: "input_text", text: openaiInputText },
-            // NOTE: only safe if your OpenAI setup supports image_file_id in Responses.
             ...imageFiles.map((img) => ({
               type: "input_image",
               image_file_id: img.openai_file_id,
@@ -543,9 +543,9 @@ ${
 
     await insertMessage(db, convo.id, "assistant", answer);
 
-    // ✅ Usage (do NOT assume incrementUsage returns a row)
-    await incrementUsage(db, ctx.agencyId, dateKey, "messages", 1);
-    const usageAfter = await getUsageRow(db, ctx.agencyId, dateKey);
+    // ✅ per-user usage increment
+    await incrementUserMessages(db, ctx.agencyId, ctx.userId, dateKey, 1);
+    const usageAfter = await getUserUsageRow(db, ctx.agencyId, ctx.userId, dateKey);
 
     // ✅ Always increment message_count in DB (don’t use stale convo.message_count)
     await db.run(
