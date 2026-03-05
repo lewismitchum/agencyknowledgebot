@@ -110,7 +110,12 @@ function BillingContent() {
 
   async function loadMeOnce(signal?: AbortSignal) {
     try {
-      const data = (await fetchJson<MeResponse>("/api/me", { method: "GET", cache: "no-store", signal })) as MeResponse;
+      const data = await fetchJson<MeResponse>("/api/me", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include",
+        signal,
+      });
 
       if ((data as any)?.ok && (data as any)?.agency) {
         const a = (data as any).agency;
@@ -149,9 +154,9 @@ function BillingContent() {
     } catch (e: any) {
       if (e instanceof FetchJsonError && e.info.status === 401) {
         window.location.href = "/login";
-        return { ok: false, error: "Unauthorized" } as any;
+        return {} as any;
       }
-      return { ok: false, error: "Failed to load /api/me" } as any;
+      return {} as any;
     }
   }
 
@@ -206,21 +211,28 @@ function BillingContent() {
     try {
       setLoadingPlan(plan);
 
-      const data = (await fetchJson<any>("/api/billing/checkout", {
+      const data = await fetchJson<any>("/api/billing/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ plan }),
-      })) as any;
+      });
 
-      if (!data?.url) {
-        alert(String(data?.error || data?.message || "Checkout failed"));
+      const url = String(data?.url || "");
+      if (!url) {
+        const msg = String(data?.error || data?.message || "Checkout failed");
+        alert(msg);
         return;
       }
 
-      window.location.href = String(data.url);
+      window.location.href = url;
     } catch (e: any) {
-      if (e instanceof FetchJsonError && e.info.status === 401) {
-        window.location.href = "/login";
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        alert(String(e.info.bodyText || `Checkout failed (${e.info.status})`));
         return;
       }
       alert(String(e?.message ?? e));
@@ -233,17 +245,26 @@ function BillingContent() {
     try {
       setPortalLoading(true);
 
-      const data = (await fetchJson<any>("/api/billing/portal", { method: "POST" })) as any;
+      const data = await fetchJson<any>("/api/billing/portal", {
+        method: "POST",
+        credentials: "include",
+      });
 
-      if (!data?.url) {
-        alert(String(data?.error || data?.message || "Could not open billing portal"));
+      const url = String(data?.url || "");
+      if (!url) {
+        const msg = String(data?.error || data?.message || "Could not open billing portal");
+        alert(msg);
         return;
       }
 
-      window.location.href = String(data.url);
+      window.location.href = url;
     } catch (e: any) {
-      if (e instanceof FetchJsonError && e.info.status === 401) {
-        window.location.href = "/login";
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        alert(String(e.info.bodyText || `Could not open billing portal (${e.info.status})`));
         return;
       }
       alert(String(e?.message ?? e));
@@ -257,21 +278,27 @@ function BillingContent() {
       setDevSaving(true);
       setDevPlan(plan);
 
-      const data = (await fetchJson<any>("/api/billing/dev-set-plan", {
+      const data = await fetchJson<any>("/api/billing/dev-set-plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ plan }),
-      })) as any;
+      });
 
       if (!data?.ok) {
-        alert(String(data?.error || data?.message || "Failed to set plan"));
+        const msg = String(data?.error || data?.message || "Failed to set plan");
+        alert(msg);
         return;
       }
 
       setCurrentPlan(plan);
     } catch (e: any) {
-      if (e instanceof FetchJsonError && e.info.status === 401) {
-        window.location.href = "/login";
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        alert(String(e.info.bodyText || `Failed to set plan (${e.info.status})`));
         return;
       }
       alert(String(e?.message ?? e));
@@ -457,8 +484,7 @@ function BillingContent() {
       <div className="grid gap-4 md:grid-cols-2">
         {plans.map((p) => {
           const isCurrent = currentPlan && currentPlan === p.key;
-          const isPaidCheckout =
-            p.key === "starter" || p.key === "pro" || p.key === "enterprise" || p.key === "corporation";
+          const isPaidCheckout = p.key === "starter" || p.key === "pro" || p.key === "enterprise" || p.key === "corporation";
 
           return (
             <Card key={p.key} className={isCurrent ? "ring-1 ring-border" : ""}>

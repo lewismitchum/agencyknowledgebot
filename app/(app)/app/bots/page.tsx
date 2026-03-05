@@ -9,6 +9,7 @@ import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type BotRow = {
   id: string;
@@ -45,13 +46,6 @@ function pickMaxAgencyBotsFromAny(limits: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-async function safeJson(r: Response) {
-  return await r.json().catch(async () => {
-    const t = await r.text().catch(() => "");
-    return { _raw: t };
-  });
-}
-
 export default function BotsPage() {
   const [bots, setBots] = useState<BotRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,14 +73,7 @@ export default function BotsPage() {
     setLoading(true);
     setMsg("");
     try {
-      const r = await fetchJson("/api/bots", { credentials: "include" });
-      const j = (await safeJson(r)) as BotsResponse | any;
-
-      if (!r.ok) {
-        setMsg(j?.error || "Failed to load bots");
-        setBots([]);
-        return;
-      }
+      const j = (await fetchJson<any>("/api/bots", { credentials: "include", cache: "no-store" })) as BotsResponse | any;
 
       const rows = Array.isArray(j?.bots) ? j.bots : [];
       const normalized: BotRow[] = rows.map((b: any) => ({
@@ -101,7 +88,17 @@ export default function BotsPage() {
 
       setBots(normalized);
     } catch (e: any) {
-      setMsg(e?.message || "Failed to load bots");
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const body = String(e.info.bodyText || "").trim();
+        setMsg(body || `Failed to load bots (${e.info.status})`);
+      } else {
+        setMsg(e?.message || "Failed to load bots");
+      }
+      setBots([]);
     } finally {
       setLoading(false);
     }
@@ -109,9 +106,7 @@ export default function BotsPage() {
 
   async function loadMe() {
     try {
-      const r = await fetchJson("/api/me", { credentials: "include" });
-      const j = (await safeJson(r)) as any;
-      if (!r.ok) return;
+      const j = await fetchJson<any>("/api/me", { credentials: "include", cache: "no-store" });
 
       const p = String(j?.plan ?? j?.agency?.plan ?? "") || null;
       setPlan(p);
@@ -123,7 +118,8 @@ export default function BotsPage() {
       setMeRole(roleRaw === "owner" ? "owner" : roleRaw === "admin" ? "admin" : "member");
 
       setMeUserId(String(j?.user?.id ?? ""));
-    } catch {
+    } catch (e: any) {
+      if (e instanceof FetchJsonError && (e.info.status === 401 || e.info.status === 403)) return;
       // non-fatal
     }
   }
@@ -131,6 +127,7 @@ export default function BotsPage() {
   useEffect(() => {
     loadMe();
     loadBots();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -189,27 +186,32 @@ export default function BotsPage() {
     setRenamingId(bot.id);
 
     try {
-      const r = await fetchJson(`/api/bots/${encodeURIComponent(bot.id)}`, {
+      await fetchJson<any>(`/api/bots/${encodeURIComponent(bot.id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ name: next }),
       });
 
-      const j: any = await safeJson(r);
-
-      if (!r.ok) {
-        const e = String(j?.error ?? j?.message ?? "Rename failed");
-        if (e === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only rename your own private bots.");
-        else if (e === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || e === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
-        else setMsg(e);
-        return;
-      }
-
       setMsg("Bot renamed.");
       cancelRename();
       await loadBots();
     } catch (e: any) {
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const raw = String(e.info.bodyText || "").trim();
+
+        // preserve your existing UX for known error codes
+        if (raw === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only rename your own private bots.");
+        else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
+        else setMsg(raw || `Rename failed (${e.info.status})`);
+
+        return;
+      }
+
       setMsg(e?.message || "Rename failed");
     } finally {
       // keep renamingId cleared by cancelRename on success; otherwise leave it
@@ -236,7 +238,7 @@ export default function BotsPage() {
 
     setCreating(true);
     try {
-      const r = await fetchJson("/api/bots", {
+      await fetchJson<any>("/api/bots", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -246,33 +248,39 @@ export default function BotsPage() {
         }),
       });
 
-      const j = await safeJson(r);
-
-      if (!r.ok) {
-        if ((j as any)?.error === "BOT_LIMIT_EXCEEDED") {
-          const used = Number((j as any)?.used ?? botLimitUsed);
-          const limit = (j as any)?.limit ?? botLimitMax ?? null;
-          setMsg(limit == null ? "Agency bot limit reached." : `Agency bot limit reached (${used} / ${limit}). Upgrade in Billing.`);
-          await loadMe();
-          await loadBots();
-          return;
-        }
-
-        if ((j as any)?.error === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || (j as any)?.error === "FORBIDDEN_NOT_OWNER") {
-          setMsg("Only owner/admin can create agency bots.");
-          return;
-        }
-
-        setMsg((j as any)?.error || "Create failed");
-        return;
-      }
-
       setMsg("Bot created.");
       setName("");
       setDescription("");
       await loadMe();
       await loadBots();
     } catch (e: any) {
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+
+        const body = String(e.info.bodyText || "").trim();
+
+        // Keep your old special cases (server may return plain codes or JSON).
+        if (body.includes("BOT_LIMIT_EXCEEDED")) {
+          const used = botLimitUsed;
+          const limit = botLimitMax ?? null;
+          setMsg(limit == null ? "Agency bot limit reached." : `Agency bot limit reached (${used} / ${limit}). Upgrade in Billing.`);
+          await loadMe();
+          await loadBots();
+          return;
+        }
+
+        if (body.includes("FORBIDDEN_NOT_ADMIN_OR_OWNER") || body.includes("FORBIDDEN_NOT_OWNER")) {
+          setMsg("Only owner/admin can create agency bots.");
+          return;
+        }
+
+        setMsg(body || `Create failed (${e.info.status})`);
+        return;
+      }
+
       setMsg(e?.message || "Create failed");
     } finally {
       setCreating(false);
@@ -283,23 +291,25 @@ export default function BotsPage() {
     setMsg("");
     setRepairingId(botId);
     try {
-      const r = await fetchJson("/api/admin/fix-vector-store", {
+      await fetchJson<any>("/api/admin/fix-vector-store", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ bot_id: botId }),
       });
 
-      const j: any = await safeJson(r);
-
-      if (!r.ok) {
-        setMsg(j?.error || j?.message || "Repair failed");
-        return;
-      }
-
       setMsg("Vector store attached.");
       await loadBots();
     } catch (e: any) {
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const body = String(e.info.bodyText || "").trim();
+        setMsg(body || `Repair failed (${e.info.status})`);
+        return;
+      }
       setMsg(e?.message || "Repair failed");
     } finally {
       setRepairingId(null);
@@ -314,31 +324,35 @@ export default function BotsPage() {
       return;
     }
 
-    const okConfirm = window.confirm(
-      `Delete "${bot.name}"?\n\nThis will remove the bot and related data. This cannot be undone.`
-    );
+    const okConfirm = window.confirm(`Delete "${bot.name}"?\n\nThis will remove the bot and related data. This cannot be undone.`);
     if (!okConfirm) return;
 
     setDeletingId(bot.id);
     try {
-      const r = await fetchJson(`/api/bots/${encodeURIComponent(bot.id)}`, {
+      await fetchJson<any>(`/api/bots/${encodeURIComponent(bot.id)}`, {
         method: "DELETE",
         credentials: "include",
       });
-
-      const j: any = await safeJson(r);
-      if (!r.ok) {
-        const e = String(j?.error ?? j?.message ?? "Delete failed");
-        if (e === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only delete your own private bots.");
-        else if (e === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || e === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
-        else setMsg(e);
-        return;
-      }
 
       setMsg("Bot deleted.");
       await loadMe();
       await loadBots();
     } catch (e: any) {
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+
+        const raw = String(e.info.bodyText || "").trim();
+
+        if (raw === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only delete your own private bots.");
+        else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
+        else setMsg(raw || `Delete failed (${e.info.status})`);
+
+        return;
+      }
+
       setMsg(e?.message || "Delete failed");
     } finally {
       setDeletingId(null);
@@ -406,11 +420,7 @@ export default function BotsPage() {
 
           <CardContent className="space-y-3">
             {msg ? (
-              <div
-                className={`rounded-2xl border p-3 text-sm ${
-                  isError ? "border-red-200 bg-red-50 text-red-700" : "bg-background/60"
-                }`}
-              >
+              <div className={`rounded-2xl border p-3 text-sm ${isError ? "border-red-200 bg-red-50 text-red-700" : "bg-background/60"}`}>
                 {msg}
               </div>
             ) : null}
@@ -450,21 +460,12 @@ export default function BotsPage() {
                           <td className="px-4 py-3">
                             {renamingId === b.id ? (
                               <div className="flex flex-col gap-2">
-                                <Input
-                                  value={renameValue}
-                                  onChange={(e) => setRenameValue(e.target.value)}
-                                  placeholder="Bot name"
-                                />
+                                <Input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} placeholder="Bot name" />
                                 <div className="flex items-center gap-2">
                                   <Button size="sm" className="h-7 rounded-full px-3" onClick={() => submitRename(b)}>
                                     Save
                                   </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 rounded-full px-3"
-                                    onClick={cancelRename}
-                                  >
+                                  <Button size="sm" variant="outline" className="h-7 rounded-full px-3" onClick={cancelRename}>
                                     Cancel
                                   </Button>
                                 </div>
@@ -485,10 +486,7 @@ export default function BotsPage() {
                           <td className="px-4 py-3">
                             {missing ? (
                               <div className="flex flex-wrap items-center gap-2">
-                                <Badge
-                                  variant="outline"
-                                  className="rounded-full border-amber-200 bg-amber-50 text-amber-800"
-                                >
+                                <Badge variant="outline" className="rounded-full border-amber-200 bg-amber-50 text-amber-800">
                                   Missing vector store
                                 </Badge>
                                 <Button
@@ -578,9 +576,7 @@ export default function BotsPage() {
 
             {scope === "agency" ? (
               <div className="rounded-2xl border bg-background/60 p-3 text-xs text-muted-foreground">
-                {botLimitMax == null
-                  ? `Agency bot limit: unlimited (used ${botLimitUsed}).`
-                  : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
+                {botLimitMax == null ? `Agency bot limit: unlimited (used ${botLimitUsed}).` : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
                 {agencyBotAtCap ? " Upgrade in Billing to add more." : ""}
               </div>
             ) : null}
