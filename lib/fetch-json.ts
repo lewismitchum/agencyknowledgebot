@@ -11,6 +11,12 @@
 // - Defaults to `credentials: "include"` so your cookie auth works.
 // - Does NOT force Content-Type (so it won't break FormData uploads).
 // - Throws a helpful Error on non-2xx responses (includes status + response body).
+//
+// IMPORTANT COMPAT:
+// Some client pages check `e.status` directly.
+// This class exposes BOTH:
+//   - e.status (number)  ✅
+//   - e.info.status (number) ✅
 
 export type FetchJsonErrorInfo = {
   status: number;
@@ -22,10 +28,20 @@ export type FetchJsonErrorInfo = {
 export class FetchJsonError extends Error {
   info: FetchJsonErrorInfo;
 
-  constructor(message: string, info: FetchJsonErrorInfo) {
+  // Convenience fields (for app code that expects them)
+  status: number;
+  code?: string;
+  body?: any;
+
+  constructor(message: string, info: FetchJsonErrorInfo, body?: any, code?: string) {
     super(message);
     this.name = "FetchJsonError";
     this.info = info;
+
+    // Back-compat: allow `e.status`
+    this.status = info.status;
+    this.body = body;
+    this.code = code;
   }
 }
 
@@ -38,10 +54,7 @@ function getUserTimezoneSafe(): string | null {
   }
 }
 
-function mergeHeaders(
-  a?: HeadersInit,
-  b?: HeadersInit
-): Headers {
+function mergeHeaders(a?: HeadersInit, b?: HeadersInit): Headers {
   const h = new Headers(a || undefined);
   if (b) {
     const hb = new Headers(b);
@@ -58,10 +71,17 @@ async function readBodyTextSafe(res: Response): Promise<string> {
   }
 }
 
-export async function fetchJson<T = any>(
-  input: RequestInfo | URL,
-  init: RequestInit = {}
-): Promise<T> {
+function tryParseJson(text: string): any | null {
+  const t = String(text || "").trim();
+  if (!t) return null;
+  try {
+    return JSON.parse(t);
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchJson<T = any>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
   const tz = getUserTimezoneSafe();
 
   const headers = mergeHeaders(init.headers, {
@@ -74,7 +94,7 @@ export async function fetchJson<T = any>(
   }
 
   // Important: don't set Content-Type here (would break FormData).
-  const res = await fetchJson(input, {
+  const res = await fetch(input, {
     ...init,
     headers,
     credentials: init.credentials ?? "include",
@@ -82,21 +102,42 @@ export async function fetchJson<T = any>(
 
   if (!res.ok) {
     const bodyText = await readBodyTextSafe(res);
+    const bodyJson = tryParseJson(bodyText);
+
     const url =
       typeof input === "string"
         ? input
         : input instanceof URL
-        ? input.toString()
+          ? input.toString()
+          : undefined;
+
+    const codeRaw =
+      bodyJson && typeof bodyJson === "object"
+        ? bodyJson.code || bodyJson.error_code || bodyJson.error
         : undefined;
 
+    const code = codeRaw == null ? undefined : String(codeRaw);
+
+    const msgRaw =
+      bodyJson && typeof bodyJson === "object"
+        ? bodyJson.message || bodyJson.error
+        : undefined;
+
+    const message =
+      msgRaw != null && String(msgRaw).trim().length
+        ? String(msgRaw)
+        : `Request failed (${res.status} ${res.statusText})`;
+
     throw new FetchJsonError(
-      `Request failed (${res.status} ${res.statusText})`,
+      message,
       {
         status: res.status,
         statusText: res.statusText,
         url,
         bodyText,
-      }
+      },
+      bodyJson ?? (bodyText || undefined),
+      code
     );
   }
 

@@ -1,3 +1,4 @@
+// app/(app)/app/extractions/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -18,6 +19,15 @@ function formatDate(iso: string | null) {
   return d.toLocaleString();
 }
 
+async function readJsonSafe(r: Response) {
+  const raw = await r.text().catch(() => "");
+  let j: any = null;
+  try {
+    j = raw ? JSON.parse(raw) : null;
+  } catch {}
+  return { raw, j };
+}
+
 export default function ExtractionsPage() {
   const [runs, setRuns] = useState<ExtractionRunRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,13 +39,16 @@ export default function ExtractionsPage() {
   async function load() {
     setLoading(true);
     setError("");
+
     try {
-      const r = await fetchJson("/api/extractions", { credentials: "include", cache: "no-store" });
-      const raw = await r.text();
-      let j: any = null;
-      try {
-        j = raw ? JSON.parse(raw) : null;
-      } catch {}
+      const r = await fetch("/api/extractions", { credentials: "include", cache: "no-store" });
+
+      if (r.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const { raw, j } = await readJsonSafe(r);
 
       if (!r.ok) {
         setError(j?.error || j?.message || raw || `Failed (${r.status})`);
@@ -70,23 +83,26 @@ export default function ExtractionsPage() {
     setDeletingId(id);
     setError("");
 
-    // optimistic
-    const prev = runs;
-    setRuns((cur) => cur.filter((x) => x.id !== id));
+    let prev: ExtractionRunRow[] = [];
+    setRuns((cur) => {
+      prev = cur;
+      return cur.filter((x) => x.id !== id);
+    });
 
     try {
-      const r = await fetchJson("/api/extractions", {
+      const r = await fetch("/api/extractions", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ id }),
       });
 
-      const raw = await r.text();
-      let j: any = null;
-      try {
-        j = raw ? JSON.parse(raw) : null;
-      } catch {}
+      if (r.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const { raw, j } = await readJsonSafe(r);
 
       if (!r.ok || !j?.ok) {
         setRuns(prev);
@@ -103,6 +119,7 @@ export default function ExtractionsPage() {
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -111,15 +128,13 @@ export default function ExtractionsPage() {
         <div>
           <h1 className="text-2xl font-semibold">Extractions</h1>
           <p className="text-sm text-muted-foreground">Extraction runs (history). Extracted items appear in Schedule.</p>
-          <div className="mt-2 text-sm text-muted-foreground">{loading ? "Loading…" : `${count} run${count === 1 ? "" : "s"}`}</div>
+          <div className="mt-2 text-sm text-muted-foreground">
+            {loading ? "Loading…" : `${count} run${count === 1 ? "" : "s"}`}
+          </div>
         </div>
 
         <div className="flex gap-2">
-          <button
-            onClick={load}
-            className="rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
-            disabled={loading}
-          >
+          <button onClick={load} className="rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50" disabled={loading}>
             Refresh
           </button>
           <Link href="/app/docs" className="rounded-md border px-3 py-2 text-sm hover:bg-muted">
