@@ -1,8 +1,24 @@
 // app/(app)/app/settings/timezone/page.tsx
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+
+type ApiResp =
+  | { ok: true; timezone: string; role?: string | null; status?: string | null }
+  | { ok?: false; error?: string; message?: string; timezone?: string };
+
+type MeResp =
+  | {
+      ok: true;
+      user: { id: string; role?: string | null; status?: string | null };
+      agency: { id: string; plan?: string | null };
+      plan?: string;
+    }
+  | { ok?: false; error?: string; message?: string };
 
 const COMMON_TZ = [
   "America/Chicago",
@@ -15,177 +31,214 @@ const COMMON_TZ = [
   "Europe/London",
   "Europe/Paris",
   "Europe/Berlin",
-  "Europe/Madrid",
-  "Europe/Rome",
-  "Europe/Amsterdam",
-  "Europe/Stockholm",
-  "Asia/Dubai",
-  "Asia/Kolkata",
-  "Asia/Singapore",
+  "Europe/Dublin",
+  "Europe/Warsaw",
   "Asia/Tokyo",
+  "Asia/Seoul",
+  "Asia/Singapore",
+  "Asia/Kolkata",
   "Australia/Sydney",
 ];
 
-type ApiResp =
-  | { ok: true; timezone: string }
-  | { ok?: false; error?: string; message?: string; timezone?: string };
-
-function isValidIanaTimezone(tz: string) {
-  const t = String(tz || "").trim();
-  if (!t) return false;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: t }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export default function TimezoneSettingsPage() {
   const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState("");
+
+  const [role, setRole] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const [timezone, setTimezone] = useState<string>("America/Chicago");
   const [saving, setSaving] = useState(false);
-  const [timezone, setTimezone] = useState("America/Chicago");
-  const [custom, setCustom] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
-  const options = useMemo(() => COMMON_TZ, []);
+  const isOwner = String(role || "").toLowerCase() === "owner";
+  const isActive = String(status || "").toLowerCase() === "active";
 
-  useEffect(() => {
-    let ok = true;
-    (async () => {
-      try {
-        const res = await fetchJson("/api/settings/timezone", { method: "GET" });
-        const json = (await res.json().catch(() => null)) as ApiResp | null;
-        if (!ok) return;
-
-        const tz = json && (json as any).timezone ? String((json as any).timezone) : "America/Chicago";
-        setTimezone(tz);
-        setCustom("");
-      } catch (e: any) {
-        if (!ok) return;
-        setMsg(String(e?.message ?? e));
-      } finally {
-        if (ok) setLoading(false);
-      }
-    })();
-    return () => {
-      ok = false;
-    };
-  }, []);
-
-  async function save(nextTz: string) {
-    setMsg(null);
-    const tz = String(nextTz || "").trim();
-
-    if (!isValidIanaTimezone(tz)) {
-      setMsg("Invalid timezone (must be a valid IANA timezone like America/Chicago).");
-      return;
-    }
-
-    setSaving(true);
+  const tzPreview = useMemo(() => {
     try {
-      const res = await fetchJson("/api/settings/timezone", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ timezone: tz }),
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date());
+    } catch {
+      return "Invalid timezone";
+    }
+  }, [timezone]);
+
+  async function load() {
+    setLoading(true);
+    setBootError("");
+    setError("");
+
+    try {
+      // load role/status (owner-only UI)
+      const meRes = await fetch("/api/me", {
+        credentials: "include",
+        cache: "no-store",
+        headers: { "cache-control": "no-cache" },
       });
 
-      const json = (await res.json().catch(() => null)) as ApiResp | null;
-      if (!res.ok || !json || (json as any).ok !== true) {
-        setMsg((json as any)?.error ? String((json as any).error) : "Failed to save.");
+      if (meRes.status === 401) {
+        window.location.href = "/login";
         return;
       }
 
-      setTimezone((json as any).timezone);
-      setCustom("");
-      setMsg("Saved.");
+      const meJson = (await meRes.json().catch(() => null)) as MeResp | null;
+      if (meRes.ok && (meJson as any)?.ok) {
+        setRole(String((meJson as any)?.user?.role ?? "") || null);
+        setStatus(String((meJson as any)?.user?.status ?? "") || null);
+      }
+
+      const r = await fetch("/api/settings/timezone", {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "cache-control": "no-cache" },
+      });
+
+      if (r.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const j = (await r.json().catch(() => null)) as ApiResp | null;
+
+      if (!r.ok || !j?.ok) {
+        const msg = String((j as any)?.error || (j as any)?.message || `Failed (${r.status})`);
+        setBootError(msg);
+        return;
+      }
+
+      if (j.timezone) setTimezone(String(j.timezone));
     } catch (e: any) {
-      setMsg(String(e?.message ?? e));
+      setBootError(e?.message || "Failed to load timezone");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function save() {
+    if (!isOwner || !isActive || saving) return;
+
+    setSaving(true);
+    setError("");
+
+    try {
+      const r = await fetch("/api/settings/timezone", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ timezone }),
+      });
+
+      if (r.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const j = (await r.json().catch(() => null)) as ApiResp | null;
+
+      if (!r.ok || !j?.ok) {
+        throw new Error(String((j as any)?.error || (j as any)?.message || `Failed (${r.status})`));
+      }
+
+      if (j.timezone) setTimezone(String(j.timezone));
+    } catch (e: any) {
+      setError(e?.message || "Failed to save timezone");
     } finally {
       setSaving(false);
     }
   }
 
+  const canEdit = isOwner && isActive;
+
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Timezone</h1>
-        <Link className="text-sm underline opacity-80 hover:opacity-100" href="/app/settings">
-          Back
-        </Link>
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Timezone</h1>
+          <p className="mt-2 text-muted-foreground">Workspace timezone used for schedule + daily limit day keys.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button asChild variant="outline" className="rounded-full">
+            <Link href="/app/settings">Back to settings</Link>
+          </Button>
+        </div>
       </div>
 
-      <div className="rounded-2xl border bg-card p-4">
-        {loading ? (
-          <div className="text-sm opacity-70">Loading…</div>
-        ) : (
-          <div className="space-y-4 text-sm">
-            <div>
-              <div className="font-medium">Agency timezone</div>
-              <div className="mt-1 opacity-70">
-                This controls your “daily” usage keys (chats/uploads) and schedule defaults.
-              </div>
-            </div>
-
-            <div className="grid gap-2">
-              <label className="text-xs opacity-70">Common timezones</label>
-              <select
-                className="w-full rounded-xl border bg-background px-3 py-2"
-                value={timezone}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setTimezone(next);
-                  setCustom("");
-                }}
-                disabled={saving}
-              >
-                {options.map((tz) => (
-                  <option key={tz} value={tz}>
-                    {tz}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                className="rounded-xl border px-3 py-2 hover:bg-accent disabled:opacity-50"
-                onClick={() => save(timezone)}
-                disabled={saving}
-              >
-                {saving ? "Saving…" : "Save selected"}
-              </button>
-            </div>
-
-            <div className="rounded-xl border p-3">
-              <div className="text-xs font-medium">Custom IANA timezone</div>
-              <div className="mt-1 flex flex-col gap-2 sm:flex-row">
-                <input
-                  className="flex-1 rounded-xl border bg-background px-3 py-2"
-                  placeholder="e.g. Europe/London"
-                  value={custom}
-                  onChange={(e) => setCustom(e.target.value)}
-                  disabled={saving}
-                />
-                <button
-                  type="button"
-                  className="rounded-xl border px-3 py-2 hover:bg-accent disabled:opacity-50"
-                  onClick={() => save(custom)}
-                  disabled={saving}
-                >
-                  {saving ? "Saving…" : "Save custom"}
-                </button>
-              </div>
-              <div className="mt-2 text-xs opacity-70">Must be an IANA timezone name.</div>
-            </div>
-
-            {msg ? <div className="text-xs opacity-80">{msg}</div> : null}
-
-            <div className="text-xs opacity-70">
-              Current: <span className="font-medium">{timezone}</span>
-            </div>
+      {bootError ? (
+        <div className="rounded-2xl border bg-muted p-4 text-sm">
+          <div className="font-medium">Error</div>
+          <div className="mt-1 text-muted-foreground">{bootError}</div>
+          <div className="mt-3 flex gap-2">
+            <Button className="rounded-full" onClick={load} disabled={loading}>
+              Retry
+            </Button>
           </div>
-        )}
-      </div>
+        </div>
+      ) : null}
+
+      <Card className="rounded-3xl">
+        <CardHeader>
+          <CardTitle className="text-xl tracking-tight">Workspace timezone</CardTitle>
+          <CardDescription>Preview: {tzPreview}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary" className="rounded-full">
+              Role: {role || "member"}
+            </Badge>
+            <Badge variant="secondary" className="rounded-full">
+              Status: {status || "—"}
+            </Badge>
+            <Badge variant="outline" className="rounded-full">
+              Current: {timezone}
+            </Badge>
+          </div>
+
+          <div className="flex flex-col gap-2 md:flex-row md:items-center">
+            <select
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-[340px]"
+              disabled={!canEdit || saving}
+            >
+              {COMMON_TZ.map((tz) => (
+                <option key={tz} value={tz}>
+                  {tz}
+                </option>
+              ))}
+            </select>
+
+            <input
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              placeholder="Or type IANA timezone (e.g. America/Chicago)"
+              className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              disabled={!canEdit || saving}
+            />
+
+            <Button className="rounded-full" onClick={save} disabled={!canEdit || saving}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
+
+          {!canEdit ? (
+            <div className="text-xs text-muted-foreground">Owner + Active only can change timezone.</div>
+          ) : null}
+
+          {error ? <div className="text-sm text-red-600">{error}</div> : null}
+        </CardContent>
+      </Card>
     </div>
   );
 }
