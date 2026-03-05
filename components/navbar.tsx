@@ -21,6 +21,7 @@ import {
   Mail,
   Sheet as SheetIcon,
 } from "lucide-react";
+import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type MeResponse =
   | { user: null }
@@ -381,9 +382,7 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                       </button>
                     </div>
 
-                    <div className="mt-3 text-xs text-muted-foreground">
-                      Swipe the bottom tabs left/right to see everything.
-                    </div>
+                    <div className="mt-3 text-xs text-muted-foreground">Swipe the bottom tabs left/right to see everything.</div>
                   </div>
                 </SheetContent>
               </Sheet>
@@ -447,17 +446,17 @@ export default function Navbar() {
     setDocsOpen(false);
   }, [pathname]);
 
+  // Session
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetchJson("/api/me", { credentials: "include" });
-        if (!r.ok) {
+        const j = (await fetchJson("/api/me")) as MeResponse;
+        setMe(j);
+      } catch (e: any) {
+        if (e instanceof FetchJsonError && (e.info.status === 401 || e.info.status === 403)) {
           setMe({ user: null });
           return;
         }
-        const j = (await r.json().catch(() => ({ user: null }))) as MeResponse;
-        setMe(j);
-      } catch {
         setMe({ user: null });
       }
     })();
@@ -474,11 +473,7 @@ export default function Navbar() {
         setLoadingBots(true);
         setBotsError(null);
 
-        const r = await fetchJson("/api/bots", { credentials: "include", cache: "no-store" });
-        const j = await r.json().catch(() => ({}));
-
-        if (!r.ok) throw new Error(String(j?.error || "Failed to load bots"));
-
+        const j: any = await fetchJson("/api/bots", { cache: "no-store" });
         const list = Array.isArray(j?.bots) ? (j.bots as BotRow[]) : [];
         if (cancelled) return;
 
@@ -492,7 +487,13 @@ export default function Navbar() {
         }
       } catch (e: any) {
         if (cancelled) return;
-        setBotsError(String(e?.message ?? e));
+
+        if (e instanceof FetchJsonError) {
+          const body = String(e.info.bodyText || "").trim();
+          setBotsError(body || `Failed to load bots (${e.info.status})`);
+        } else {
+          setBotsError(String(e?.message ?? e));
+        }
       } finally {
         if (!cancelled) setLoadingBots(false);
       }
@@ -519,21 +520,19 @@ export default function Navbar() {
         setLoadingDocs(true);
         setDocsError(null);
 
-        const r = await fetchJson(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, {
-          credentials: "include",
-          cache: "no-store",
-        });
-        const j = await r.json().catch(() => ({}));
-
-        if (!r.ok) throw new Error(String(j?.error || "Failed to load docs"));
-
+        const j: any = await fetchJson(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, { cache: "no-store" });
         const list = Array.isArray(j?.documents) ? (j.documents as DocRow[]) : [];
         if (cancelled) return;
 
         setDocs(list);
       } catch (e: any) {
         if (cancelled) return;
-        setDocsError(String(e?.message ?? e));
+        if (e instanceof FetchJsonError) {
+          const body = String(e.info.bodyText || "").trim();
+          setDocsError(body || `Failed to load docs (${e.info.status})`);
+        } else {
+          setDocsError(String(e?.message ?? e));
+        }
         setDocs([]);
       } finally {
         if (!cancelled) setLoadingDocs(false);
@@ -556,9 +555,7 @@ export default function Navbar() {
 
     async function loadUnread() {
       try {
-        const r = await fetchJson("/api/notifications/list?limit=50", { credentials: "include", cache: "no-store" });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) return;
+        const j: any = await fetchJson("/api/notifications/list?limit=50", { cache: "no-store" });
 
         // if upsell, treat as 0
         if (j?.upsell?.code) {
@@ -570,8 +567,8 @@ export default function Navbar() {
         const unread = list.filter((n: any) => !n?.read_at).length;
 
         if (!cancelled) setNotifUnread(Number(unread) || 0);
-      } catch {
-        // silent
+      } catch (e: any) {
+        // silent (don't flicker)
       }
     }
 
@@ -585,7 +582,7 @@ export default function Navbar() {
   }, [isAuthed]);
 
   async function logout() {
-    await fetchJson("/api/auth/logout", { method: "POST", credentials: "include" });
+    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login";
   }
 
@@ -680,9 +677,7 @@ export default function Navbar() {
                         {docs.map((d) => (
                           <Link
                             key={d.id}
-                            href={`/app/docs?bot_id=${encodeURIComponent(activeBotId)}&doc_id=${encodeURIComponent(
-                              d.id
-                            )}`}
+                            href={`/app/docs?bot_id=${encodeURIComponent(activeBotId)}&doc_id=${encodeURIComponent(d.id)}`}
                             className="px-3 py-2 text-sm hover:bg-muted"
                             title={d.filename}
                             onClick={() => setDocsOpen(false)}
