@@ -14,12 +14,19 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function isMissingUserIdColumnError(err: any) {
+  const msg = String(err?.message ?? err);
+  return msg.includes("no such column: user_id");
+}
+
 /**
  * Drift-safe schema for usage_daily.
- * Fixes production drift where the table existed without user_id but code created an index using it.
+ * Self-heals production drift where:
+ * - usage_daily exists without user_id
+ * - code attempts to create index on (agency_id, user_id, date)
  */
 export async function ensureUsageDailySchema(db: Db) {
-  // Create table if missing (includes user_id)
+  // 1) Create table if missing (new installs)
   await db
     .run(
       `
@@ -35,13 +42,13 @@ export async function ensureUsageDailySchema(db: Db) {
     )
     .catch(() => {});
 
-  // Drift-safe columns
+  // 2) Drift-safe columns (older installs)
   await db.run(`ALTER TABLE usage_daily ADD COLUMN user_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER NOT NULL DEFAULT 0`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN uploads_count INTEGER NOT NULL DEFAULT 0`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN updated_at TEXT`).catch(() => {});
 
-  // Backfill user_id for legacy rows (agency-only)
+  // 3) Backfill user_id for legacy rows
   await db
     .run(
       `
@@ -52,10 +59,34 @@ export async function ensureUsageDailySchema(db: Db) {
     )
     .catch(() => {});
 
-  // Indexes
-  await db
-    .run(`CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date)`)
-    .catch(() => {});
+  // 4) Indexes (self-healing)
+  try {
+    await db.run(
+      `CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date)`
+    );
+  } catch (err: any) {
+    if (isMissingUserIdColumnError(err)) {
+      // Self-heal: add column, backfill, retry index
+      await db.run(`ALTER TABLE usage_daily ADD COLUMN user_id TEXT`).catch(() => {});
+      await db
+        .run(
+          `
+          UPDATE usage_daily
+          SET user_id = '__agency__'
+          WHERE user_id IS NULL OR user_id = '';
+        `
+        )
+        .catch(() => {});
+      await db
+        .run(
+          `CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date)`
+        )
+        .catch(() => {});
+    } else {
+      throw err;
+    }
+  }
+
   await db.run(`CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_date ON usage_daily(agency_id, date)`).catch(() => {});
 }
 
@@ -148,12 +179,6 @@ export async function incrementUploads(db: Db, agencyId: string, dateKey: string
 
 /**
  * ✅ Back-compat export: older routes import incrementUsage().
- * We keep the signature flexible and route to the correct counter.
- *
- * Supported call styles:
- * - incrementUsage(db, agencyId, dateKey, "messages", 1)
- * - incrementUsage(db, agencyId, dateKey, "uploads", 1)
- * - incrementUsage(db, agencyId, dateKey, 1)  // defaults to messages
  */
 export async function incrementUsage(
   db: Db,
