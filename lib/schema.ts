@@ -79,8 +79,8 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
   const upExpr = legacyUploadsCol ? qIdent(legacyUploadsCol) : "0";
 
   // If legacy had no user_id, we can't perfectly recover per-user usage.
-  // We'll preserve legacy totals under user_id = '' (empty string).
-  const userExpr = legacyUserCol ? qIdent(legacyUserCol) : "''";
+  // Preserve legacy totals under user_id='__agency__'.
+  const userExpr = legacyUserCol ? qIdent(legacyUserCol) : "'__agency__'";
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS usage_daily_new (
@@ -97,12 +97,12 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
     INSERT INTO usage_daily_new (agency_id, user_id, date, messages_count, uploads_count)
     SELECT
       ${qIdent(legacyAgencyCol)} AS agency_id,
-      COALESCE(${userExpr}, '') AS user_id,
+      COALESCE(${userExpr}, '__agency__') AS user_id,
       COALESCE(${dateExpr}, '') AS date,
       COALESCE(MAX(CAST(${msgExpr} AS INTEGER)), 0) AS messages_count,
       COALESCE(MAX(CAST(${upExpr} AS INTEGER)), 0) AS uploads_count
     FROM usage_daily
-    GROUP BY ${qIdent(legacyAgencyCol)}, COALESCE(${userExpr}, ''), COALESCE(${dateExpr}, '');
+    GROUP BY ${qIdent(legacyAgencyCol)}, COALESCE(${userExpr}, '__agency__'), COALESCE(${dateExpr}, '');
   `);
 
   await db.exec(`
@@ -510,7 +510,9 @@ async function ensureCoreTables(db: Db) {
     CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
     CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
 
-    CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date);
+    -- ⚠️ IMPORTANT: do NOT create idx_usage_daily_agency_user_date here.
+    -- It can fail on legacy DBs where usage_daily exists without user_id.
+    -- We create it AFTER ensureUsageDaily() repairs the table.
 
     CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
     CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
@@ -531,8 +533,7 @@ async function ensureCoreTables(db: Db) {
   // Agency timezone
   await addColumnIfMissing(db, "agencies", "timezone", "TEXT");
 
-  // ✅ User timezone (IANA)
-  // Canonical column name: time_zone
+  // ✅ User timezone (IANA) — canonical column name: time_zone
   await addColumnIfMissing(db, "users", "time_zone", "TEXT");
 
   // Users onboarding drift
@@ -614,7 +615,18 @@ export async function ensureSchema(dbArg?: Db) {
   const db: Db = dbArg ?? ((await getDb()) as unknown as Db);
 
   await ensureCoreTables(db);
+
+  // ✅ Repair usage_daily drift BEFORE creating index that depends on user_id
   await ensureUsageDaily(db);
+
+  // ✅ Now it is safe to create the usage index
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date
+      ON usage_daily(agency_id, user_id, date);
+    CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_date
+      ON usage_daily(agency_id, date);
+  `);
+
   await ensureSchedulePrefs(db);
 
   _schemaEnsured = true;
