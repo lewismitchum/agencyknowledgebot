@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type PlanKey = "free" | "starter" | "pro" | "enterprise";
 
@@ -60,6 +61,11 @@ function normalizePlan(plan: any): PlanKey {
   return "free";
 }
 
+type MePayload = {
+  plan?: string;
+  user?: { role?: string } | null;
+};
+
 export default function BillingClient({
   initialSuccess,
   initialCanceled,
@@ -90,17 +96,17 @@ export default function BillingClient({
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetchJson("/api/me", { credentials: "include" });
-        if (r.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        if (!r.ok) return;
-
-        const j = await r.json().catch(() => null);
+        const j = (await fetchJson("/api/me", { credentials: "include" })) as MePayload;
         setPlan(normalizePlan(j?.plan));
         setRole(String(j?.user?.role ?? "member"));
-      } catch {
+      } catch (e: any) {
+        if (e instanceof FetchJsonError) {
+          if (e.info.status === 401) {
+            window.location.href = "/login";
+            return;
+          }
+          // ignore other errors; UI can still render
+        }
       } finally {
         setLoading(false);
       }
@@ -121,24 +127,12 @@ export default function BillingClient({
 
     setBusyPlan(target);
     try {
-      const r = await fetchJson("/api/billing/checkout", {
+      const j = (await fetchJson("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ plan: target }),
-      });
-
-      if (r.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-
-      const j = await r.json().catch(() => null);
-      if (!r.ok) {
-        setToast(j?.error || `Checkout failed (${r.status})`);
-        setTimeout(() => setToast(""), 4500);
-        return;
-      }
+      })) as any;
 
       const url = String(j?.url || "");
       if (!url) {
@@ -149,6 +143,16 @@ export default function BillingClient({
 
       window.location.href = url;
     } catch (e: any) {
+      if (e instanceof FetchJsonError) {
+        if (e.info.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        setToast(e.info.bodyText || `Checkout failed (${e.info.status})`);
+        setTimeout(() => setToast(""), 4500);
+        return;
+      }
+
       setToast(e?.message || "Checkout failed.");
       setTimeout(() => setToast(""), 4500);
     } finally {
