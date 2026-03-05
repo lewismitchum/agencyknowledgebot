@@ -38,6 +38,118 @@ async function getAgencyTimezone(db: Db, agencyId: string) {
   return tz || "America/Chicago";
 }
 
+function isValidIanaTimeZone(tz: string) {
+  const t = String(tz || "").trim();
+  if (!t) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: t }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getHeaderTz(req: NextRequest) {
+  const tz = String(req.headers.get("x-user-timezone") || "").trim();
+  return isValidIanaTimeZone(tz) ? tz : "";
+}
+
+// Get offset minutes for an instant in a tz (UTC - local)
+function tzOffsetMinutesAtInstant(date: Date, tz: string) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+  const parts = dtf.formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || "00";
+
+  const y = Number(get("year"));
+  const mo = Number(get("month"));
+  const da = Number(get("day"));
+  const hh = Number(get("hour"));
+  const mm = Number(get("minute"));
+  const ss = Number(get("second"));
+
+  const asIfUtc = Date.UTC(y, mo - 1, da, hh, mm, ss);
+  const actualUtc = date.getTime();
+  return Math.round((asIfUtc - actualUtc) / 60000);
+}
+
+// Convert a wall-clock local datetime in tz -> UTC ISO (2-pass for DST)
+function zonedLocalToUtcIso(args: { y: number; mo: number; da: number; hh: number; mm: number; tz: string }) {
+  const guessUtc = Date.UTC(args.y, args.mo - 1, args.da, args.hh, args.mm, 0, 0);
+
+  let d = new Date(guessUtc);
+  let off1 = tzOffsetMinutesAtInstant(d, args.tz);
+  let utc1 = guessUtc - off1 * 60000;
+
+  d = new Date(utc1);
+  let off2 = tzOffsetMinutesAtInstant(d, args.tz);
+  let utc2 = guessUtc - off2 * 60000;
+
+  return new Date(utc2).toISOString();
+}
+
+function parseLocalDateTime(input: string) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+
+  // YYYY-MM-DD HH:mm
+  let m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$/.exec(raw);
+  if (m) {
+    return { y: Number(m[1]), mo: Number(m[2]), da: Number(m[3]), hh: Number(m[4]), mm: Number(m[5]) };
+  }
+
+  // YYYY-MM-DD h:mm(am|pm)
+  m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})\s*(am|pm)$/i.exec(raw);
+  if (m) {
+    let hh = Number(m[4]);
+    const ap = String(m[6]).toLowerCase();
+    if (ap === "pm" && hh < 12) hh += 12;
+    if (ap === "am" && hh === 12) hh = 0;
+    return { y: Number(m[1]), mo: Number(m[2]), da: Number(m[3]), hh, mm: Number(m[5]) };
+  }
+
+  return null;
+}
+
+function looksIsoOrOffset(s: string) {
+  const x = String(s || "").trim();
+  if (!x) return false;
+  if (x.includes("T") && (x.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(x))) return true;
+  return false;
+}
+
+function normalizeToUtcIso(input: string, tz: string) {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  // ISO with TZ/offset -> Date handles it
+  if (looksIsoOrOffset(raw) || raw.includes("T")) {
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+    return raw;
+  }
+
+  // Local wall time -> use tz conversion
+  const p = parseLocalDateTime(raw);
+  if (p && isValidIanaTimeZone(tz)) {
+    return zonedLocalToUtcIso({ ...p, tz });
+  }
+
+  // Last attempt
+  const d = new Date(raw);
+  if (!Number.isNaN(d.getTime())) return d.toISOString();
+  return raw;
+}
+
 async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
   const agencyBot = (await db.get(
     `SELECT id
@@ -87,7 +199,7 @@ export async function GET(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan);
     const gated = requireScheduleOr403(plan);
     if (gated) return gated;
 
@@ -133,14 +245,14 @@ export async function POST(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan);
     const gated = requireScheduleOr403(plan);
     if (gated) return gated;
 
     const body = (await req.json().catch(() => null)) as any;
     const title = String(body?.title ?? "").trim();
     let bot_id = String(body?.bot_id ?? "").trim();
-    const due_at = body?.due_at ?? null;
+    const due_at_raw = body?.due_at ?? null;
     const notes = body?.notes ?? null;
 
     if (!title) return Response.json({ ok: false, error: "TITLE_REQUIRED" }, { status: 400 });
@@ -152,6 +264,19 @@ export async function POST(req: NextRequest) {
     }
 
     await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
+
+    let due_at: string | null = null;
+
+    if (due_at_raw != null && String(due_at_raw).trim()) {
+      const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+      const userTz = getHeaderTz(req) || agencyTz;
+
+      const iso = normalizeToUtcIso(String(due_at_raw).trim(), userTz);
+      if (!iso || Number.isNaN(new Date(iso).getTime())) {
+        return Response.json({ ok: false, error: "BAD_DUE_AT" }, { status: 400 });
+      }
+      due_at = iso;
+    }
 
     await db.run(
       `INSERT INTO schedule_tasks (id, agency_id, bot_id, title, due_at, status, notes, created_at)
@@ -181,7 +306,7 @@ export async function PATCH(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan);
     const gated = requireScheduleOr403(plan);
     if (gated) return gated;
 
@@ -233,7 +358,7 @@ export async function DELETE(req: NextRequest) {
     const db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
+    const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan);
     const gated = requireScheduleOr403(plan);
     if (gated) return gated;
 

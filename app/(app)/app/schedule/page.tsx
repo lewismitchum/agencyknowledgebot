@@ -51,6 +51,19 @@ function safeTz(prefTz: string | null, agencyTz: string | null) {
   return tz || "America/Chicago";
 }
 
+function browserTz() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return String(tz || "").trim() || "America/Chicago";
+  } catch {
+    return "America/Chicago";
+  }
+}
+
+function tzHeaders() {
+  return { "x-user-timezone": browserTz() };
+}
+
 function dayKeyInTz(d: Date, tz: string) {
   // en-CA -> YYYY-MM-DD
   try {
@@ -180,6 +193,56 @@ function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
 }
 
+// Accepts:
+// - ISO strings like 2026-03-05T14:00:00Z or 2026-03-05T14:00:00-05:00
+// - Local strings like 2026-03-05 14:00 or 2026-03-05 2:00pm
+// Returns UTC ISO for storage.
+function localInputToUtcIso(input: string) {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  // ISO-ish: let Date parse it
+  if (raw.includes("T")) {
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+    return raw;
+  }
+
+  // YYYY-MM-DD HH:mm
+  let m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$/.exec(raw);
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const da = Number(m[3]);
+    const hh = Number(m[4]);
+    const mm = Number(m[5]);
+    const d = new Date(y, mo - 1, da, hh, mm, 0, 0); // local browser tz
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+    return raw;
+  }
+
+  // YYYY-MM-DD h:mm(am|pm)
+  m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})\s*(am|pm)$/i.exec(raw);
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const da = Number(m[3]);
+    let hh = Number(m[4]);
+    const mm = Number(m[5]);
+    const ap = String(m[6]).toLowerCase();
+    if (ap === "pm" && hh < 12) hh += 12;
+    if (ap === "am" && hh === 12) hh = 0;
+    const d = new Date(y, mo - 1, da, hh, mm, 0, 0); // local browser tz
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+    return raw;
+  }
+
+  // last attempt: Date parse (local)
+  const d = new Date(raw);
+  if (!Number.isNaN(d.getTime())) return d.toISOString();
+  return raw;
+}
+
 export default function SchedulePage() {
   const [bots, setBots] = useState<BotLite[]>([]);
   const [botId, setBotId] = useState<string>("");
@@ -226,6 +289,7 @@ export default function SchedulePage() {
       const j = await fetchJson<{ bots?: any[] }>("/api/bots", {
         cache: "no-store",
         credentials: "include",
+        headers: tzHeaders(),
       });
       const list = Array.isArray(j?.bots) ? j.bots : [];
       const lite = list.map((b: any) => ({ id: String(b.id), name: String(b.name || "Bot") }));
@@ -242,6 +306,7 @@ export default function SchedulePage() {
       const j = await fetchJson<{ ok?: boolean; timezone?: string; today?: string }>("/api/schedule/timezone", {
         cache: "no-store",
         credentials: "include",
+        headers: tzHeaders(),
       });
 
       if (j?.ok) {
@@ -261,6 +326,7 @@ export default function SchedulePage() {
       const j = await fetchJson<{ ok?: boolean; prefs?: Partial<Prefs> }>("/api/schedule/prefs", {
         cache: "no-store",
         credentials: "include",
+        headers: tzHeaders(),
       });
 
       if (j?.ok) {
@@ -279,7 +345,7 @@ export default function SchedulePage() {
     try {
       await fetchJson<{ ok?: boolean }>("/api/schedule/prefs", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...tzHeaders() },
         body: JSON.stringify(next),
         credentials: "include",
       });
@@ -294,10 +360,12 @@ export default function SchedulePage() {
       fetchJson<{ events?: any[] }>(`/api/schedule/events?bot_id=${encodeURIComponent(activeBotId)}`, {
         cache: "no-store",
         credentials: "include",
+        headers: tzHeaders(),
       }),
       fetchJson<{ tasks?: any[] }>(`/api/schedule/tasks?bot_id=${encodeURIComponent(activeBotId)}`, {
         cache: "no-store",
         credentials: "include",
+        headers: tzHeaders(),
       }),
     ]);
 
@@ -461,7 +529,7 @@ export default function SchedulePage() {
     try {
       await fetchJson<{ ok?: boolean }>("/api/schedule/tasks", {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...tzHeaders() },
         body: JSON.stringify({ id, status: nextStatus }),
         credentials: "include",
       });
@@ -486,7 +554,7 @@ export default function SchedulePage() {
     try {
       await fetchJson<{ ok?: boolean }>("/api/schedule/tasks", {
         method: "DELETE",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...tzHeaders() },
         body: JSON.stringify({ id }),
         credentials: "include",
       });
@@ -511,7 +579,7 @@ export default function SchedulePage() {
     try {
       await fetchJson<{ ok?: boolean }>("/api/schedule/events", {
         method: "DELETE",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...tzHeaders() },
         body: JSON.stringify({ id }),
         credentials: "include",
       });
@@ -1221,22 +1289,24 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
   async function submit() {
     if (!botId || botId === ALL_BOTS_ID) return;
     if (!title.trim()) return;
-    if (mode === "event" && !when.trim()) return;
+
+    const iso = when.trim() ? localInputToUtcIso(when.trim()) : "";
+    if (mode === "event" && !iso) return;
 
     setLoading(true);
     try {
       if (mode === "event") {
         await fetchJson("/api/schedule/events", {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ bot_id: botId, title: title.trim(), start_at: when.trim() }),
+          headers: { "content-type": "application/json", ...tzHeaders() },
+          body: JSON.stringify({ bot_id: botId, title: title.trim(), start_at: iso }),
           credentials: "include",
         });
       } else {
         await fetchJson("/api/schedule/tasks", {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ bot_id: botId, title: title.trim(), due_at: when.trim() ? when.trim() : null }),
+          headers: { "content-type": "application/json", ...tzHeaders() },
+          body: JSON.stringify({ bot_id: botId, title: title.trim(), due_at: iso ? iso : null }),
           credentials: "include",
         });
       }
@@ -1289,7 +1359,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
       <input
         value={when}
         onChange={(e) => setWhen(e.target.value)}
-        placeholder={mode === "event" ? "Start at (ISO string)" : "Due at (ISO or blank)"}
+        placeholder={mode === "event" ? "Start (local) e.g. 2026-03-05 14:00" : "Due (local) e.g. 2026-03-05 17:00 (or blank)"}
         className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
         disabled={loading}
       />
@@ -1303,8 +1373,13 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
         {botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}
       </button>
 
-      <div className="rounded-2xl border bg-muted p-3 text-xs text-muted-foreground">
-        Tip: use ISO like <span className="font-mono">2026-02-10T14:00:00Z</span>
+      <div className="rounded-2xl border bg-muted p-3 text-xs text-muted-foreground space-y-1">
+        <div>
+          Type local: <span className="font-mono">2026-03-05 14:00</span> (or <span className="font-mono">2:00pm</span>)
+        </div>
+        <div>
+          Stored as UTC ISO: <span className="font-mono">2026-03-05T20:00:00.000Z</span>
+        </div>
       </div>
     </div>
   );
