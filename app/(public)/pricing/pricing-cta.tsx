@@ -1,39 +1,73 @@
+// app/(public)/pricing/pricing-cta.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-export default function PricingCTA() {
-  const [authed, setAuthed] = useState<boolean | null>(null);
+export default function PricingCta() {
+  const [authed, setAuthed] = useState(false);
+  const [checked, setChecked] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
       try {
-        const r = await fetchJson("/api/me", { credentials: "include" });
+        const r = await fetch("/api/me", {
+          credentials: "include",
+          cache: "no-store",
+          headers: { "cache-control": "no-cache" },
+        });
+
+        if (cancelled) return;
+
+        // /api/me returns 401 when not logged in; treat any non-401 as "authed enough"
         setAuthed(r.ok);
       } catch {
-        setAuthed(false);
+        if (!cancelled) setAuthed(false);
+      } finally {
+        if (!cancelled) setChecked(true);
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const primaryHref = authed ? "/app" : "/signup";
-  const primaryLabel = authed ? "Open app" : "Start free";
+  // Avoid button flash while checking session
+  if (!checked) {
+    return (
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="h-10 w-40 rounded-xl border bg-muted/40" />
+        <div className="h-10 w-40 rounded-xl border bg-muted/30" />
+      </div>
+    );
+  }
 
   return (
-    <div className="mt-6 flex flex-wrap gap-3">
-      <Link
-        href={primaryHref}
-        className="rounded-xl bg-primary px-5 py-3 text-sm font-medium text-primary-foreground hover:opacity-90"
-      >
-        {authed === null ? "Loading…" : primaryLabel}
-      </Link>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      {authed ? (
+        <Link
+          href="/app/billing"
+          className="inline-flex items-center justify-center rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Upgrade
+        </Link>
+      ) : (
+        <Link
+          href="/signup"
+          className="inline-flex items-center justify-center rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Create account
+        </Link>
+      )}
 
       <Link
-        href="/"
-        className="rounded-xl border px-5 py-3 text-sm hover:bg-accent"
+        href={authed ? "/app" : "/login"}
+        className="inline-flex items-center justify-center rounded-xl border px-4 py-2.5 text-sm hover:bg-accent"
       >
-        Back to home
+        {authed ? "Go to app" : "Log in"}
       </Link>
     </div>
   );
