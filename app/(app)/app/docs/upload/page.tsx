@@ -46,7 +46,7 @@ export default function DocsUploadPage() {
   }, []);
 
   async function refreshMe() {
-    const r = await fetchJson("/api/me", { credentials: "include" });
+    const r = await fetch("/api/me", { credentials: "include", cache: "no-store" });
 
     if (r.status === 401) {
       window.location.href = "/login";
@@ -84,8 +84,13 @@ export default function DocsUploadPage() {
     (async () => {
       setBotsLoading(true);
       try {
-        const r = await fetchJson("/api/bots", { credentials: "include" });
+        const r = await fetch("/api/bots", { credentials: "include", cache: "no-store" });
         const j = await r.json().catch(() => null);
+
+        if (r.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
 
         if (!r.ok) {
           setMsg(j?.error || `Failed to load bots (${r.status})`);
@@ -141,7 +146,7 @@ export default function DocsUploadPage() {
         form.append("bot_id", selectedBotId);
         form.append("file", f);
 
-        const r = await fetchJson("/api/documents", {
+        const r = await fetch("/api/documents", {
           method: "POST",
           body: form,
           credentials: "include",
@@ -172,6 +177,11 @@ export default function DocsUploadPage() {
             throw new Error("OpenAI quota/billing issue. Uploads are temporarily unavailable.");
           }
 
+          if (r.status === 401) {
+            window.location.href = "/login";
+            return;
+          }
+
           throw new Error(j?.error || j?.message || raw || `Error (${r.status})`);
         }
 
@@ -197,7 +207,10 @@ export default function DocsUploadPage() {
     }
   }
 
-  const isError = msg.toLowerCase().includes("error") || msg.toLowerCase().includes("failed") || msg.toLowerCase().includes("limit");
+  const isError =
+    msg.toLowerCase().includes("error") ||
+    msg.toLowerCase().includes("failed") ||
+    msg.toLowerCase().includes("limit");
 
   const uploadsLabel =
     uploadsLimit == null
@@ -325,9 +338,7 @@ export default function DocsUploadPage() {
                     <p className="text-sm text-muted-foreground">
                       Selected:{" "}
                       <span className="font-medium text-foreground">{files.length}</span>{" "}
-                      {files.length ? (
-                        <span className="text-muted-foreground">({totalSizeMB} MB)</span>
-                      ) : null}
+                      {files.length ? <span className="text-muted-foreground">({totalSizeMB} MB)</span> : null}
                     </p>
                   </div>
 
@@ -357,9 +368,7 @@ export default function DocsUploadPage() {
                         ) : null}
                       </p>
                     ) : (
-                      <p className="text-sm text-muted-foreground">
-                        Tip: Upload PDFs, DOCX, TXT.
-                      </p>
+                      <p className="text-sm text-muted-foreground">Tip: Upload PDFs, DOCX, TXT.</p>
                     )}
                   </div>
                 </div>
