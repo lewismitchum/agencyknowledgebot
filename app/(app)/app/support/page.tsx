@@ -5,113 +5,134 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 
-async function safeJson(r: Response) {
-  return await r.json().catch(async () => {
-    const t = await r.text().catch(() => "");
-    return { _raw: t };
-  });
-}
+type SupportResp =
+  | { ok: true; ticket_id?: string; id?: string }
+  | { ok?: false; error?: string; message?: string };
 
 export default function SupportPage() {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState<string>("");
+  const [error, setError] = useState<string>("");
 
-  const [ok, setOk] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const canSubmit = useMemo(() => {
+    return subject.trim().length >= 3 && message.trim().length >= 10 && !busy;
+  }, [subject, message, busy]);
 
-  const canSend = useMemo(() => message.trim().length > 0 && !loading, [message, loading]);
+  function showToast(s: string) {
+    setToast(s);
+    window.setTimeout(() => setToast(""), 3500);
+  }
 
   async function submit() {
-    if (!canSend) return;
-    setLoading(true);
-    setOk(null);
-    setErr(null);
+    if (!canSubmit) return;
+
+    setBusy(true);
+    setError("");
 
     try {
-      const r = await fetchJson("/api/support", {
+      const r = await fetch("/api/support", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "content-type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          name: name.trim(),
-          email: email.trim(),
+          subject: subject.trim(),
           message: message.trim(),
-          pageUrl: typeof window !== "undefined" ? window.location.href : "",
+          // optional: add some lightweight client context
+          page: typeof window !== "undefined" ? window.location.pathname : "",
+          user_agent: typeof navigator !== "undefined" ? navigator.userAgent : "",
         }),
       });
 
-      const j: any = await safeJson(r);
-
-      if (!r.ok || j?.ok === false) {
-        setErr(String(j?.error ?? j?.message ?? `Failed (${r.status})`));
+      if (r.status === 401) {
+        window.location.href = "/login";
         return;
       }
 
-      const sent = Boolean(j?.email_sent);
-      setOk(sent ? "Support request sent." : "Support request received (email delivery unavailable).");
+      const j = (await r.json().catch(() => null)) as SupportResp | null;
+
+      if (!r.ok || !j?.ok) {
+        throw new Error(String((j as any)?.error || (j as any)?.message || `Failed (${r.status})`));
+      }
+
+      setSubject("");
       setMessage("");
+      showToast("Support ticket sent.");
     } catch (e: any) {
-      setErr(String(e?.message ?? e ?? "Network error"));
+      setError(e?.message || "Failed to send support ticket");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4">
+    <div className="mx-auto max-w-3xl space-y-6">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Support</h1>
+          <p className="mt-2 text-muted-foreground">
+            Send a message to the Louis.Ai team. We’ll reply by email.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button asChild variant="outline" className="rounded-full">
+            <Link href="/app">Back to dashboard</Link>
+          </Button>
+        </div>
+      </div>
+
+      {toast ? (
+        <div className="rounded-2xl border bg-muted p-4 text-sm">
+          <div className="font-medium">Sent</div>
+          <div className="mt-1 text-muted-foreground">{toast}</div>
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
+      ) : null}
+
       <Card className="rounded-3xl">
         <CardHeader>
-          <CardTitle className="text-xl">Support</CardTitle>
-          <CardDescription>Send a message to the Louis.Ai team.</CardDescription>
+          <CardTitle className="text-xl tracking-tight">Create a ticket</CardTitle>
+          <CardDescription>Include steps to reproduce if something is broken.</CardDescription>
         </CardHeader>
-
-        <CardContent className="space-y-3">
-          {ok ? <div className="text-sm text-emerald-600">{ok}</div> : null}
-          {err ? <div className="text-sm text-destructive">{err}</div> : null}
-
-          <div className="grid gap-2">
-            <label className="text-sm text-muted-foreground">Name (optional)</label>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Subject</div>
             <input
-              className="h-10 rounded-md border bg-background px-3 text-sm"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Your name"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="e.g. Upload failed, billing question, bug report…"
+              className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              disabled={busy}
             />
           </div>
 
-          <div className="grid gap-2">
-            <label className="text-sm text-muted-foreground">Email (optional)</label>
-            <input
-              className="h-10 rounded-md border bg-background px-3 text-sm"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.com"
-            />
-          </div>
-
-          <div className="grid gap-2">
-            <label className="text-sm text-muted-foreground">Message</label>
-            <Textarea
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Message</div>
+            <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder="Tell us what happened…"
-              rows={7}
+              placeholder="What happened? What did you expect? Any error text?"
+              className="min-h-[160px] w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              disabled={busy}
             />
           </div>
 
-          <Button onClick={submit} disabled={!canSend}>
-            {loading ? "Sending…" : "Send"}
-          </Button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-xs text-muted-foreground">
+              We store this as a support ticket in your workspace.
+            </div>
+            <Button className="rounded-full" onClick={submit} disabled={!canSubmit}>
+              {busy ? "Sending…" : "Send"}
+            </Button>
+          </div>
 
-          <div className="text-xs text-muted-foreground">
-            Back to{" "}
-            <Link className="underline" href="/chat">
-              Chat
-            </Link>
+          <div className="rounded-2xl border bg-muted p-4 text-sm text-muted-foreground">
+            Emergency? Email us at <span className="font-mono">support@letsalterminds.org</span>.
           </div>
         </CardContent>
       </Card>
