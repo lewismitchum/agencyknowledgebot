@@ -1,11 +1,34 @@
+// app/(public)/forgot-password/page.tsx
 "use client";
 
 import Link from "next/link";
 import Script from "next/script";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (
+        container: HTMLElement,
+        options: {
+          sitekey: string;
+          theme?: "auto" | "light" | "dark";
+          callback?: (token: string) => void;
+          "error-callback"?: () => void;
+          "expired-callback"?: () => void;
+        }
+      ) => string;
+      reset: (widgetId: string) => void;
+      remove?: (widgetId: string) => void;
+    };
+  }
+}
+
 export default function ForgotPasswordPage() {
-  const siteKey = useMemo(() => String(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "").trim(), []);
+  const siteKey = useMemo(
+    () => String(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "").trim(),
+    []
+  );
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -17,11 +40,13 @@ export default function ForgotPasswordPage() {
 
   function renderTurnstile() {
     if (!siteKey) return;
-    if (!widgetRef.current) return;
-    if (!window.turnstile) return;
+    const el = widgetRef.current;
+    if (!el) return;
+    const t = window.turnstile;
+    if (!t?.render) return;
     if (widgetIdRef.current) return;
 
-    widgetIdRef.current = window.turnstile.render(widgetRef.current, {
+    widgetIdRef.current = t.render(el, {
       sitekey: siteKey,
       theme: "auto",
       callback: (token) => setTsToken(token || ""),
@@ -35,21 +60,22 @@ export default function ForgotPasswordPage() {
     renderTurnstile();
 
     return () => {
-      // Cleanup on unmount so next mount can re-render cleanly
       const id = widgetIdRef.current;
       widgetIdRef.current = null;
-      setTsToken("");
 
       try {
         if (id && window.turnstile?.remove) window.turnstile.remove(id);
       } catch {}
+
+      // Keep state clean for next mount
+      setTsToken("");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
-    if (id && window.turnstile) {
+    if (id && window.turnstile?.reset) {
       try {
         window.turnstile.reset(id);
       } catch {}
@@ -78,7 +104,7 @@ export default function ForgotPasswordPage() {
     setLoading(true);
 
     try {
-      const r = await fetchJson("/api/auth/request-password-reset", {
+      const r = await fetch("/api/auth/request-password-reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -115,7 +141,6 @@ export default function ForgotPasswordPage() {
           async
           defer
           onLoad={() => {
-            // ✅ guarantees widget renders once script is ready
             renderTurnstile();
           }}
         />
@@ -124,9 +149,12 @@ export default function ForgotPasswordPage() {
       <div className="mx-auto max-w-6xl px-4 py-14 md:py-20">
         <div className="mx-auto max-w-xl">
           <div className="rounded-3xl border bg-card p-8 shadow-sm">
-            <h1 className="text-2xl font-semibold tracking-tight">Reset your password</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Reset your password
+            </h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              Enter your email and we’ll send a reset link. If the email exists, you’ll receive instructions.
+              Enter your email and we’ll send a reset link. If the email exists,
+              you’ll receive instructions.
             </p>
 
             {err ? (
@@ -161,7 +189,9 @@ export default function ForgotPasswordPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium">Human verification</label>
+                <label className="text-sm font-medium">
+                  Human verification
+                </label>
                 <div className="rounded-2xl border bg-background p-3">
                   <div ref={widgetRef} />
                 </div>
@@ -176,10 +206,16 @@ export default function ForgotPasswordPage() {
               </button>
 
               <div className="flex items-center justify-between text-sm">
-                <Link href="/login" className="text-muted-foreground hover:text-foreground">
+                <Link
+                  href="/login"
+                  className="text-muted-foreground hover:text-foreground"
+                >
                   Back to login
                 </Link>
-                <Link href="/signup" className="text-muted-foreground hover:text-foreground">
+                <Link
+                  href="/signup"
+                  className="text-muted-foreground hover:text-foreground"
+                >
                   Create account
                 </Link>
               </div>
