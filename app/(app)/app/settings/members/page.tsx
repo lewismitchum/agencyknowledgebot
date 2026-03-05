@@ -1,7 +1,7 @@
 // app/(app)/app/settings/members/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   Card,
@@ -94,7 +94,7 @@ function SegButton(props: {
   active: boolean;
   disabled?: boolean;
   onClick: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button
@@ -150,9 +150,7 @@ export default function MembersPage() {
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return members;
-    return members.filter((m) =>
-      (m.email || "").toLowerCase().includes(needle)
-    );
+    return members.filter((m) => (m.email || "").toLowerCase().includes(needle));
   }, [members, q]);
 
   const canCreateInvite = useMemo(() => {
@@ -196,7 +194,7 @@ export default function MembersPage() {
     setLoading(true);
 
     try {
-      const meRes = await fetchJson("/api/me", { credentials: "include" });
+      const meRes = await fetch("/api/me", { credentials: "include" });
       if (meRes.status === 401) {
         window.location.href = "/login";
         return;
@@ -232,13 +230,11 @@ export default function MembersPage() {
       }
 
       if (!(nRole === "owner" || nRole === "admin")) {
-        setBootError(
-          "Owner/Admin only. You don’t have permission to manage members."
-        );
+        setBootError("Owner/Admin only. You don’t have permission to manage members.");
         return;
       }
 
-      const r = await fetchJson("/api/agency/users", { credentials: "include" });
+      const r = await fetch("/api/agency/users", { credentials: "include" });
 
       if (r.status === 401) {
         window.location.href = "/login";
@@ -249,13 +245,9 @@ export default function MembersPage() {
         const j = await r.json().catch(() => null);
         const code = String(j?.error || "");
         if (code === "FORBIDDEN_NOT_ADMIN_OR_OWNER") {
-          setBootError(
-            "Owner/Admin only. You don’t have permission to manage members."
-          );
+          setBootError("Owner/Admin only. You don’t have permission to manage members.");
         } else if (code === "FORBIDDEN_NOT_ACTIVE") {
-          setBootError(
-            "Your account is pending approval. You can’t manage members yet."
-          );
+          setBootError("Your account is pending approval. You can’t manage members yet.");
         } else {
           setBootError(code || "Forbidden");
         }
@@ -293,7 +285,7 @@ export default function MembersPage() {
   ) {
     setSavingId(userId);
     try {
-      const r = await fetchJson("/api/agency/users", {
+      const r = await fetch("/api/agency/users", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -349,7 +341,7 @@ export default function MembersPage() {
 
     setSavingId(userId);
     try {
-      const r = await fetchJson(`/api/agency/users/${encodeURIComponent(userId)}`, {
+      const r = await fetch(`/api/agency/users/${encodeURIComponent(userId)}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -376,7 +368,7 @@ export default function MembersPage() {
   async function revokeInvite(inviteId: string) {
     setSavingId(inviteId);
     try {
-      const r = await fetchJson("/api/agency/invites", {
+      const r = await fetch("/api/agency/invites", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -410,7 +402,7 @@ export default function MembersPage() {
     setLastInviteEmailError("");
 
     try {
-      const r = await fetchJson("/api/agency/invites", {
+      const r = await fetch("/api/agency/invites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -461,14 +453,10 @@ export default function MembersPage() {
               : "Invite created. Link copied to clipboard."
           );
         } catch {
-          showToast(
-            emailOk === false ? "Invite created. Email failed." : "Invite created."
-          );
+          showToast(emailOk === false ? "Invite created. Email failed." : "Invite created.");
         }
       } else {
-        showToast(
-          emailOk === false ? "Invite created. Email failed." : "Invite created."
-        );
+        showToast(emailOk === false ? "Invite created. Email failed." : "Invite created.");
       }
 
       await loadAll();
@@ -529,11 +517,7 @@ export default function MembersPage() {
             <Button asChild className="rounded-full">
               <Link href="/app/settings">Go back</Link>
             </Button>
-            <Button
-              variant="outline"
-              className="rounded-full"
-              onClick={() => loadAll()}
-            >
+            <Button variant="outline" className="rounded-full" onClick={() => loadAll()}>
               Retry
             </Button>
           </div>
@@ -577,8 +561,7 @@ export default function MembersPage() {
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Seats & Invites</CardTitle>
           <CardDescription>
-            Plan enforcement is server-side. Reserved = pending members + pending
-            invites.
+            Plan enforcement is server-side. Reserved = pending members + pending invites.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -623,8 +606,7 @@ export default function MembersPage() {
 
           {!canCreateInvite ? (
             <div className="rounded-2xl border bg-background/40 p-3 text-xs text-muted-foreground">
-              Invites disabled: seat limit reached. Revoke pending invites or
-              upgrade in Billing.
+              Invites disabled: seat limit reached. Revoke pending invites or upgrade in Billing.
               <div className="mt-2">
                 <Button asChild size="sm" className="rounded-full">
                   <Link href="/app/billing">Upgrade</Link>
@@ -660,9 +642,7 @@ export default function MembersPage() {
                 <div className="mt-2 rounded-xl border border-yellow-200 bg-yellow-50 p-2 text-[11px] text-yellow-900">
                   <div className="font-medium">Email failed to send</div>
                   <div className="mt-1">{lastInviteEmailError}</div>
-                  <div className="mt-1 text-yellow-800/80">
-                    Link is still valid — paste it manually.
-                  </div>
+                  <div className="mt-1 text-yellow-800/80">Link is still valid — paste it manually.</div>
                 </div>
               ) : null}
 
@@ -692,8 +672,7 @@ export default function MembersPage() {
                             Expires: {formatWhen(inv.expires_at)}
                           </div>
                           <div className="mt-1 text-xs text-muted-foreground">
-                            For security, invite links are only shown once (when
-                            created).
+                            For security, invite links are only shown once (when created).
                           </div>
                         </div>
                         <div className="mt-3 flex gap-2 md:mt-0">
@@ -739,13 +718,9 @@ export default function MembersPage() {
 
           <div className="space-y-3">
             {loading ? (
-              <div className="text-sm text-muted-foreground">
-                Loading members…
-              </div>
+              <div className="text-sm text-muted-foreground">Loading members…</div>
             ) : filtered.length === 0 ? (
-              <div className="text-sm text-muted-foreground">
-                No members found.
-              </div>
+              <div className="text-sm text-muted-foreground">No members found.</div>
             ) : (
               filtered.map((m) => {
                 const status = normStatus(m.status);
@@ -756,8 +731,7 @@ export default function MembersPage() {
                 const isOwner = role === "owner";
                 const isAdmin = role === "admin";
 
-                const disableActivate =
-                  !canActivateAnotherMember && status !== "active";
+                const disableActivate = !canActivateAnotherMember && status !== "active";
 
                 const canEditTarget =
                   canManageMembers && !isMe && !(myRole === "admin" && isOwner);
@@ -775,10 +749,7 @@ export default function MembersPage() {
                     <div className="space-y-1">
                       <div className="font-medium">{m.email}</div>
                       <div className="flex flex-wrap items-center gap-2 text-sm">
-                        <Badge
-                          variant={statusBadgeVariant(m.status)}
-                          className="rounded-full"
-                        >
+                        <Badge variant={statusBadgeVariant(m.status)} className="rounded-full">
                           {prettyStatus(m.status)}
                         </Badge>
                         <Badge variant="outline" className="rounded-full">
@@ -794,9 +765,7 @@ export default function MembersPage() {
 
                     <div className="mt-3 flex flex-col gap-2 md:mt-0 md:items-end">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs text-muted-foreground">
-                          Status
-                        </span>
+                        <span className="text-xs text-muted-foreground">Status</span>
                         <SegButton
                           active={status === "pending"}
                           disabled={busy || !canStatusToggle}
@@ -821,9 +790,7 @@ export default function MembersPage() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs text-muted-foreground">
-                          Role
-                        </span>
+                        <span className="text-xs text-muted-foreground">Role</span>
                         <SegButton
                           active={!isAdmin && !isOwner}
                           disabled={busy || !canRoleToggle}
@@ -850,9 +817,7 @@ export default function MembersPage() {
                             isOwner
                           }
                           onClick={() =>
-                            showToast(
-                              "Ownership transfer is not supported in this UI yet."
-                            )
+                            showToast("Ownership transfer is not supported in this UI yet.")
                           }
                         >
                           Make owner
@@ -870,8 +835,7 @@ export default function MembersPage() {
 
                       {!canActivateAnotherMember && status !== "active" ? (
                         <div className="text-xs text-muted-foreground">
-                          Activation disabled: seat limit reached. Revoke invites
-                          or upgrade.
+                          Activation disabled: seat limit reached. Revoke invites or upgrade.
                           <span className="ml-2">
                             <Link className="underline" href="/app/billing">
                               Billing
