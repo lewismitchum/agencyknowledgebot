@@ -296,9 +296,25 @@ function toUiDailyLimit(raw: unknown): number | null {
 }
 
 function buildMemoryInput(args: { priorSummary: string | null; messages: Array<{ role: string; content: string }> }) {
-  const head = args.priorSummary ? `[Conversation Memory Summary]\n${args.priorSummary.trim()}\n\n` : "";
-  const body = args.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
-  return head + body;
+  const parts: string[] = [];
+
+  if (args.priorSummary && args.priorSummary.trim().length) {
+    parts.push(
+`[SYSTEM MEMORY — DO NOT IGNORE]
+
+This is the persistent memory summary of the conversation so far.
+Treat it as authoritative context.
+
+${args.priorSummary.trim()}
+`
+    );
+  }
+
+  for (const m of args.messages) {
+    parts.push(`${m.role.toUpperCase()}: ${m.content}`);
+  }
+
+  return parts.join("\n");
 }
 
 async function summarizeForMemory(input: string) {
