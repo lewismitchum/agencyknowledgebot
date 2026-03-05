@@ -33,6 +33,10 @@ function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
 }
 
+function getFetchJsonStatus(e: any): number | undefined {
+  return (e as any)?.status ?? (e as any)?.statusCode ?? (e as any)?.response?.status;
+}
+
 function formatBytes(bytes: number | null | undefined) {
   if (bytes == null || Number.isNaN(bytes)) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -121,7 +125,9 @@ export default function DocsPage() {
   function handleCommonErrors(e: any) {
     if (!isFetchJsonError(e)) return false;
 
-    if (e.status === 401) {
+    const status = getFetchJsonStatus(e);
+
+    if (status === 401) {
       window.location.href = "/login";
       return true;
     }
@@ -318,11 +324,12 @@ export default function DocsPage() {
       );
     } catch (e: any) {
       if (isFetchJsonError(e)) {
-        if (e.status === 401) {
+        const status = getFetchJsonStatus(e);
+        if (status === 401) {
           window.location.href = "/login";
           return;
         }
-        if (e.status === 403) {
+        if (status === 403) {
           setExtractGated(true);
           return;
         }
@@ -352,7 +359,9 @@ export default function DocsPage() {
     ].join(",");
   }, [isProPlus]);
 
-  const uploadSupportedLabel = isProPlus ? "Supported: PDF, TXT, DOCX, images, video" : "Supported: PDF, TXT, DOCX";
+  const uploadSupportedLabel = isProPlus
+    ? "Supported: PDF, TXT, DOCX, images, video"
+    : "Supported: PDF, TXT, DOCX";
 
   async function onUpload() {
     setUploadMsg("");
@@ -413,20 +422,26 @@ export default function DocsPage() {
       });
 
       if (fileRef.current) fileRef.current.value = "";
-      setUploadMsg(isDoc ? "Uploaded and indexed." : "Uploaded. (Media search quality may be limited until enhanced indexing is added.)");
+      setUploadMsg(
+        isDoc
+          ? "Uploaded and indexed."
+          : "Uploaded. (Media search quality may be limited until enhanced indexing is added.)"
+      );
       await loadDocs(selectedBotId);
       await refreshMe();
     } catch (e: any) {
       if (isFetchJsonError(e)) {
+        const status = getFetchJsonStatus(e);
+
         // Upload limit
-        if (e.status === 403) {
-          const code = String(e.code || "").toUpperCase();
-          const bodyErr = String((e.body && (e.body.error || e.body.code)) || "").toUpperCase();
+        if (status === 403) {
+          const code = String((e as any).code || "").toUpperCase();
+          const bodyErr = String(((e as any).body && (((e as any).body.error || (e as any).body.code)) ) || "").toUpperCase();
 
           if (code === "DAILY_UPLOAD_LIMIT_EXCEEDED" || bodyErr === "DAILY_UPLOAD_LIMIT_EXCEEDED") {
             await refreshMe();
-            const used = e.body?.used ?? "?";
-            const daily = e.body?.daily_limit ?? "?";
+            const used = (e as any).body?.used ?? "?";
+            const daily = (e as any).body?.daily_limit ?? "?";
             setUploadMsg(`Daily upload limit reached (${used}/${daily}).`);
             setUploading(false);
             return;
@@ -434,26 +449,26 @@ export default function DocsPage() {
         }
 
         // vector_store missing on server
-        if (e.status === 409) {
+        if (status === 409) {
           setUploadMsg("This bot has no vector store yet. Click Repair Vector Store above.");
           setUploading(false);
           return;
         }
 
         // OpenAI billing/quota
-        if (e.status === 402) {
+        if (status === 402) {
           setUploadMsg("OpenAI quota/billing issue. Uploads are temporarily unavailable.");
           setUploading(false);
           return;
         }
 
-        if (e.status === 401) {
+        if (status === 401) {
           window.location.href = "/login";
           return;
         }
 
         // MIME blocked by plan (server-side truth)
-        if (e.status === 415) {
+        if (status === 415) {
           setUploadMsg("That file type isn’t allowed on your plan. Upgrade to upload images/video.");
           setUploading(false);
           return;
