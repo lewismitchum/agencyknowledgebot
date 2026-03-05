@@ -12,11 +12,7 @@ function getClient(): Client {
   if (!url) throw new Error("Missing TURSO_DATABASE_URL");
   if (!authToken) throw new Error("Missing TURSO_AUTH_TOKEN");
 
-  _client = createClient({
-    url,
-    authToken,
-  });
-
+  _client = createClient({ url, authToken });
   return _client;
 }
 
@@ -30,12 +26,10 @@ export type Db = {
 };
 
 function stripSqlComments(sql: string) {
-  // Basic stripping for schema bootstrap blocks. Avoids breaking on semicolons inside comments.
   return sql.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--.*$/gm, "");
 }
 
 function splitSqlStatements(sql: string): string[] {
-  // Minimal splitter: handles semicolons inside single/double quoted strings.
   const s = stripSqlComments(sql);
   const out: string[] = [];
   let cur = "";
@@ -61,66 +55,41 @@ function splitSqlStatements(sql: string): string[] {
 
   const last = cur.trim();
   if (last) out.push(last);
-
   return out;
 }
 
-function truncate(s: string, max = 700) {
+function truncate(s: string, max = 900) {
   const str = String(s ?? "");
   if (str.length <= max) return str;
   return str.slice(0, max) + " …(truncated)";
 }
 
-function safeArgsSummary(args: any[]) {
-  // Avoid dumping large blobs/secrets; show types + short strings only.
+function safeArgs(args: any[]) {
   return (args || []).map((a) => {
     if (a == null) return a;
-    if (typeof a === "string") return truncate(a, 120);
+    if (typeof a === "string") return truncate(a, 140);
     if (typeof a === "number" || typeof a === "boolean") return a;
     if (a instanceof Date) return a.toISOString();
     try {
-      const j = JSON.stringify(a);
-      return truncate(j, 120);
+      return truncate(JSON.stringify(a), 180);
     } catch {
-      return String(a);
+      return truncate(String(a), 180);
     }
   });
 }
 
-function shouldDebugSql() {
-  return String(process.env.DB_DEBUG_SQL ?? "").trim() === "1";
-}
-
-function shouldDebugLogs() {
-  return String(process.env.DB_DEBUG_LOGS ?? "").trim() === "1";
-}
-
 function wrapDbError(err: any, sql: string, args: any[]) {
   const msg = String(err?.message ?? err);
-  const code = String(err?.code ?? "");
+  const sqlSnippet = truncate(sql, 1200);
+  const argSummary = safeArgs(args);
 
-  const sqlSnippet = truncate(sql, 900);
-  const argSummary = safeArgsSummary(args);
+  // Always surface SQL in the thrown message so API routes return it in JSON.
+  const e = new Error(
+    `${msg}\n\n[SQL]\n${sqlSnippet}\n\n[ARGS]\n${JSON.stringify(argSummary)}`
+  ) as any;
 
-  if (shouldDebugLogs()) {
-    console.error("DB_ERROR", {
-      code,
-      message: msg,
-      sql: sqlSnippet,
-      args: argSummary,
-    });
-  }
-
-  if (shouldDebugSql()) {
-    // Bubble up SQL so your API 500 JSON includes it (your route returns err.message)
-    const e = new Error(
-      `${msg}\n\n[SQL]\n${sqlSnippet}\n\n[ARGS]\n${JSON.stringify(argSummary)}`
-    ) as any;
-    e.code = err?.code ?? code;
-    return e;
-  }
-
-  return err;
+  e.code = err?.code ?? "DB_ERROR";
+  return e;
 }
 
 export async function getDb(): Promise<Db> {
