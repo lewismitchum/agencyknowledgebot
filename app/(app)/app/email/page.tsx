@@ -56,6 +56,16 @@ function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
 }
 
+function getFetchJsonStatus(e: any): number | null {
+  if (!e || typeof e !== "object") return null;
+  if ("status" in e) {
+    const n = Number((e as any).status);
+    return Number.isFinite(n) ? n : null;
+  }
+  // Some callers may stuff status-like values elsewhere; keep conservative.
+  return null;
+}
+
 function shortText(s: string, max = 80) {
   const t = String(s || "").trim();
   if (t.length <= max) return t;
@@ -281,8 +291,7 @@ export default function EmailPage() {
           }
 
           // If Gmail is not connected (known), do NOT call threads endpoint.
-          const isConnectedNow =
-            connectedFromApi !== null ? connectedFromApi : gmailConnected;
+          const isConnectedNow = connectedFromApi !== null ? connectedFromApi : gmailConnected;
 
           if (!isConnectedNow) {
             setThreads([]);
@@ -317,8 +326,10 @@ export default function EmailPage() {
             } catch (e: any) {
               if (cancelled) return;
 
+              const st = getFetchJsonStatus(e);
+
               // Key: show connect CTA on 409 not_connected
-              if (isFetchJsonError(e) && e.status === 409 && isNotConnectedError(e)) {
+              if (isFetchJsonError(e) && st === 409 && isNotConnectedError(e)) {
                 setGmailConnected(false);
                 setThreads([]);
                 setSelectedThreadId(null);
@@ -334,7 +345,8 @@ export default function EmailPage() {
       } catch (e: any) {
         if (cancelled) return;
 
-        if (isFetchJsonError(e) && e.status === 401) {
+        const st = getFetchJsonStatus(e);
+        if (isFetchJsonError(e) && st === 401) {
           window.location.href = "/login";
           return;
         }
@@ -398,7 +410,9 @@ export default function EmailPage() {
       setThreads(filtered);
       if (!selectedThreadId && filtered[0]?.id) setSelectedThreadId(filtered[0].id);
     } catch (e: any) {
-      if (isFetchJsonError(e) && e.status === 409 && isNotConnectedError(e)) {
+      const st = getFetchJsonStatus(e);
+
+      if (isFetchJsonError(e) && st === 409 && isNotConnectedError(e)) {
         setGmailConnected(false);
         setThreads([]);
         setSelectedThreadId(null);
@@ -470,11 +484,13 @@ export default function EmailPage() {
         ];
       });
     } catch (e: any) {
-      if (isFetchJsonError(e) && e.status === 401) {
+      const st = getFetchJsonStatus(e);
+
+      if (isFetchJsonError(e) && st === 401) {
         window.location.href = "/login";
         return;
       }
-      if (isFetchJsonError(e) && e.status === 409 && isNotConnectedError(e)) {
+      if (isFetchJsonError(e) && st === 409 && isNotConnectedError(e)) {
         setGmailConnected(false);
         setThread(null);
         setThreadError("Gmail is not connected.");
@@ -528,12 +544,14 @@ export default function EmailPage() {
 
       setAiMsgs((prev) => [...prev, { role: "assistant", text: body, at: Date.now() }]);
     } catch (e: any) {
+      const st = getFetchJsonStatus(e);
+
       if (isFetchJsonError(e)) {
-        if (e.status === 401) {
+        if (st === 401) {
           window.location.href = "/login";
           return;
         }
-        if (e.status === 403) {
+        if (st === 403) {
           setReplyDraftError("Upgrade required to use Email inbox + replies.");
           setAiMsgs((prev) => [
             ...prev,
@@ -541,7 +559,7 @@ export default function EmailPage() {
           ]);
           return;
         }
-        if (e.status === 409) {
+        if (st === 409) {
           if (isNotConnectedError(e)) {
             setReplyDraftError("Gmail is not connected. Click Connect Gmail.");
             setGmailConnected(false);
@@ -605,16 +623,18 @@ export default function EmailPage() {
       await loadThread(selectedThreadId);
       await refreshThreads();
     } catch (e: any) {
+      const st = getFetchJsonStatus(e);
+
       if (isFetchJsonError(e)) {
-        if (e.status === 401) {
+        if (st === 401) {
           window.location.href = "/login";
           return;
         }
-        if (e.status === 403) {
+        if (st === 403) {
           setSendError("Upgrade required to send.");
           return;
         }
-        if (e.status === 409 && isNotConnectedError(e)) {
+        if (st === 409 && isNotConnectedError(e)) {
           setSendError("Gmail is not connected. Click Connect Gmail.");
           setGmailConnected(false);
           return;
@@ -683,16 +703,18 @@ export default function EmailPage() {
       await refreshThreads();
       setTab("inbox");
     } catch (e: any) {
+      const st = getFetchJsonStatus(e);
+
       if (isFetchJsonError(e)) {
-        if (e.status === 401) {
+        if (st === 401) {
           window.location.href = "/login";
           return;
         }
-        if (e.status === 403) {
+        if (st === 403) {
           setComposeError("Upgrade required to send.");
           return;
         }
-        if (e.status === 409 && isNotConnectedError(e)) {
+        if (st === 409 && isNotConnectedError(e)) {
           setComposeError("Gmail is not connected. Click Connect Gmail.");
           setGmailConnected(false);
           return;
@@ -730,11 +752,13 @@ export default function EmailPage() {
       setFallback(null);
       setDraftError("");
     } catch (e: any) {
-      if (isFetchJsonError(e) && e.status === 401) {
+      const st = getFetchJsonStatus(e);
+
+      if (isFetchJsonError(e) && st === 401) {
         window.location.href = "/login";
         return;
       }
-      if (isFetchJsonError(e) && e.status === 404) {
+      if (isFetchJsonError(e) && st === 404) {
         setOpenDraftError("Draft not found.");
         return;
       }
@@ -782,16 +806,18 @@ export default function EmailPage() {
 
       await refreshDrafts();
     } catch (e: any) {
+      const st = getFetchJsonStatus(e);
+
       if (isFetchJsonError(e)) {
-        if (e.status === 401) {
+        if (st === 401) {
           window.location.href = "/login";
           return;
         }
-        if (e.status === 403) {
+        if (st === 403) {
           setDraftError("Upgrade required to use Email drafting.");
           return;
         }
-        if (e.status === 409) {
+        if (st === 409) {
           if (isNotConnectedError(e)) {
             setDraftError("Gmail is not connected. Click Connect Gmail.");
             setGmailConnected(false);
