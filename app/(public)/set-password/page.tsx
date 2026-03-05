@@ -1,12 +1,13 @@
 // app/set-password/page.tsx
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState, type FormEvent } from "react";
+
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 function SetPasswordInner() {
   const sp = useSearchParams();
@@ -21,7 +22,7 @@ function SetPasswordInner() {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setErr("");
     setOk("");
@@ -40,7 +41,7 @@ function SetPasswordInner() {
 
     setBusy(true);
     try {
-      const r = await fetchJson("/api/agency/invites/accept", {
+      const r = await fetch("/api/agency/invites/accept", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",
@@ -56,7 +57,6 @@ function SetPasswordInner() {
 
       const redirectTo = String(j?.redirectTo || "/app/chat");
       setOk("Password set. Redirecting…");
-
       window.location.href = redirectTo;
     } catch (e: any) {
       setErr(e?.message || "Network error");
@@ -72,9 +72,7 @@ function SetPasswordInner() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <CardTitle>Set your password</CardTitle>
-              <CardDescription className="mt-1">
-                Finish joining the workspace.
-              </CardDescription>
+              <CardDescription className="mt-1">Finish joining the workspace.</CardDescription>
             </div>
             <Badge variant="secondary">Louis.Ai</Badge>
           </div>
