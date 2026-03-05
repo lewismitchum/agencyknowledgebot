@@ -1,4 +1,4 @@
-// app/signup/page.tsx
+// app/(public)/signup/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -8,6 +8,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 function getQuery() {
   if (typeof window === "undefined") return new URLSearchParams();
   return new URLSearchParams(window.location.search || "");
+}
+
+function normalizeEmail(v: string) {
+  return String(v || "").trim().toLowerCase();
 }
 
 export default function SignupPage() {
@@ -34,8 +38,7 @@ export default function SignupPage() {
     const email = String(q.get("email") || "").trim();
     const next = String(q.get("next") || "").trim();
     const invite = String(q.get("invite") || "").trim();
-    const token =
-      String(q.get("token") || q.get("invite_token") || "").trim();
+    const token = String(q.get("token") || q.get("invite_token") || "").trim();
 
     if (email) setPrefillEmail(email);
     if (next) setNextPath(next);
@@ -86,15 +89,14 @@ export default function SignupPage() {
 
     const fd = new FormData(e.currentTarget as HTMLFormElement);
 
-    // In invite flow, name is just a display/agency label; don’t force it.
-    const nameRaw = String(fd.get("name") || "").trim();
-    const name = nameRaw || (isInvite ? "Invited User" : "");
+    // This input is "Agency name" for normal signup, and "Display name" for invite flow.
+    const nameOrAgency = String(fd.get("name") || "").trim();
 
-    const email = String(fd.get("email") || "").trim();
+    const email = normalizeEmail(String(fd.get("email") || ""));
     const password = String(fd.get("password") || "");
 
-    if (!email || !password || (!isInvite && !name)) {
-      setErr(isInvite ? "Missing fields" : "Missing fields");
+    if (!email || !password || (!isInvite && !nameOrAgency)) {
+      setErr("Missing fields");
       return;
     }
 
@@ -116,21 +118,28 @@ export default function SignupPage() {
     setLoading(true);
 
     try {
-      const r = await fetchJson("/api/auth/signup", {
+      const body: any = {
+        email,
+        password,
+        turnstile_token: tsToken,
+        next: nextPath || "/app",
+      };
+
+      // Normal signup expects agency (workspace name). Invite flow may be handled server-side by invite_token.
+      if (!isInvite) {
+        body.agency = nameOrAgency;
+      } else {
+        body.name = nameOrAgency || "Invited User";
+        body.invite = 1;
+        if (inviteToken) body.invite_token = inviteToken;
+      }
+
+      const r = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         redirect: "manual",
-        body: JSON.stringify({
-          name,
-          email,
-          password,
-          turnstile_token: tsToken,
-          // safe: backend can ignore if not supported
-          invite: isInvite ? 1 : 0,
-          invite_token: inviteToken || undefined,
-          next: nextPath || "/app",
-        }),
+        body: JSON.stringify(body),
       });
 
       if (r.status >= 300 && r.status < 400) {
@@ -156,11 +165,9 @@ export default function SignupPage() {
         return;
       }
 
-      const redirectTo =
-        (j && (j.redirectTo || j.redirect_to)) || nextPath || "/app";
-
+      const redirectTo = (j && (j.redirectTo || j.redirect_to)) || nextPath || "/app";
       setOk("Account created.");
-      window.location.href = redirectTo;
+      window.location.href = String(redirectTo);
     } catch (e: any) {
       setErr(e?.message || "Network error");
       resetTurnstile();
@@ -183,30 +190,17 @@ export default function SignupPage() {
         <div className="mx-auto grid max-w-4xl gap-8 md:grid-cols-2 md:items-center">
           <div className="hidden md:block">
             <div className="rounded-3xl border bg-card p-8 shadow-sm">
-              <div className="text-sm font-semibold">
-                {isInvite ? "You’re invited" : "Start Free"}
-              </div>
-              <div className="mt-2 text-2xl font-semibold tracking-tight">
-                Your agency’s docs, instantly searchable.
-              </div>
+              <div className="text-sm font-semibold">{isInvite ? "You’re invited" : "Start Free"}</div>
+              <div className="mt-2 text-2xl font-semibold tracking-tight">Your agency’s docs, instantly searchable.</div>
               <p className="mt-3 text-sm text-muted-foreground">
-                Upload SOPs, onboarding, pricing, and brand docs. Louis answers
-                from what you upload—no guessing for internal info.
+                Upload SOPs, onboarding, pricing, and brand docs. Louis answers from what you upload—no guessing for
+                internal info.
               </p>
 
               <div className="mt-6 grid gap-3">
-                <Mini
-                  title="Doc-prioritized answers"
-                  body="Internal answers come from your uploads first."
-                />
-                <Mini
-                  title="Workspace isolation"
-                  body="Your data stays inside your agency."
-                />
-                <Mini
-                  title="Memory-managed"
-                  body="Long chats auto-summarize for continuity."
-                />
+                <Mini title="Doc-prioritized answers" body="Internal answers come from your uploads first." />
+                <Mini title="Workspace isolation" body="Your data stays inside your agency." />
+                <Mini title="Memory-managed" body="Long chats auto-summarize for continuity." />
               </div>
             </div>
           </div>
@@ -262,11 +256,7 @@ export default function SignupPage() {
                   ].join(" ")}
                   placeholder="you@agency.com"
                 />
-                {prefillEmail ? (
-                  <div className="text-xs text-muted-foreground">
-                    Email prefilled from invite.
-                  </div>
-                ) : null}
+                {prefillEmail ? <div className="text-xs text-muted-foreground">Email prefilled from invite.</div> : null}
               </div>
 
               <div className="space-y-2">
@@ -289,13 +279,9 @@ export default function SignupPage() {
                 <div className="rounded-2xl border bg-background p-3">
                   <div ref={widgetRef} />
                   {!siteKey ? (
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      Missing NEXT_PUBLIC_TURNSTILE_SITE_KEY
-                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">Missing NEXT_PUBLIC_TURNSTILE_SITE_KEY</div>
                   ) : !tsReady ? (
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      Loading captcha…
-                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">Loading captcha…</div>
                   ) : null}
                 </div>
               </div>
@@ -309,14 +295,18 @@ export default function SignupPage() {
               </button>
 
               <p className="text-xs text-muted-foreground">
-                By creating an account, you agree to keep uploads confidential
-                and to use Louis.Ai for internal knowledge only.
+                By creating an account, you agree to keep uploads confidential and to use Louis.Ai for internal knowledge
+                only.
               </p>
 
               <div className="text-sm text-muted-foreground">
                 Already have an account?{" "}
                 <Link
-                  href={`/login${prefillEmail ? `?email=${encodeURIComponent(prefillEmail)}&next=${encodeURIComponent(nextPath)}` : ""}`}
+                  href={`/login${
+                    prefillEmail
+                      ? `?email=${encodeURIComponent(prefillEmail)}&next=${encodeURIComponent(nextPath)}`
+                      : ""
+                  }`}
                   className="text-foreground underline underline-offset-4"
                 >
                   Log in
