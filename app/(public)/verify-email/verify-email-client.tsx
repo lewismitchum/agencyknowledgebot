@@ -11,7 +11,7 @@ export default function VerifyEmailClient() {
   const sp = useSearchParams();
 
   const token = useMemo(() => {
-    return (sp.get("token") || "").trim();
+    return (sp.get("token") || sp.get("t") || "").trim();
   }, [sp]);
 
   const [status, setStatus] = useState<Status>("idle");
@@ -29,9 +29,10 @@ export default function VerifyEmailClient() {
     setStatus("verifying");
 
     try {
-      const r = await fetchJson("/api/auth/verify-email", {
+      const r = await fetch("/api/auth/verify-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ token }),
       });
 
@@ -52,7 +53,12 @@ export default function VerifyEmailClient() {
       }
 
       setStatus("success");
-      setMessage("Email verified. Your workspace is now active.");
+      setMessage(String(j?.message || "Email verified. Your workspace is now active."));
+
+      const redirectTo = String(j?.redirectTo || j?.redirect_to || "").trim();
+      if (redirectTo) {
+        window.location.href = redirectTo;
+      }
     } catch (e: any) {
       setStatus("error");
       setMessage(e?.message || "Network error.");
