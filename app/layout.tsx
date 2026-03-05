@@ -1,4 +1,6 @@
+// app/layout.tsx
 import "./globals.css";
+import "./fetch-json-global";
 import ThemeProvider from "@/components/theme-provider";
 
 export const metadata = {
@@ -6,11 +8,7 @@ export const metadata = {
   description: "Docs-only agency knowledge assistant",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-dvh bg-background text-foreground antialiased">
