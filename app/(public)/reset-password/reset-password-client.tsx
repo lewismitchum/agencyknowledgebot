@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
 export default function ResetPasswordClient() {
@@ -18,7 +18,7 @@ export default function ResetPasswordClient() {
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
 
@@ -29,21 +29,29 @@ export default function ResetPasswordClient() {
 
     setSubmitting(true);
     try {
-      const r = await fetchJson("/api/auth/reset-password", {
+      const r = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ token, new_password: newPassword }),
       });
 
-      const j = await r.json().catch(() => ({}));
+      const ct = r.headers.get("content-type") || "";
+      const raw = await r.text().catch(() => "");
+      let j: any = null;
+
+      if (ct.includes("application/json")) {
+        try {
+          j = raw ? JSON.parse(raw) : null;
+        } catch {}
+      }
 
       if (!r.ok) {
-        setError(j?.error || j?.message || "Reset failed.");
+        setError(j?.error || j?.message || raw || "Reset failed.");
         return;
       }
 
       setOk(true);
-      // optional: bounce to login after a moment
       setTimeout(() => router.push("/login"), 800);
     } catch (err: any) {
       setError(err?.message || "Reset failed.");
@@ -57,9 +65,7 @@ export default function ResetPasswordClient() {
       <div className="mx-auto max-w-xl">
         <div className="rounded-3xl border bg-card p-8 shadow-sm">
           <h1 className="text-lg font-medium">Reset Password</h1>
-          <p className="text-sm text-muted-foreground">
-            Enter a new password for your workspace.
-          </p>
+          <p className="text-sm text-muted-foreground">Enter a new password for your workspace.</p>
 
           {!token && (
             <div className="mt-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
