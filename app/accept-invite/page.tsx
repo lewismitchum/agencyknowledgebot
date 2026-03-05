@@ -1,3 +1,4 @@
+// app/accept-invite/page.tsx
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -19,7 +20,7 @@ function AcceptInviteInner() {
   const sp = useSearchParams();
 
   const token = useMemo(() => {
-    return sp.get("token") || sp.get("invite") || sp.get("code") || "";
+    return String(sp.get("token") || sp.get("invite") || sp.get("code") || "").trim();
   }, [sp]);
 
   const [state, setState] = useState<AcceptState>({ status: "idle" });
@@ -59,9 +60,10 @@ function AcceptInviteInner() {
     setState({ status: "submitting" });
 
     try {
-      const res = await fetchJson("/api/accept-invite", {
+      const res = await fetch("/api/accept-invite", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ token, password: p }),
       });
 
@@ -97,9 +99,7 @@ function AcceptInviteInner() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <CardTitle>Accept invite</CardTitle>
-              <CardDescription className="mt-1">
-                Set a password to finish joining the workspace.
-              </CardDescription>
+              <CardDescription className="mt-1">Set a password to finish joining the workspace.</CardDescription>
             </div>
             <Badge variant="secondary">Louis.Ai</Badge>
           </div>
@@ -122,9 +122,7 @@ function AcceptInviteInner() {
             </>
           )}
 
-          {(state.status === "ready" ||
-            state.status === "submitting" ||
-            state.status === "error") && (
+          {(state.status === "ready" || state.status === "submitting" || state.status === "error") && (
             <form onSubmit={onSubmit} className="space-y-4">
               <div>
                 <label className="text-sm font-medium">Password</label>
@@ -135,6 +133,7 @@ function AcceptInviteInner() {
                   placeholder="At least 8 characters"
                   type="password"
                   autoComplete="new-password"
+                  disabled={state.status === "submitting"}
                 />
               </div>
 
@@ -147,6 +146,7 @@ function AcceptInviteInner() {
                   placeholder="Re-enter password"
                   type="password"
                   autoComplete="new-password"
+                  disabled={state.status === "submitting"}
                 />
               </div>
 
@@ -175,9 +175,7 @@ function AcceptInviteInner() {
 
           {state.status === "success" && (
             <>
-              <p className="text-sm">
-                ✅ Invite accepted{state.agencyName ? ` — welcome to ${state.agencyName}` : ""}.
-              </p>
+              <p className="text-sm">✅ Invite accepted{state.agencyName ? ` — welcome to ${state.agencyName}` : ""}.</p>
               <p className="text-sm text-muted-foreground">Redirecting you to chat…</p>
               <div className="flex gap-2">
                 <Button asChild>
