@@ -37,6 +37,25 @@ function normalizeStatus(raw: any): "active" | "pending" | "blocked" {
   return "pending";
 }
 
+/**
+ * Drift-safe legacy compatibility:
+ * Some older code paths may still query `users.user_id`.
+ * Canonical is `users.id`, but we add+backfill `user_id` to prevent runtime crashes.
+ */
+async function ensureUsersCompatColumns(db: Db) {
+  await db.run(`ALTER TABLE users ADD COLUMN user_id TEXT`).catch(() => {});
+  await db.run(
+    `
+    UPDATE users
+    SET user_id = id
+    WHERE (user_id IS NULL OR user_id = '')
+      AND id IS NOT NULL
+      AND id <> '';
+  `
+  ).catch(() => {});
+  await db.run(`CREATE INDEX IF NOT EXISTS idx_users_agency_user_id ON users(agency_id, user_id)`).catch(() => {});
+}
+
 async function countBillableMembers(db: Db, agencyId: string): Promise<number> {
   const row = (await db.get(
     `SELECT COUNT(*) as c
@@ -72,12 +91,10 @@ async function enforceSeatLimit(db: Db, agencyId: string) {
   }
 }
 
-export async function getUserById(
-  agencyId: string,
-  userId: string
-): Promise<UserRow | null> {
+export async function getUserById(agencyId: string, userId: string): Promise<UserRow | null> {
   const db: Db = await getDb();
   await ensureSchema(db);
+  await ensureUsersCompatColumns(db);
 
   const row = (await db.get(
     `SELECT id, agency_id, email, email_verified, created_at, updated_at, role, status
@@ -92,17 +109,15 @@ export async function getUserById(
 
   return {
     ...row,
-    role: normalizeRole(row.role),
-    status: normalizeStatus(row.status),
+    role: normalizeRole((row as any).role),
+    status: normalizeStatus((row as any).status),
   };
 }
 
-export async function getUserByEmail(
-  agencyId: string,
-  email: string
-): Promise<UserRow | null> {
+export async function getUserByEmail(agencyId: string, email: string): Promise<UserRow | null> {
   const db: Db = await getDb();
   await ensureSchema(db);
+  await ensureUsersCompatColumns(db);
 
   const normalizedEmail = normalizeEmail(email);
 
@@ -119,8 +134,8 @@ export async function getUserByEmail(
 
   return {
     ...row,
-    role: normalizeRole(row.role),
-    status: normalizeStatus(row.status),
+    role: normalizeRole((row as any).role),
+    status: normalizeStatus((row as any).status),
   };
 }
 
@@ -129,12 +144,10 @@ export async function getUserByEmail(
  * - If user exists → return it
  * - If new user → enforce seat limits, then create as MEMBER + PENDING
  */
-export async function getOrCreateUser(
-  agencyId: string,
-  email: string
-): Promise<UserRow> {
+export async function getOrCreateUser(agencyId: string, email: string): Promise<UserRow> {
   const db: Db = await getDb();
   await ensureSchema(db);
+  await ensureUsersCompatColumns(db);
 
   const normalizedEmail = normalizeEmail(email);
 
@@ -150,8 +163,8 @@ export async function getOrCreateUser(
   if (existing?.id) {
     return {
       ...existing,
-      role: normalizeRole(existing.role),
-      status: normalizeStatus(existing.status),
+      role: normalizeRole((existing as any).role),
+      status: normalizeStatus((existing as any).status),
     };
   }
 
@@ -171,6 +184,9 @@ export async function getOrCreateUser(
     t,
     t
   );
+
+  // Backfill compat alias immediately
+  await db.run(`UPDATE users SET user_id = id WHERE agency_id = ? AND id = ?`, agencyId, id).catch(() => {});
 
   const created = await getUserById(agencyId, id);
   if (!created) throw new Error("USER_CREATE_FAILED");
