@@ -3,8 +3,8 @@ import type { Db } from "@/lib/db";
 
 export type UsageDailyRow = {
   agency_id: string;
-  user_id: string; // legacy/compat: some parts of the app are agency-only, but schema supports per-user
-  date: string; // YYYY-MM-DD (in effective tz)
+  user_id: string; // supports per-user usage; legacy uses '__agency__'
+  date: string; // YYYY-MM-DD
   messages_count: number;
   uploads_count: number;
   updated_at: string | null;
@@ -16,14 +16,10 @@ function nowIso() {
 
 /**
  * Drift-safe schema for usage_daily.
- *
- * Canonical goal:
- * - Track per-agency and (optionally) per-user usage per day.
- *
- * This function MUST be safe to run on old DBs and new DBs.
+ * Fixes production drift where the table existed without user_id but code created an index using it.
  */
 export async function ensureUsageDailySchema(db: Db) {
-  // Base table (older schemas may already exist with fewer columns)
+  // Create table if missing (includes user_id)
   await db
     .run(
       `
@@ -39,14 +35,13 @@ export async function ensureUsageDailySchema(db: Db) {
     )
     .catch(() => {});
 
-  // Columns (drift-safe)
+  // Drift-safe columns
   await db.run(`ALTER TABLE usage_daily ADD COLUMN user_id TEXT`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN messages_count INTEGER NOT NULL DEFAULT 0`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN uploads_count INTEGER NOT NULL DEFAULT 0`).catch(() => {});
   await db.run(`ALTER TABLE usage_daily ADD COLUMN updated_at TEXT`).catch(() => {});
 
-  // Backfill user_id for legacy rows (agency-only historical usage)
-  // We use a stable sentinel so existing data keeps working.
+  // Backfill user_id for legacy rows (agency-only)
   await db
     .run(
       `
@@ -57,18 +52,15 @@ export async function ensureUsageDailySchema(db: Db) {
     )
     .catch(() => {});
 
-  // Indexes (safe)
+  // Indexes
   await db
-    .run(
-      `CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date)`
-    )
+    .run(`CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date)`)
     .catch(() => {});
   await db.run(`CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_date ON usage_daily(agency_id, date)`).catch(() => {});
 }
 
 /**
- * Fetch usage row for a given agency + day.
- * If your app is currently agency-scoped, we store in user_id='__agency__'.
+ * Canonical: agency-scoped row (legacy behavior) using user_id='__agency__'
  */
 export async function getUsageRow(db: Db, agencyId: string, dateKey: string): Promise<UsageDailyRow> {
   await ensureUsageDailySchema(db);
@@ -93,7 +85,6 @@ export async function getUsageRow(db: Db, agencyId: string, dateKey: string): Pr
     };
   }
 
-  // Create row
   const t = nowIso();
   await db.run(
     `INSERT INTO usage_daily (agency_id, user_id, date, messages_count, uploads_count, updated_at)
@@ -113,12 +104,12 @@ export async function getUsageRow(db: Db, agencyId: string, dateKey: string): Pr
   };
 }
 
-/**
- * Increment message usage for agency/day.
- */
 export async function incrementMessages(db: Db, agencyId: string, dateKey: string, delta = 1) {
   await ensureUsageDailySchema(db);
   const t = nowIso();
+
+  // Ensure row exists
+  await getUsageRow(db, agencyId, dateKey);
 
   await db.run(
     `
@@ -132,35 +123,14 @@ export async function incrementMessages(db: Db, agencyId: string, dateKey: strin
     agencyId,
     dateKey
   );
-
-  // If row didn't exist, create it and try again
-  const row = (await db.get(
-    `SELECT 1 as ok
-     FROM usage_daily
-     WHERE agency_id = ? AND user_id = '__agency__' AND date = ?
-     LIMIT 1`,
-    agencyId,
-    dateKey
-  )) as { ok?: number } | undefined;
-
-  if (!row?.ok) {
-    await db.run(
-      `INSERT INTO usage_daily (agency_id, user_id, date, messages_count, uploads_count, updated_at)
-       VALUES (?, '__agency__', ?, ?, 0, ?)`,
-      agencyId,
-      dateKey,
-      Number(delta),
-      t
-    );
-  }
 }
 
-/**
- * Increment upload usage for agency/day.
- */
 export async function incrementUploads(db: Db, agencyId: string, dateKey: string, delta = 1) {
   await ensureUsageDailySchema(db);
   const t = nowIso();
+
+  // Ensure row exists
+  await getUsageRow(db, agencyId, dateKey);
 
   await db.run(
     `
@@ -174,24 +144,32 @@ export async function incrementUploads(db: Db, agencyId: string, dateKey: string
     agencyId,
     dateKey
   );
+}
 
-  const row = (await db.get(
-    `SELECT 1 as ok
-     FROM usage_daily
-     WHERE agency_id = ? AND user_id = '__agency__' AND date = ?
-     LIMIT 1`,
-    agencyId,
-    dateKey
-  )) as { ok?: number } | undefined;
-
-  if (!row?.ok) {
-    await db.run(
-      `INSERT INTO usage_daily (agency_id, user_id, date, messages_count, uploads_count, updated_at)
-       VALUES (?, '__agency__', ?, 0, ?, ?)`,
-      agencyId,
-      dateKey,
-      Number(delta),
-      t
-    );
+/**
+ * ✅ Back-compat export: older routes import incrementUsage().
+ * We keep the signature flexible and route to the correct counter.
+ *
+ * Supported call styles:
+ * - incrementUsage(db, agencyId, dateKey, "messages", 1)
+ * - incrementUsage(db, agencyId, dateKey, "uploads", 1)
+ * - incrementUsage(db, agencyId, dateKey, 1)  // defaults to messages
+ */
+export async function incrementUsage(
+  db: Db,
+  agencyId: string,
+  dateKey: string,
+  kindOrDelta: "messages" | "uploads" | number = "messages",
+  maybeDelta?: number
+) {
+  if (kindOrDelta === "uploads") {
+    return incrementUploads(db, agencyId, dateKey, Number(maybeDelta ?? 1));
   }
+
+  if (kindOrDelta === "messages") {
+    return incrementMessages(db, agencyId, dateKey, Number(maybeDelta ?? 1));
+  }
+
+  // kindOrDelta is a number => delta for messages
+  return incrementMessages(db, agencyId, dateKey, Number(kindOrDelta ?? 1));
 }
