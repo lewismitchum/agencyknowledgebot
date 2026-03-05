@@ -5,7 +5,7 @@ import { openai } from "@/lib/openai";
 import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
-import { ensureUsageDailySchema, incrementUsage, getUsageRow } from "@/lib/usage";
+import { ensureUsageDailySchema, incrementUserUploads, getUserUsageRow } from "@/lib/usage";
 import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
 import { getEffectiveTimezone, ymdInTz } from "@/lib/timezone";
 
@@ -21,15 +21,6 @@ export async function GET() {
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-async function getAgencyTimezone(db: Db, agencyId: string) {
-  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { timezone?: string | null }
-    | undefined;
-
-  const tz = String(row?.timezone ?? "").trim();
-  return tz || "America/Chicago";
 }
 
 function maxBytesForPlan(plan: string): number {
@@ -100,11 +91,7 @@ async function assertBotAccessAndGetVectorStore(db: Db, args: { bot_id: string; 
   if (!bot?.id) return { ok: false as const, error: "BOT_NOT_FOUND" as const };
 
   if (!bot.vector_store_id) {
-    return {
-      ok: false as const,
-      error: "BOT_VECTOR_STORE_MISSING" as const,
-      bot_id: bot.id,
-    };
+    return { ok: false as const, error: "BOT_VECTOR_STORE_MISSING" as const, bot_id: bot.id };
   }
 
   return { ok: true as const, bot, vector_store_id: bot.vector_store_id };
@@ -173,24 +160,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Daily upload limit (plan-based, USER-local day key)
-    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, planKey, files.length);
+    // ✅ Per-user daily upload limit gate
+    const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, ctx.userId, dateKey, planKey, files.length);
     if (!uploadsGate.ok) {
-      return Response.json(
-        {
-          ...uploadsGate.body,
-          timezone: tz,
-        },
-        { status: uploadsGate.status }
-      );
+      return Response.json({ ...uploadsGate.body, timezone: tz }, { status: uploadsGate.status });
     }
 
     // HARD GATING: size + mime before any OpenAI calls
     for (const file of files) {
       const size = Number((file as any).size ?? 0);
-      if (!Number.isFinite(size) || size <= 0) {
-        return Response.json({ ok: false, error: "INVALID_FILE" }, { status: 400 });
-      }
+      if (!Number.isFinite(size) || size <= 0) return Response.json({ ok: false, error: "INVALID_FILE" }, { status: 400 });
 
       if (size > maxBytes) {
         return Response.json(
@@ -211,52 +190,28 @@ export async function POST(req: NextRequest) {
 
       if (kind === "image" && !allowImages) {
         return Response.json(
-          {
-            ok: false,
-            error: "MIME_NOT_ALLOWED",
-            message: `Images are not allowed on plan '${planKey}'.`,
-            plan: planKey,
-            file: { name: file.name, type: mime, kind },
-          },
+          { ok: false, error: "MIME_NOT_ALLOWED", message: `Images are not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
           { status: 415 }
         );
       }
 
       if (kind === "video" && !allowVideo) {
         return Response.json(
-          {
-            ok: false,
-            error: "MIME_NOT_ALLOWED",
-            message: `Video is not allowed on plan '${planKey}'.`,
-            plan: planKey,
-            file: { name: file.name, type: mime, kind },
-          },
+          { ok: false, error: "MIME_NOT_ALLOWED", message: `Video is not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
           { status: 415 }
         );
       }
 
       if (kind === "other" && !allowOtherBinary) {
         return Response.json(
-          {
-            ok: false,
-            error: "MIME_NOT_ALLOWED",
-            message: `This file type is not allowed on plan '${planKey}'.`,
-            plan: planKey,
-            file: { name: file.name, type: mime, kind },
-          },
+          { ok: false, error: "MIME_NOT_ALLOWED", message: `This file type is not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
           { status: 415 }
         );
       }
 
       if ((planKey === "free" || planKey === "starter") && kind === "other") {
         return Response.json(
-          {
-            ok: false,
-            error: "MIME_NOT_ALLOWED",
-            message: `This file type is not allowed on plan '${planKey}'.`,
-            plan: planKey,
-            file: { name: file.name, type: mime, kind },
-          },
+          { ok: false, error: "MIME_NOT_ALLOWED", message: `This file type is not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
           { status: 415 }
         );
       }
@@ -265,9 +220,7 @@ export async function POST(req: NextRequest) {
     let bot_id = String(form.get("bot_id") ?? "").trim();
     if (!bot_id) {
       const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
-      if (!fallback) {
-        return Response.json({ ok: false, error: "No bots found for this agency/user" }, { status: 404 });
-      }
+      if (!fallback) return Response.json({ ok: false, error: "No bots found for this agency/user" }, { status: 404 });
       bot_id = fallback;
     }
 
@@ -280,12 +233,7 @@ export async function POST(req: NextRequest) {
     if (!ensured.ok) {
       if (ensured.error === "BOT_VECTOR_STORE_MISSING") {
         return Response.json(
-          {
-            ok: false,
-            error: "This bot can’t accept uploads yet (vector store missing).",
-            code: "BOT_VECTOR_STORE_MISSING",
-            bot_id,
-          },
+          { ok: false, error: "This bot can’t accept uploads yet (vector store missing).", code: "BOT_VECTOR_STORE_MISSING", bot_id },
           { status: 409 }
         );
       }
@@ -297,25 +245,16 @@ export async function POST(req: NextRequest) {
     const uploaded: Array<{ document_id: string; filename: string; openai_file_id: string }> = [];
 
     for (const file of files) {
-      const uploadedFile = await openai.files.create({
-        file,
-        purpose: "assistants",
-      });
+      const uploadedFile = await openai.files.create({ file, purpose: "assistants" });
 
-      const vsFile = await openai.vectorStores.files.create(vectorStoreId, {
-        file_id: uploadedFile.id,
-      });
+      const vsFile = await openai.vectorStores.files.create(vectorStoreId, { file_id: uploadedFile.id });
 
       const start = Date.now();
       while (true) {
-        const cur = await openai.vectorStores.files.retrieve(vsFile.id, {
-          vector_store_id: vectorStoreId,
-        });
-
+        const cur = await openai.vectorStores.files.retrieve(vsFile.id, { vector_store_id: vectorStoreId });
         if (cur.status === "completed") break;
         if (cur.status === "failed") throw new Error(`Indexing failed for ${file.name}`);
         if (Date.now() - start > 120_000) throw new Error(`Indexing timed out for ${file.name}`);
-
         await new Promise((r) => setTimeout(r, 1500));
       }
 
@@ -344,18 +283,12 @@ export async function POST(req: NextRequest) {
         uploadedFile.id
       )) as { id: string } | undefined;
 
-      uploaded.push({
-        document_id: row?.id ?? "",
-        filename: file.name,
-        openai_file_id: uploadedFile.id,
-      });
+      uploaded.push({ document_id: row?.id ?? "", filename: file.name, openai_file_id: uploadedFile.id });
     }
 
-    // ✅ Upload quota should be counted here (source of truth)
-    await incrementUsage(db, ctx.agencyId, dateKey, "uploads", files.length);
-
-    // read latest usage
-    const usageRow = await getUsageRow(db, ctx.agencyId, dateKey);
+    // ✅ Canonical per-user upload usage
+    await incrementUserUploads(db, ctx.agencyId, ctx.userId, dateKey, files.length);
+    const usageRow = await getUserUsageRow(db, ctx.agencyId, ctx.userId, dateKey);
 
     return Response.json({
       ok: true,
@@ -386,11 +319,7 @@ export async function POST(req: NextRequest) {
       msg.includes("429");
 
     return Response.json(
-      {
-        ok: false,
-        error: isBilling ? "OpenAI billing/quota required to upload documents" : "Server error",
-        message: msg,
-      },
+      { ok: false, error: isBilling ? "OpenAI billing/quota required to upload documents" : "Server error", message: msg },
       { status: isBilling ? 402 : 500 }
     );
   }

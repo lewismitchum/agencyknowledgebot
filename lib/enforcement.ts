@@ -1,7 +1,7 @@
 // lib/enforcement.ts
 import type { Db } from "@/lib/db";
 import { getPlanLimits, normalizePlan, requireFeature, type FeatureKey } from "@/lib/plans";
-import { getUsageRow } from "@/lib/usage";
+import { getUserUsageRow } from "@/lib/usage";
 
 export type EnforcementResult = { ok: true } | { ok: false; status: number; body: any };
 
@@ -16,12 +16,13 @@ export async function getAgencyPlan(db: Db, agencyId: string, fallbackPlan?: str
 export async function enforceDailyMessages(
   db: Db,
   agencyId: string,
+  userId: string,
   dateKey: string,
   plan: unknown
 ): Promise<EnforcementResult> {
   const p = normalizePlan(plan);
   const limits = getPlanLimits(p);
-  const usage = await getUsageRow(db, agencyId, dateKey);
+  const usage = await getUserUsageRow(db, agencyId, userId, dateKey);
 
   const limit = limits.daily_messages; // number | null
   if (limit == null) return { ok: true }; // unlimited
@@ -50,6 +51,7 @@ export async function enforceDailyMessages(
 export async function enforceDailyUploads(
   db: Db,
   agencyId: string,
+  userId: string,
   dateKey: string,
   plan: unknown,
   attemptedUploads: number
@@ -62,7 +64,7 @@ export async function enforceDailyUploads(
   const limit = Number(limits.daily_uploads);
   if (!Number.isFinite(limit) || limit <= 0) return { ok: true };
 
-  const usage = await getUsageRow(db, agencyId, dateKey);
+  const usage = await getUserUsageRow(db, agencyId, userId, dateKey);
 
   if (usage.uploads_count + attemptedUploads > limit) {
     return {
@@ -92,15 +94,8 @@ export function enforceFeature(plan: unknown, feature: FeatureKey): EnforcementR
 /**
  * Billable seats = users in this agency with status active/pending,
  * EXCLUDING owner/admin roles.
- *
- * Assumes users table has: agency_id, role, status
- * (matches your existing auth model).
  */
-export async function enforceSeatLimit(
-  db: Db,
-  agencyId: string,
-  plan: unknown
-): Promise<EnforcementResult> {
+export async function enforceSeatLimit(db: Db, agencyId: string, plan: unknown): Promise<EnforcementResult> {
   const p = normalizePlan(plan);
   const limits = getPlanLimits(p);
 
@@ -141,11 +136,7 @@ export async function enforceSeatLimit(
  * Agency bots limit = bots where owner_user_id IS NULL (shared bots),
  * EXCLUDING private bots.
  */
-export async function enforceAgencyBotLimit(
-  db: Db,
-  agencyId: string,
-  plan: unknown
-): Promise<EnforcementResult> {
+export async function enforceAgencyBotLimit(db: Db, agencyId: string, plan: unknown): Promise<EnforcementResult> {
   const p = normalizePlan(plan);
   const limits = getPlanLimits(p);
 
