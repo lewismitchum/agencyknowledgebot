@@ -56,11 +56,17 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetchJson("/api/me", { credentials: "include" });
+        const r = await fetch("/api/me", {
+          credentials: "include",
+          cache: "no-store",
+          headers: { "cache-control": "no-cache" },
+        });
+
         if (r.status === 401) {
           window.location.href = "/login";
           return;
         }
+
         if (!r.ok) {
           const raw = await r.text().catch(() => "");
           setBootError(raw || `Failed to load session (${r.status})`);
@@ -96,7 +102,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetchJson("/api/agency/timezone", { credentials: "include", cache: "no-store" });
+        const r = await fetch("/api/agency/timezone", { credentials: "include", cache: "no-store" });
         const j = await r.json().catch(() => ({}));
         if (r.ok && j?.ok && j?.timezone) setTimezone(String(j.timezone));
       } catch {}
@@ -104,7 +110,7 @@ export default function SettingsPage() {
   }, []);
 
   async function logout() {
-    await fetchJson("/api/auth/logout", { method: "POST", credentials: "include" });
+    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login";
   }
 
@@ -131,13 +137,15 @@ export default function SettingsPage() {
     if (!isOwner) return;
     setTzLoading(true);
     setTzError("");
+
     try {
-      const r = await fetchJson("/api/agency/timezone", {
+      const r = await fetch("/api/agency/timezone", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ timezone }),
       });
+
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.message || j?.error || "Failed to save timezone");
       setTimezone(String(j.timezone || timezone));
@@ -264,9 +272,7 @@ export default function SettingsPage() {
 
             {tzError ? <div className="text-sm text-red-600">{tzError}</div> : null}
 
-            {!isOwner ? (
-              <div className="text-xs text-muted-foreground">Owner only can change timezone.</div>
-            ) : null}
+            {!isOwner ? <div className="text-xs text-muted-foreground">Owner only can change timezone.</div> : null}
           </div>
         </CardContent>
       </Card>
@@ -297,9 +303,7 @@ export default function SettingsPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               For internal questions not grounded in docs, Louis replies exactly:
             </p>
-            <div className="mt-3 rounded-xl bg-background p-3 font-mono text-sm">
-              I don’t have that information in the docs yet.
-            </div>
+            <div className="mt-3 rounded-xl bg-background p-3 font-mono text-sm">I don’t have that information in the docs yet.</div>
           </div>
         </CardContent>
       </Card>
