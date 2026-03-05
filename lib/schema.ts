@@ -54,12 +54,14 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
 
   const cols = await getTableColumns(db, "usage_daily");
 
-  const wants = ["agency_id", "date", "messages_count", "uploads_count"];
+  // ✅ NEW canonical includes user_id for per-user limits and tz-correct daily keys.
+  const wants = ["agency_id", "user_id", "date", "messages_count", "uploads_count"];
   if (wants.every((c) => has(cols, c))) return;
 
   const legacyAgencyCol = has(cols, "agency_id") ? "agency_id" : null;
   if (!legacyAgencyCol) return;
 
+  const legacyUserCol = has(cols, "user_id") ? "user_id" : null;
   const legacyDateCol = has(cols, "date") ? "date" : has(cols, "day") ? "day" : null;
 
   const legacyMsgCol = has(cols, "messages_count")
@@ -76,25 +78,31 @@ async function rebuildUsageDailyIfNeeded(db: Db) {
   const msgExpr = legacyMsgCol ? qIdent(legacyMsgCol) : "0";
   const upExpr = legacyUploadsCol ? qIdent(legacyUploadsCol) : "0";
 
+  // If legacy had no user_id, we can't perfectly recover per-user usage.
+  // We'll preserve legacy totals under user_id = '' (empty string).
+  const userExpr = legacyUserCol ? qIdent(legacyUserCol) : "''";
+
   await db.exec(`
     CREATE TABLE IF NOT EXISTS usage_daily_new (
       agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
       date TEXT NOT NULL,
       messages_count INTEGER NOT NULL DEFAULT 0,
       uploads_count INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (agency_id, date)
+      PRIMARY KEY (agency_id, user_id, date)
     );
   `);
 
   await db.exec(`
-    INSERT INTO usage_daily_new (agency_id, date, messages_count, uploads_count)
+    INSERT INTO usage_daily_new (agency_id, user_id, date, messages_count, uploads_count)
     SELECT
       ${qIdent(legacyAgencyCol)} AS agency_id,
+      COALESCE(${userExpr}, '') AS user_id,
       COALESCE(${dateExpr}, '') AS date,
       COALESCE(MAX(CAST(${msgExpr} AS INTEGER)), 0) AS messages_count,
       COALESCE(MAX(CAST(${upExpr} AS INTEGER)), 0) AS uploads_count
     FROM usage_daily
-    GROUP BY ${qIdent(legacyAgencyCol)}, COALESCE(${dateExpr}, '');
+    GROUP BY ${qIdent(legacyAgencyCol)}, COALESCE(${userExpr}, ''), COALESCE(${dateExpr}, '');
   `);
 
   await db.exec(`
@@ -110,7 +118,11 @@ async function ensureUsageDaily(db: Db) {
   const cols = await getTableColumns(db, "usage_daily");
 
   const missingCanonical =
-    !has(cols, "agency_id") || !has(cols, "date") || !has(cols, "messages_count") || !has(cols, "uploads_count");
+    !has(cols, "agency_id") ||
+    !has(cols, "user_id") ||
+    !has(cols, "date") ||
+    !has(cols, "messages_count") ||
+    !has(cols, "uploads_count");
 
   if (missingCanonical) {
     await rebuildUsageDailyIfNeeded(db);
@@ -342,12 +354,14 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- ✅ Canonical per-user daily usage (tz-correct "date" keys)
     CREATE TABLE IF NOT EXISTS usage_daily (
       agency_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
       date TEXT NOT NULL,
       messages_count INTEGER NOT NULL DEFAULT 0,
       uploads_count INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (agency_id, date)
+      PRIMARY KEY (agency_id, user_id, date)
     );
 
     CREATE TABLE IF NOT EXISTS extractions (
@@ -496,6 +510,8 @@ async function ensureCoreTables(db: Db) {
     CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
     CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
 
+    CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date);
+
     CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
     CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
 
@@ -515,8 +531,24 @@ async function ensureCoreTables(db: Db) {
   // Agency timezone
   await addColumnIfMissing(db, "agencies", "timezone", "TEXT");
 
+  // ✅ User timezone (IANA)
+  // Canonical column name: time_zone
+  await addColumnIfMissing(db, "users", "time_zone", "TEXT");
+
   // Users onboarding drift
   await addColumnIfMissing(db, "users", "has_completed_onboarding", "INTEGER NOT NULL DEFAULT 0");
+
+  // ✅ Backfill user time_zone from agency timezone where missing
+  await db.exec(`
+    UPDATE users
+    SET time_zone = (
+      SELECT COALESCE(NULLIF(TRIM(a.timezone), ''), 'America/Chicago')
+      FROM agencies a
+      WHERE a.id = users.agency_id
+      LIMIT 1
+    )
+    WHERE (time_zone IS NULL OR TRIM(time_zone) = '');
+  `);
 
   // Spreadsheets canonical user_id drift + backfill from legacy columns
   if (await tableExists(db, "spreadsheet_proposals")) {

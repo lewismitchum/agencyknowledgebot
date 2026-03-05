@@ -7,6 +7,7 @@ import { ensureSchema } from "@/lib/schema";
 import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
 import { ensureUsageDailySchema, incrementUsage, getUsageRow } from "@/lib/usage";
 import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
+import { getEffectiveTimezone, ymdInTz } from "@/lib/timezone";
 
 export const runtime = "nodejs";
 
@@ -29,25 +30,6 @@ async function getAgencyTimezone(db: Db, agencyId: string) {
 
   const tz = String(row?.timezone ?? "").trim();
   return tz || "America/Chicago";
-}
-
-function ymdInTz(tz: string) {
-  // en-CA -> YYYY-MM-DD
-  try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-  } catch {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Chicago",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-  }
 }
 
 function maxBytesForPlan(plan: string): number {
@@ -148,8 +130,15 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureUsageDailySchema(db);
 
-    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
-    const dateKey = ymdInTz(agencyTz);
+    // ✅ Travel-proof: header -> users.time_zone -> agencies.timezone -> America/Chicago
+    const tz = await getEffectiveTimezone(db, {
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      headers: req.headers,
+    });
+
+    const now = new Date();
+    const dateKey = ymdInTz(now, tz);
 
     // Source-of-truth plan from DB
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
@@ -184,13 +173,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Daily upload limit (plan-based, agency-local day key)
+    // Daily upload limit (plan-based, USER-local day key)
     const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, dateKey, planKey, files.length);
     if (!uploadsGate.ok) {
       return Response.json(
         {
           ...uploadsGate.body,
-          timezone: agencyTz,
+          timezone: tz,
         },
         { status: uploadsGate.status }
       );
@@ -362,7 +351,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ✅ Upload quota should be counted here (source of truth), not in /api/documents forwarding route
+    // ✅ Upload quota should be counted here (source of truth)
     await incrementUsage(db, ctx.agencyId, dateKey, "uploads", files.length);
 
     // read latest usage
@@ -373,7 +362,7 @@ export async function POST(req: NextRequest) {
       bot_id,
       uploaded,
       date: dateKey,
-      timezone: agencyTz,
+      timezone: tz,
       usage: {
         uploads_used: usageRow.uploads_count,
         daily_uploads_limit: toUiDailyUploadsLimit((limits as any)?.daily_uploads),

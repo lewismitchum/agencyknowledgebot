@@ -2,25 +2,43 @@
 import type { Db } from "@/lib/db";
 
 async function ensureUserTimezoneColumns(db: Db) {
+  // Canonical
+  await db.run(`ALTER TABLE users ADD COLUMN time_zone TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN time_zone_updated_at TEXT`).catch(() => {});
+
+  // Legacy drift safety
   await db.run(`ALTER TABLE users ADD COLUMN timezone TEXT`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN timezone_updated_at TEXT`).catch(() => {});
+
+  // Backfill canonical from legacy
+  await db.run(`
+    UPDATE users
+    SET time_zone = timezone
+    WHERE (time_zone IS NULL OR time_zone = '')
+      AND timezone IS NOT NULL
+      AND timezone <> '';
+  `).catch(() => {});
 }
 
-function isLikelyIanaTz(tz: string) {
-  // Accept IANA like "America/Chicago", "Europe/London", allow "Etc/UTC"
+function isValidIanaTzRuntime(tz: string) {
   if (!tz) return false;
-  if (tz.length < 3 || tz.length > 64) return false;
-  if (tz.includes(" ")) return false;
-  if (tz === "Etc/UTC") return true;
-  if (!tz.includes("/")) return false;
-  return true;
+  const t = String(tz).trim();
+  if (t.length < 3 || t.length > 64) return false;
+  if (t.includes(" ")) return false;
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: t }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function headerTimezone(headers?: Headers | null): string | null {
   if (!headers) return null;
   const raw = headers.get("x-user-timezone") || headers.get("X-User-Timezone") || "";
   const tz = String(raw || "").trim();
-  if (!isLikelyIanaTz(tz)) return null;
+  if (!isValidIanaTzRuntime(tz)) return null;
   return tz;
 }
 
@@ -33,21 +51,20 @@ export async function getEffectiveTimezone(
   // 0) Live timezone header (best for travel)
   const live = headerTimezone(args.headers);
   if (live) {
-    // Persist if changed (keeps server reliable even if future calls miss header)
     const existing = (await db.get(
-      `SELECT timezone
+      `SELECT time_zone
        FROM users
        WHERE id = ? AND agency_id = ?
        LIMIT 1`,
       args.userId,
       args.agencyId
-    )) as { timezone?: string | null } | undefined;
+    )) as { time_zone?: string | null } | undefined;
 
-    const cur = String(existing?.timezone ?? "").trim();
+    const cur = String(existing?.time_zone ?? "").trim();
     if (cur !== live) {
       await db.run(
         `UPDATE users
-         SET timezone = ?, timezone_updated_at = ?
+         SET time_zone = ?, time_zone_updated_at = ?
          WHERE id = ? AND agency_id = ?`,
         live,
         new Date().toISOString(),
@@ -59,8 +76,21 @@ export async function getEffectiveTimezone(
     return live;
   }
 
-  // 1) User timezone stored in DB
+  // 1) User timezone stored (canonical)
   const u = (await db.get(
+    `SELECT time_zone
+     FROM users
+     WHERE id = ? AND agency_id = ?
+     LIMIT 1`,
+    args.userId,
+    args.agencyId
+  )) as { time_zone?: string | null } | undefined;
+
+  const userTz = String(u?.time_zone ?? "").trim();
+  if (userTz) return userTz;
+
+  // 1b) Legacy user timezone
+  const uLegacy = (await db.get(
     `SELECT timezone
      FROM users
      WHERE id = ? AND agency_id = ?
@@ -69,8 +99,8 @@ export async function getEffectiveTimezone(
     args.agencyId
   )) as { timezone?: string | null } | undefined;
 
-  const userTz = String(u?.timezone ?? "").trim();
-  if (userTz) return userTz;
+  const legacy = String(uLegacy?.timezone ?? "").trim();
+  if (legacy) return legacy;
 
   // 2) Agency timezone
   const a = (await db.get(

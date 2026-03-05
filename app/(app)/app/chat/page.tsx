@@ -283,7 +283,7 @@ export default function ChatPage() {
 
   const [documentsCount, setDocumentsCount] = useState(0);
 
-  // Timezone (for display + FormData upload header)
+  // Timezone (for display + upload header)
   const [clientTimezone, setClientTimezone] = useState<string>("America/Chicago");
 
   // Usage
@@ -338,6 +338,32 @@ export default function ChatPage() {
     window.location.href = "/login";
   }
 
+  async function persistTimezoneIfNeeded(meUserTimeZone: unknown) {
+    const detected = detectIanaTimezone();
+    setClientTimezone(detected);
+
+    const serverTz = String(meUserTimeZone ?? "").trim();
+    if (serverTz && serverTz === detected) return;
+
+    try {
+      const r = await fetch("/api/me/timezone", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        // ✅ server expects { timezone }
+        body: JSON.stringify({ timezone: detected }),
+      });
+
+      if (!r.ok) return;
+
+      const j: any = await r.json().catch(() => null);
+      const saved = String(j?.timezone ?? j?.time_zone ?? "").trim();
+      if (saved) setClientTimezone(saved);
+    } catch {
+      // ignore
+    }
+  }
+
   /* session */
   useEffect(() => {
     (async () => {
@@ -367,6 +393,9 @@ export default function ChatPage() {
         }
 
         setDocumentsCount(Number(j?.documents_count ?? 0));
+
+        // ✅ Persist client timezone to user profile (single source of truth).
+        persistTimezoneIfNeeded(j?.user?.time_zone).catch(() => {});
 
         // ✅ daily_remaining null => unlimited. Also protect against legacy sentinel (99999).
         setDailyRemaining(normalizeDailyRemaining(j?.daily_remaining));

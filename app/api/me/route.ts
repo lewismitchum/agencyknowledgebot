@@ -9,10 +9,12 @@ import { getPlanLimits, normalizePlan } from "@/lib/plans";
 import { normalizeUserRole, normalizeUserStatus } from "@/lib/users";
 import { openai } from "@/lib/openai";
 import { ensureUsageDailySchema } from "@/lib/usage";
+import { getEffectiveTimezone, ymdInTz } from "@/lib/timezone";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// NOTE: still UTC-based (safe/consistent). If you want TZ-midnight countdown, we can add a TZ-aware version next.
 function secondsUntilUtcMidnight() {
   const now = new Date();
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
@@ -33,6 +35,21 @@ async function ensureUserColumns(db: Db) {
   await db.run(`ALTER TABLE users ADD COLUMN status TEXT`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN email_verified INTEGER`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER`).catch(() => {});
+
+  // ✅ Timezone (canonical + legacy drift safety)
+  await db.run(`ALTER TABLE users ADD COLUMN time_zone TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN time_zone_updated_at TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN timezone TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN timezone_updated_at TEXT`).catch(() => {});
+
+  // ✅ Backfill canonical from legacy if needed
+  await db.run(`
+    UPDATE users
+    SET time_zone = timezone
+    WHERE (time_zone IS NULL OR time_zone = '')
+      AND timezone IS NOT NULL
+      AND timezone <> '';
+  `).catch(() => {});
 }
 
 async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
@@ -73,32 +90,6 @@ async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
       await openai.vectorStores.delete(vs.id);
     } catch {}
     throw e;
-  }
-}
-
-async function getAgencyTimezone(db: Db, agencyId: string) {
-  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { timezone?: string | null }
-    | undefined;
-  const tz = String(row?.timezone ?? "").trim();
-  return tz || "America/Chicago";
-}
-
-function ymdInTz(tz: string) {
-  try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-  } catch {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Chicago",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
   }
 }
 
@@ -148,7 +139,8 @@ export async function GET(req: NextRequest) {
     const agency = (await db.get(
       `SELECT id, name, email, plan,
               stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_current_period_end,
-              trial_used
+              trial_used,
+              timezone
        FROM agencies
        WHERE id = ?
        LIMIT 1`,
@@ -164,11 +156,13 @@ export async function GET(req: NextRequest) {
           stripe_price_id: string | null;
           stripe_current_period_end: string | null;
           trial_used: number | null;
+          timezone: string | null;
         }
       | undefined;
 
     const user = (await db.get(
-      `SELECT id, email, email_verified, role, status, has_completed_onboarding
+      `SELECT id, email, email_verified, role, status, has_completed_onboarding,
+              time_zone, timezone
        FROM users
        WHERE agency_id = ? AND id = ?
        LIMIT 1`,
@@ -182,6 +176,8 @@ export async function GET(req: NextRequest) {
           role: string | null;
           status: string | null;
           has_completed_onboarding: number | null;
+          time_zone: string | null;
+          timezone: string | null;
         }
       | undefined;
 
@@ -192,8 +188,15 @@ export async function GET(req: NextRequest) {
     const dailyMsgLimit = toUiDailyLimit((limits as any)?.daily_messages);
     const dailyUploadLimit = toUiDailyLimit((limits as any)?.daily_uploads);
 
-    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
-    const dateKey = ymdInTz(agencyTz);
+    // ✅ Travel-proof tz: header -> users.time_zone -> users.timezone -> agencies.timezone -> America/Chicago
+    const tz = await getEffectiveTimezone(db, {
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      headers: req.headers,
+    });
+
+    // ✅ Usage day key anchored to viewer’s effective timezone (same as chat/upload)
+    const dateKey = ymdInTz(new Date(), tz);
 
     const { getUsageRow } = await import("@/lib/usage");
     const usage = await getUsageRow(db, ctx.agencyId, dateKey);
@@ -218,6 +221,8 @@ export async function GET(req: NextRequest) {
     const trial_used = Number((agency as any)?.trial_used ?? 0) === 1 ? 1 : 0;
     const trial_days_left = daysLeftFromPeriodEnd(agency?.stripe_current_period_end);
 
+    const userTz = String(user?.time_zone ?? "").trim() || String(user?.timezone ?? "").trim() || "";
+
     return NextResponse.json({
       ok: true,
 
@@ -232,7 +237,7 @@ export async function GET(req: NextRequest) {
         stripe_current_period_end: agency?.stripe_current_period_end ?? null,
         trial_used,
         trial_days_left,
-        timezone: agencyTz,
+        timezone: String(agency?.timezone ?? "").trim() || tz,
       },
 
       user: {
@@ -242,6 +247,12 @@ export async function GET(req: NextRequest) {
         role,
         status,
         has_completed_onboarding: Number((user as any)?.has_completed_onboarding ?? 0) === 1 ? 1 : 0,
+
+        // ✅ canonical key the client should use
+        time_zone: userTz || tz || null,
+
+        // ✅ optional legacy echo
+        timezone: userTz || tz || null,
       },
 
       plan,
@@ -254,7 +265,6 @@ export async function GET(req: NextRequest) {
       daily_remaining,
       daily_resets_in_seconds: secondsUntilUtcMidnight(),
 
-      // ✅ Docs page reads these
       uploads_used,
       uploads_limit,
       uploads_remaining,

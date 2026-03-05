@@ -8,21 +8,32 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function ensureUserTimezoneColumns(db: Db) {
-  // drift-safe
+  // canonical
+  await db.run(`ALTER TABLE users ADD COLUMN time_zone TEXT`).catch(() => {});
+  await db.run(`ALTER TABLE users ADD COLUMN time_zone_updated_at TEXT`).catch(() => {});
+
+  // legacy drift safety
   await db.run(`ALTER TABLE users ADD COLUMN timezone TEXT`).catch(() => {});
   await db.run(`ALTER TABLE users ADD COLUMN timezone_updated_at TEXT`).catch(() => {});
+
+  // backfill canonical from legacy
+  await db.run(`
+    UPDATE users
+    SET time_zone = timezone
+    WHERE (time_zone IS NULL OR time_zone = '')
+      AND timezone IS NOT NULL
+      AND timezone <> '';
+  `).catch(() => {});
 }
 
 function isValidIanaTz(tz: string) {
-  // Stronger than "looks like": uses Intl to validate the timezone exists on this runtime.
-  // Accepts e.g. "America/Chicago", "Europe/London", "Etc/UTC".
   if (!tz) return false;
-  if (tz.length < 3 || tz.length > 64) return false;
-  if (tz.includes(" ")) return false;
+  const t = String(tz).trim();
+  if (t.length < 3 || t.length > 64) return false;
+  if (t.includes(" ")) return false;
 
   try {
-    // Throws RangeError for invalid timeZone in most runtimes.
-    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
+    new Intl.DateTimeFormat("en-US", { timeZone: t }).format(new Date());
     return true;
   } catch {
     return false;
@@ -37,32 +48,35 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureUserTimezoneColumns(db);
 
-    const body = (await req.json().catch(() => null)) as { timezone?: unknown } | null;
-    const tz = String(body?.timezone ?? "").trim();
+    const body = (await req.json().catch(() => null)) as
+      | { timezone?: unknown; time_zone?: unknown; timeZone?: unknown }
+      | null;
+
+    // ✅ accept all common keys (your client currently sends { time_zone })
+    const tz = String(body?.time_zone ?? body?.timezone ?? body?.timeZone ?? "").trim();
 
     if (!isValidIanaTz(tz)) {
       return Response.json({ ok: false, error: "INVALID_TIMEZONE" }, { status: 400 });
     }
 
-    // Only update if changed (keeps writes low)
     const existing = (await db.get(
-      `SELECT timezone
+      `SELECT time_zone
        FROM users
        WHERE id = ? AND agency_id = ?
        LIMIT 1`,
       ctx.userId,
       ctx.agencyId
-    )) as { timezone?: string | null } | undefined;
+    )) as { time_zone?: string | null } | undefined;
 
-    const cur = String(existing?.timezone ?? "").trim();
+    const cur = String(existing?.time_zone ?? "").trim();
 
     if (cur === tz) {
-      return Response.json({ ok: true, timezone: tz, changed: false });
+      return Response.json({ ok: true, timezone: tz, time_zone: tz, changed: false });
     }
 
     await db.run(
       `UPDATE users
-       SET timezone = ?, timezone_updated_at = ?
+       SET time_zone = ?, time_zone_updated_at = ?
        WHERE id = ? AND agency_id = ?`,
       tz,
       new Date().toISOString(),
@@ -70,7 +84,7 @@ export async function POST(req: NextRequest) {
       ctx.agencyId
     );
 
-    return Response.json({ ok: true, timezone: tz, changed: true });
+    return Response.json({ ok: true, timezone: tz, time_zone: tz, changed: true });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
     if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });

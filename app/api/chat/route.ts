@@ -5,7 +5,7 @@ import { requireActiveMember } from "@/lib/authz";
 import { normalizePlan, getPlanLimits } from "@/lib/plans";
 import { openai } from "@/lib/openai";
 import { ensureSchema } from "@/lib/schema";
-import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
+import { ensureUsageDailySchema, incrementUsage, getUsageRow } from "@/lib/usage";
 import { enforceDailyMessages, getAgencyPlan } from "@/lib/enforcement";
 import { getEffectiveTimezone, ymdInTz, timeStringInTz } from "@/lib/timezone";
 
@@ -387,7 +387,7 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureUsageDailySchema(db);
 
-    // ✅ Travel-proof timezone: header -> users.timezone -> agencies.timezone -> America/Chicago
+    // ✅ Travel-proof timezone: header -> users.time_zone -> agencies.timezone -> America/Chicago
     const tz = await getEffectiveTimezone(db, {
       agencyId: ctx.agencyId,
       userId: ctx.userId,
@@ -471,14 +471,15 @@ export async function POST(req: NextRequest) {
       const hasVideos = videoTitles.length > 0;
 
       const mediaHint = hasImages
-        ? "The user attached one or more images. You CAN analyze the images and answer questions about what’s in them."
-        : "If the user asks about the contents of an image/video file, be honest: you may not be able to see pixels/audio. Use file_search evidence only.";
+        ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
+        : "If the user asks about the contents of an image/video file, be honest about limitations. Use file_search evidence only.";
 
       const inputBlocks: any[] = [
         {
           role: "user",
           content: [
             { type: "input_text", text: openaiInputText },
+            // NOTE: only safe if your OpenAI setup supports image_file_id in Responses.
             ...imageFiles.map((img) => ({
               type: "input_image",
               image_file_id: img.openai_file_id,
@@ -526,8 +527,9 @@ ${
 
     await insertMessage(db, convo.id, "assistant", answer);
 
-    // Usage (1 per call)
-    const usageRow = await incrementUsage(db, ctx.agencyId, dateKey, "messages", 1);
+    // ✅ Usage (do NOT assume incrementUsage returns a row)
+    await incrementUsage(db, ctx.agencyId, dateKey, "messages", 1);
+    const usageAfter = await getUsageRow(db, ctx.agencyId, dateKey);
 
     // ===== Memory refresh (transactional, safe) =====
     const planKey = normalizePlan(plan);
@@ -597,7 +599,7 @@ ${
       ok: true,
       answer,
       usage: {
-        used: usageRow.messages_count,
+        used: Number(usageAfter.messages_count ?? 0),
         daily_limit: dailyLimitUi,
         plan: planKey,
         timezone: tz,
