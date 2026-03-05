@@ -1,118 +1,193 @@
 // app/(app)/app/usage/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 
 type UsageResp = {
   ok: boolean;
-  plan: string;
-  timezone: string;
-  date: string;
-  usage: { messages_used: number; uploads_used: number };
-  limits: { daily_messages: number; daily_uploads: number | null };
+  plan?: string;
+  limits?: {
+    daily_messages?: number | null;
+    daily_uploads?: number | null;
+    bots_limit?: number | null;
+    users_limit?: number | null;
+    storage_mb?: number | null;
+  };
+  usage?: {
+    day_key?: string | null;
+    messages_used?: number;
+    uploads_used?: number;
+  };
+  remaining?: {
+    messages?: number | null;
+    uploads?: number | null;
+  };
+  resets_at?: string | null;
   error?: string;
   message?: string;
 };
 
-function fmtLimit(n: number | null) {
+function fmtLimit(n: number | null | undefined) {
   if (n == null) return "Unlimited";
+  if (!Number.isFinite(n)) return "—";
+  return String(n);
+}
+
+function fmtNum(n: number | null | undefined) {
+  if (n == null) return "—";
+  if (!Number.isFinite(n)) return "—";
   return String(n);
 }
 
 export default function UsagePage() {
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
   const [data, setData] = useState<UsageResp | null>(null);
 
-  useEffect(() => {
-    let ok = true;
-    (async () => {
-      try {
-        const res = await fetchJson("/api/usage", { method: "GET" });
-        const json = (await res.json().catch(() => null)) as UsageResp | null;
-        if (!ok) return;
-        setData(json);
-      } catch (e: any) {
-        if (!ok) return;
-        setData({
-          ok: false,
-          plan: "free",
-          timezone: "America/Chicago",
-          date: "",
-          usage: { messages_used: 0, uploads_used: 0 },
-          limits: { daily_messages: 0, daily_uploads: 0 },
-          error: "FETCH_FAILED",
-          message: String(e?.message ?? e),
-        });
-      } finally {
-        if (ok) setLoading(false);
+  const plan = String(data?.plan ?? "free");
+
+  const msgLimit = data?.limits?.daily_messages ?? null;
+  const uplLimit = data?.limits?.daily_uploads ?? null;
+
+  const msgUsed = Number(data?.usage?.messages_used ?? 0);
+  const uplUsed = Number(data?.usage?.uploads_used ?? 0);
+
+  const msgRemain = data?.remaining?.messages ?? (msgLimit == null ? null : Math.max(0, Number(msgLimit) - msgUsed));
+  const uplRemain = data?.remaining?.uploads ?? (uplLimit == null ? null : Math.max(0, Number(uplLimit) - uplUsed));
+
+  const headline = useMemo(() => {
+    if (loading) return "Loading…";
+    return `Plan: ${plan}`;
+  }, [loading, plan]);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+
+    try {
+      const r = await fetch("/api/usage", { method: "GET", credentials: "include", cache: "no-store" });
+
+      if (r.status === 401) {
+        window.location.href = "/login";
+        return;
       }
-    })();
-    return () => {
-      ok = false;
-    };
+
+      const j = (await r.json().catch(() => null)) as UsageResp | null;
+
+      if (!r.ok || !j?.ok) {
+        const msg = String((j as any)?.error || (j as any)?.message || `Failed (${r.status})`);
+        setError(msg);
+        setData(null);
+        return;
+      }
+
+      setData(j);
+    } catch (e: any) {
+      setError(e?.message || "Failed to load usage");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Usage</h1>
-        <Link className="text-sm underline opacity-80 hover:opacity-100" href="/app">
-          Back
-        </Link>
+    <div className="mx-auto max-w-4xl space-y-6">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Usage</h1>
+          <p className="mt-2 text-muted-foreground">Daily limits and plan caps. Resets are based on workspace timezone.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" className="rounded-full" onClick={load} disabled={loading}>
+            Refresh
+          </Button>
+          <Button asChild variant="outline" className="rounded-full">
+            <Link href="/app">Back</Link>
+          </Button>
+        </div>
       </div>
 
-      <div className="rounded-xl border bg-background p-4">
-        {loading ? (
-          <div className="text-sm opacity-70">Loading…</div>
-        ) : !data?.ok ? (
-          <div className="text-sm">
-            <div className="font-medium">Couldn’t load usage.</div>
-            <div className="mt-1 opacity-80">
-              {data?.error ?? "ERROR"} {data?.message ? `— ${data.message}` : ""}
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
+      ) : null}
+
+      <Card className="rounded-3xl">
+        <CardHeader>
+          <CardTitle className="text-xl tracking-tight">{headline}</CardTitle>
+          <CardDescription>Messages + uploads are tracked per day key.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary" className="rounded-full">
+              Messages: {loading ? "—" : `${fmtNum(msgUsed)} used`} {loading ? "" : `(limit ${fmtLimit(msgLimit)})`}
+            </Badge>
+            <Badge variant="secondary" className="rounded-full">
+              Uploads: {loading ? "—" : `${fmtNum(uplUsed)} used`} {loading ? "" : `(limit ${fmtLimit(uplLimit)})`}
+            </Badge>
+            {data?.usage?.day_key ? (
+              <Badge variant="outline" className="rounded-full">
+                Day: {String(data.usage.day_key)}
+              </Badge>
+            ) : null}
+            {data?.resets_at ? (
+              <Badge variant="outline" className="rounded-full">
+                Resets: {String(data.resets_at)}
+              </Badge>
+            ) : null}
+          </div>
+
+          <Separator />
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-2xl border bg-background/40 p-4">
+              <div className="text-sm font-medium">Remaining today</div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Messages: <span className="font-medium text-foreground">{msgRemain == null ? "Unlimited" : fmtNum(msgRemain)}</span>
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Uploads: <span className="font-medium text-foreground">{uplRemain == null ? "Unlimited" : fmtNum(uplRemain)}</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-background/40 p-4">
+              <div className="text-sm font-medium">Plan caps</div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Bots: <span className="font-medium text-foreground">{fmtLimit(data?.limits?.bots_limit ?? null)}</span>
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Users: <span className="font-medium text-foreground">{fmtLimit(data?.limits?.users_limit ?? null)}</span>
+              </div>
+              {data?.limits?.storage_mb != null ? (
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Storage: <span className="font-medium text-foreground">{fmtNum(data.limits.storage_mb)} MB</span>
+                </div>
+              ) : null}
             </div>
           </div>
-        ) : (
-          <div className="space-y-3 text-sm">
-            <div className="flex flex-wrap gap-x-6 gap-y-1">
-              <div>
-                <span className="opacity-70">Plan:</span> <span className="font-medium">{data.plan}</span>
-              </div>
-              <div>
-                <span className="opacity-70">Day key:</span> <span className="font-medium">{data.date}</span>
-              </div>
-              <div>
-                <span className="opacity-70">Timezone:</span> <span className="font-medium">{data.timezone}</span>
-              </div>
-            </div>
 
-            <div className="rounded-lg border p-3">
-              <div className="font-medium mb-2">Daily</div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <div className="rounded-md border p-3">
-                  <div className="opacity-70">Chats used</div>
-                  <div className="text-lg font-semibold">
-                    {data.usage.messages_used}{" "}
-                    <span className="text-sm font-normal opacity-70">/ {fmtLimit(data.limits.daily_messages)}</span>
-                  </div>
-                </div>
-
-                <div className="rounded-md border p-3">
-                  <div className="opacity-70">Uploads used</div>
-                  <div className="text-lg font-semibold">
-                    {data.usage.uploads_used}{" "}
-                    <span className="text-sm font-normal opacity-70">/ {fmtLimit(data.limits.daily_uploads)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="opacity-70 text-xs">
-              Note: counts are tracked per agency per local day (based on your agency timezone).
-            </div>
+          <div className="flex flex-wrap gap-2 pt-2">
+            <Button asChild className="rounded-full">
+              <Link href="/app/billing">Upgrade</Link>
+            </Button>
+            <Button asChild variant="outline" className="rounded-full">
+              <Link href="/app/docs">Docs</Link>
+            </Button>
+            <Button asChild variant="outline" className="rounded-full">
+              <Link href="/app/support">Support</Link>
+            </Button>
           </div>
-        )}
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
