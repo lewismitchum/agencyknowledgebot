@@ -18,7 +18,9 @@ export default function CheckEmailClient() {
   const sp = useSearchParams();
 
   const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">(
+    "idle"
+  );
   const [error, setError] = useState<string | null>(null);
 
   // Local UI throttle (server also throttles; this just avoids spam clicks)
@@ -68,7 +70,7 @@ export default function CheckEmailClient() {
     const normalized = normalizeEmail(email);
 
     try {
-      const r = await fetchJson("/api/auth/resend-verification", {
+      const r = await fetch("/api/auth/resend-verification", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -79,7 +81,9 @@ export default function CheckEmailClient() {
       if (!r.ok) {
         const raw = await r.text().catch(() => "");
         // Don't leak specifics; just show a generic retry message.
-        throw new Error(raw || "Could not resend verification email. Please try again.");
+        throw new Error(
+          raw || "Could not resend verification email. Please try again."
+        );
       }
 
       setStatus("sent");
@@ -96,7 +100,8 @@ export default function CheckEmailClient() {
       <div className="w-full max-w-md rounded-2xl border bg-white/70 dark:bg-black/20 backdrop-blur p-6 shadow-sm">
         <h1 className="text-2xl font-semibold">Check your email</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          We sent a verification link to your inbox. Click it to activate your workspace.
+          We sent a verification link to your inbox. Click it to activate your
+          workspace.
         </p>
 
         <div className="mt-4 rounded-xl border p-4 text-sm">
@@ -108,7 +113,9 @@ export default function CheckEmailClient() {
         </div>
 
         <form className="mt-5 space-y-3" onSubmit={onResend}>
-          <label className="block text-sm font-medium">Resend verification</label>
+          <label className="block text-sm font-medium">
+            Resend verification
+          </label>
           <input
             className="w-full rounded-xl border px-3 py-2 bg-transparent"
             placeholder="you@company.com"
@@ -123,16 +130,23 @@ export default function CheckEmailClient() {
             disabled={disabled}
             className="w-full rounded-xl bg-black text-white py-2 disabled:opacity-60"
           >
-            {sending ? "Sending..." : cooldown > 0 ? `Resend available in ${cooldown}s` : "Resend verification email"}
+            {sending
+              ? "Sending..."
+              : cooldown > 0
+              ? `Resend available in ${cooldown}s`
+              : "Resend verification email"}
           </button>
 
           {status === "sent" ? (
             <p className="text-sm text-green-600">
-              If an account exists for that email, a verification link was sent. Check your inbox/spam.
+              If an account exists for that email, a verification link was sent.
+              Check your inbox/spam.
             </p>
           ) : null}
 
-          {status === "error" ? <p className="text-sm text-red-600">{error}</p> : null}
+          {status === "error" ? (
+            <p className="text-sm text-red-600">{error}</p>
+          ) : null}
         </form>
 
         <div className="mt-6 flex items-center justify-between text-sm">
