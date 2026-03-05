@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ModeToggle } from "@/components/mode-toggle";
 import { hasFeature } from "@/lib/plans";
+import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 
 type GateState = "checking" | "ok" | "redirecting";
 
@@ -25,6 +26,10 @@ type MeResponse = {
     plan?: string | null;
   };
 };
+
+function isFetchJsonError(e: any): e is FetchJsonError {
+  return !!e && typeof e === "object" && (e?.name === "FetchJsonError" || "info" in e);
+}
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -61,7 +66,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const r = await fetchJson("/api/me", {
+        const j = await fetchJson<MeResponse>("/api/me", {
           credentials: "include",
           cache: "no-store",
           headers: { "cache-control": "no-cache" },
@@ -69,27 +74,31 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         if (cancelled) return;
 
-        if (r.status === 401) {
-          setGate("redirecting");
-          window.location.href = "/login";
-          return;
+        setMe(j);
+        const completed = Number(j?.user?.has_completed_onboarding ?? 0) === 1;
+        setShowOnboarding(!completed);
+        setGate("ok");
+      } catch (e: any) {
+        if (cancelled) return;
+
+        if (isFetchJsonError(e)) {
+          const status = Number(e?.info?.status ?? 0);
+
+          if (status === 401) {
+            setGate("redirecting");
+            window.location.href = "/login";
+            return;
+          }
+
+          if (status === 403) {
+            setGate("redirecting");
+            window.location.href = "/check-email";
+            return;
+          }
         }
 
-        if (r.status === 403) {
-          setGate("redirecting");
-          window.location.href = "/check-email";
-          return;
-        }
-
-        const j = (await r.json().catch(() => null)) as MeResponse | null;
-        if (!cancelled) {
-          setMe(j);
-          const completed = Number(j?.user?.has_completed_onboarding ?? 0) === 1;
-          setShowOnboarding(!completed);
-          setGate("ok");
-        }
-      } catch {
-        if (!cancelled) setGate("ok");
+        // Fail open (don’t block the app on transient fetch issues)
+        setGate("ok");
       }
     }
 
@@ -330,7 +339,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <MobileItem href="/app/spreadsheets" label="Sheets" active={pathname?.startsWith("/app/spreadsheets")} />
             ) : null}
 
-            {canSeeEmail ? <MobileItem href="/app/email" label="Email" active={pathname?.startsWith("/app/email")} /> : null}
+            {canSeeEmail ? (
+              <MobileItem href="/app/email" label="Email" active={pathname?.startsWith("/app/email")} />
+            ) : null}
 
             <MobileItem href="/app/support" label="Help" active={pathname?.startsWith("/app/support")} />
             <MobileItem href="/app/settings" label="Settings" active={pathname === "/app/settings"} />
