@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { randomUUID } from "crypto";
 import { getSessionFromRequest } from "@/lib/auth";
 import { getDb, type Db } from "@/lib/db";
+import { ensureSchema } from "@/lib/schema";
 import { normalizePlan, type PlanKey } from "@/lib/plans";
 
 export type AuthedContext = {
@@ -68,6 +69,25 @@ async function ensureAgencyPlanColumn(db: Db) {
   await db.run("ALTER TABLE agencies ADD COLUMN plan TEXT").catch(() => {});
 }
 
+/**
+ * ✅ Critical drift safety:
+ * Some older code paths still reference `users.user_id`.
+ * Canonical is `users.id`, but we create+backfill user_id to prevent runtime 500s.
+ */
+async function ensureUsersCompatUserId(db: Db) {
+  await db.run(`ALTER TABLE users ADD COLUMN user_id TEXT`).catch(() => {});
+  await db.run(
+    `
+    UPDATE users
+    SET user_id = id
+    WHERE (user_id IS NULL OR user_id = '')
+      AND id IS NOT NULL
+      AND id <> '';
+  `
+  ).catch(() => {});
+  await db.run(`CREATE INDEX IF NOT EXISTS idx_users_agency_user_id ON users(agency_id, user_id)`).catch(() => {});
+}
+
 export function isOwnerOrAdmin(ctx: Pick<AuthedContext, "role">) {
   return ctx.role === "owner" || ctx.role === "admin";
 }
@@ -122,16 +142,9 @@ async function createUserLocal(db: Db, agencyId: string, email: string): Promise
   const now = new Date().toISOString();
   const e = String(email ?? "").trim().toLowerCase();
 
-  // We keep defaults conservative:
-  // - role: member
-  // - status: pending (so owner/admin approval flow still works)
-  // If your system expects active-by-default in some flows, you can change this to "active".
   const role = "member";
   const status = "pending";
 
-  // Drift-safe insert: assumes these columns exist in your canonical schema:
-  // users(id, agency_id, email, created_at, role, status)
-  // If created_at doesn't exist, this will throw; so we attempt a smaller insert fallback.
   try {
     await db.run(
       `INSERT INTO users (id, agency_id, email, created_at, role, status)
@@ -144,18 +157,13 @@ async function createUserLocal(db: Db, agencyId: string, email: string): Promise
       status
     );
   } catch {
-    // Fallback for older schemas
-    await db.run(
-      `INSERT INTO users (id, agency_id, email)
-       VALUES (?, ?, ?)`,
-      id,
-      agencyId,
-      e
-    ).catch(() => {});
-    // Best-effort set role/status if columns exist
+    await db.run(`INSERT INTO users (id, agency_id, email) VALUES (?, ?, ?)`, id, agencyId, e).catch(() => {});
     await db.run(`UPDATE users SET role = ? WHERE id = ? AND agency_id = ?`, role, id, agencyId).catch(() => {});
     await db.run(`UPDATE users SET status = ? WHERE id = ? AND agency_id = ?`, status, id, agencyId).catch(() => {});
   }
+
+  // Best-effort backfill compat alias for this new row
+  await db.run(`UPDATE users SET user_id = id WHERE agency_id = ? AND id = ?`, agencyId, id).catch(() => {});
 
   return { id, email: e, role, status };
 }
@@ -171,8 +179,16 @@ export async function requireActiveMember(req: NextRequest): Promise<AuthedConte
   if (!session?.agencyId || !session?.agencyEmail) throw new AuthzError("UNAUTHENTICATED");
 
   const db: Db = await getDb();
+
+  // ✅ Ensure canonical schema exists before any ALTERs
+  await ensureSchema(db);
+
+  // ✅ Ensure required columns exist
   await ensureUserRoleColumns(db);
   await ensureAgencyPlanColumn(db);
+
+  // ✅ Prevent "no such column: user_id" anywhere
+  await ensureUsersCompatUserId(db);
 
   const agencyId = String(session.agencyId);
   const agencyEmail = String(session.agencyEmail);
