@@ -65,29 +65,103 @@ function splitSqlStatements(sql: string): string[] {
   return out;
 }
 
+function truncate(s: string, max = 700) {
+  const str = String(s ?? "");
+  if (str.length <= max) return str;
+  return str.slice(0, max) + " …(truncated)";
+}
+
+function safeArgsSummary(args: any[]) {
+  // Avoid dumping large blobs/secrets; show types + short strings only.
+  return (args || []).map((a) => {
+    if (a == null) return a;
+    if (typeof a === "string") return truncate(a, 120);
+    if (typeof a === "number" || typeof a === "boolean") return a;
+    if (a instanceof Date) return a.toISOString();
+    try {
+      const j = JSON.stringify(a);
+      return truncate(j, 120);
+    } catch {
+      return String(a);
+    }
+  });
+}
+
+function shouldDebugSql() {
+  return String(process.env.DB_DEBUG_SQL ?? "").trim() === "1";
+}
+
+function shouldDebugLogs() {
+  return String(process.env.DB_DEBUG_LOGS ?? "").trim() === "1";
+}
+
+function wrapDbError(err: any, sql: string, args: any[]) {
+  const msg = String(err?.message ?? err);
+  const code = String(err?.code ?? "");
+
+  const sqlSnippet = truncate(sql, 900);
+  const argSummary = safeArgsSummary(args);
+
+  if (shouldDebugLogs()) {
+    console.error("DB_ERROR", {
+      code,
+      message: msg,
+      sql: sqlSnippet,
+      args: argSummary,
+    });
+  }
+
+  if (shouldDebugSql()) {
+    // Bubble up SQL so your API 500 JSON includes it (your route returns err.message)
+    const e = new Error(
+      `${msg}\n\n[SQL]\n${sqlSnippet}\n\n[ARGS]\n${JSON.stringify(argSummary)}`
+    ) as any;
+    e.code = err?.code ?? code;
+    return e;
+  }
+
+  return err;
+}
+
 export async function getDb(): Promise<Db> {
   const client = getClient();
 
   return {
     async run(sql: string, ...args: any[]) {
-      const rs = await client.execute({ sql, args });
-      return { changes: rs.rowsAffected ?? 0, lastID: rs.lastInsertRowid as any };
+      try {
+        const rs = await client.execute({ sql, args });
+        return { changes: rs.rowsAffected ?? 0, lastID: rs.lastInsertRowid as any };
+      } catch (err: any) {
+        throw wrapDbError(err, sql, args);
+      }
     },
 
     async get<T = any>(sql: string, ...args: any[]) {
-      const rs = await client.execute({ sql, args });
-      return (rs.rows?.[0] as T) ?? undefined;
+      try {
+        const rs = await client.execute({ sql, args });
+        return (rs.rows?.[0] as T) ?? undefined;
+      } catch (err: any) {
+        throw wrapDbError(err, sql, args);
+      }
     },
 
     async all<T = any>(sql: string, ...args: any[]) {
-      const rs = await client.execute({ sql, args });
-      return (rs.rows as T[]) ?? [];
+      try {
+        const rs = await client.execute({ sql, args });
+        return (rs.rows as T[]) ?? [];
+      } catch (err: any) {
+        throw wrapDbError(err, sql, args);
+      }
     },
 
     async exec(sql: string) {
       const statements = splitSqlStatements(sql);
       for (const stmt of statements) {
-        await client.execute(stmt);
+        try {
+          await client.execute(stmt);
+        } catch (err: any) {
+          throw wrapDbError(err, stmt, []);
+        }
       }
     },
   };
