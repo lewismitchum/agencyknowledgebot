@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corporation";
 
@@ -108,49 +109,57 @@ function BillingContent() {
   const allowedUserId = (process.env.NEXT_PUBLIC_TIER_SWITCHER_USER_ID || "").trim();
 
   async function loadMeOnce(signal?: AbortSignal) {
-    const res = await fetchJson("/api/me", { method: "GET", cache: "no-store", signal });
-    const data = (await res.json().catch(() => ({}))) as MeResponse;
+    try {
+      const data = (await fetchJson<MeResponse>("/api/me", { method: "GET", cache: "no-store", signal })) as MeResponse;
 
-    if ((data as any)?.ok && (data as any)?.agency) {
-      const a = (data as any).agency;
-      const u = (data as any).user;
+      if ((data as any)?.ok && (data as any)?.agency) {
+        const a = (data as any).agency;
+        const u = (data as any).user;
 
-      const uid = String(u?.id ?? "");
-      setMeUserId(uid);
+        const uid = String(u?.id ?? "");
+        setMeUserId(uid);
 
-      if (a?.plan) {
-        const p = String(a.plan);
-        setCurrentPlan(p);
-        if (["free", "starter", "pro", "enterprise", "corporation"].includes(p)) {
-          setDevPlan(p as PlanKey);
+        if (a?.plan) {
+          const p = String(a.plan);
+          setCurrentPlan(p);
+          if (["free", "starter", "pro", "enterprise", "corporation"].includes(p)) {
+            setDevPlan(p as PlanKey);
+          }
         }
+
+        if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
+        if (a?.stripe_customer_id) setHasStripeCustomer(true);
+
+        setStripeSubscriptionId(typeof a?.stripe_subscription_id === "string" ? a.stripe_subscription_id : null);
+
+        const tu = Number((a as any)?.trial_used ?? 0) === 1;
+        setTrialUsed(tu);
+
+        const tdl = (a as any)?.trial_days_left;
+        if (tdl === null || typeof tdl === "undefined") setTrialDaysLeft(null);
+        else {
+          const n = Number(tdl);
+          setTrialDaysLeft(Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null);
+        }
+
+        setIsOwner(String(u?.role || "") === "owner");
       }
 
-      if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
-      if (a?.stripe_customer_id) setHasStripeCustomer(true);
-
-      setStripeSubscriptionId(typeof a?.stripe_subscription_id === "string" ? a.stripe_subscription_id : null);
-
-      const tu = Number((a as any)?.trial_used ?? 0) === 1;
-      setTrialUsed(tu);
-
-      const tdl = (a as any)?.trial_days_left;
-      if (tdl === null || typeof tdl === "undefined") setTrialDaysLeft(null);
-      else {
-        const n = Number(tdl);
-        setTrialDaysLeft(Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null);
+      return data;
+    } catch (e: any) {
+      if (e instanceof FetchJsonError && e.info.status === 401) {
+        window.location.href = "/login";
+        return { ok: false, error: "Unauthorized" } as any;
       }
-
-      setIsOwner(String(u?.role || "") === "owner");
+      return { ok: false, error: "Failed to load /api/me" } as any;
     }
-
-    return data;
   }
 
   useEffect(() => {
     const ac = new AbortController();
     loadMeOnce(ac.signal).catch(() => {});
     return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ✅ Auto-refresh after successful checkout (webhook may take a moment)
@@ -190,28 +199,30 @@ function BillingContent() {
       stopped = true;
       ac.abort();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSuccess]);
 
   async function startCheckout(plan: "starter" | "pro" | "enterprise" | "corporation") {
     try {
       setLoadingPlan(plan);
 
-      const res = await fetchJson("/api/billing/checkout", {
+      const data = (await fetchJson<any>("/api/billing/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ plan }),
-      });
+      })) as any;
 
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok || !data?.url) {
-        const msg = String(data?.error || data?.message || "Checkout failed");
-        alert(msg);
+      if (!data?.url) {
+        alert(String(data?.error || data?.message || "Checkout failed"));
         return;
       }
 
       window.location.href = String(data.url);
     } catch (e: any) {
+      if (e instanceof FetchJsonError && e.info.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
       alert(String(e?.message ?? e));
     } finally {
       setLoadingPlan(null);
@@ -222,17 +233,19 @@ function BillingContent() {
     try {
       setPortalLoading(true);
 
-      const res = await fetchJson("/api/billing/portal", { method: "POST" });
-      const data = await res.json().catch(() => ({}));
+      const data = (await fetchJson<any>("/api/billing/portal", { method: "POST" })) as any;
 
-      if (!res.ok || !data?.url) {
-        const msg = String(data?.error || data?.message || "Could not open billing portal");
-        alert(msg);
+      if (!data?.url) {
+        alert(String(data?.error || data?.message || "Could not open billing portal"));
         return;
       }
 
       window.location.href = String(data.url);
     } catch (e: any) {
+      if (e instanceof FetchJsonError && e.info.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
       alert(String(e?.message ?? e));
     } finally {
       setPortalLoading(false);
@@ -244,21 +257,23 @@ function BillingContent() {
       setDevSaving(true);
       setDevPlan(plan);
 
-      const res = await fetchJson("/api/billing/dev-set-plan", {
+      const data = (await fetchJson<any>("/api/billing/dev-set-plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ plan }),
-      });
+      })) as any;
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.ok) {
-        const msg = String(data?.error || data?.message || "Failed to set plan");
-        alert(msg);
+      if (!data?.ok) {
+        alert(String(data?.error || data?.message || "Failed to set plan"));
         return;
       }
 
       setCurrentPlan(plan);
     } catch (e: any) {
+      if (e instanceof FetchJsonError && e.info.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
       alert(String(e?.message ?? e));
     } finally {
       setDevSaving(false);
