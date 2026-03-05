@@ -1,5 +1,5 @@
 // app/api/chat/route.ts
-import type { NextRequest } from "next/server";
+import { type NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { normalizePlan, getPlanLimits } from "@/lib/plans";
@@ -7,6 +7,7 @@ import { openai } from "@/lib/openai";
 import { ensureSchema } from "@/lib/schema";
 import { ensureUsageDailySchema, incrementUsage } from "@/lib/usage";
 import { enforceDailyMessages, getAgencyPlan } from "@/lib/enforcement";
+import { getEffectiveTimezone, ymdInTz, timeStringInTz } from "@/lib/timezone";
 
 export const runtime = "nodejs";
 
@@ -49,53 +50,6 @@ function makeId(prefix: string) {
 function looksLikeTimeQuestion(s: string) {
   const t = s.trim().toLowerCase();
   return t === "what time is it" || t.includes("current time") || t.includes("time is it");
-}
-
-function timeStringInTz(tz: string) {
-  const dt = new Date();
-  const time = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  }).format(dt);
-
-  const date = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  }).format(dt);
-
-  return `It’s ${time} (${date}).`;
-}
-
-async function getAgencyTimezone(db: Db, agencyId: string) {
-  const row = (await db.get(`SELECT timezone FROM agencies WHERE id = ? LIMIT 1`, agencyId)) as
-    | { timezone?: string | null }
-    | undefined;
-
-  const tz = String(row?.timezone ?? "").trim();
-  return tz || "America/Chicago";
-}
-
-function ymdInTz(tz: string) {
-  try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-  } catch {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Chicago",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-  }
 }
 
 async function getOrCreateConversation(db: Db, args: { agencyId: string; userId: string; botId: string }) {
@@ -433,8 +387,15 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureUsageDailySchema(db);
 
-    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
-    const dateKey = ymdInTz(agencyTz);
+    // ✅ Travel-proof timezone: header -> users.timezone -> agencies.timezone -> America/Chicago
+    const tz = await getEffectiveTimezone(db, {
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      headers: req.headers,
+    });
+
+    const now = new Date();
+    const dateKey = ymdInTz(now, tz);
 
     const body = (await req.json().catch(() => null)) as ChatBody | null;
     const bot_id = String(body?.bot_id ?? "").trim();
@@ -502,7 +463,7 @@ export async function POST(req: NextRequest) {
     let answer: string;
 
     if (looksLikeTimeQuestion(message)) {
-      answer = timeStringInTz(agencyTz);
+      answer = timeStringInTz(now, tz);
     } else {
       const internal = looksInternalBusinessQuestion(message);
 
@@ -549,7 +510,8 @@ ${
         tools,
       });
 
-      const modelText = typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
+      const modelText =
+        typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
       const hasEvidence = tools.length > 0 ? responseHasFileSearchEvidence(resp) : false;
 
@@ -599,7 +561,7 @@ ${
           await db.run(`DELETE FROM conversation_messages WHERE conversation_id = ?`, convo.id);
 
           await db.exec("COMMIT");
-        } catch (e) {
+        } catch {
           await db.exec("ROLLBACK");
           await db.run(
             `UPDATE conversations
@@ -638,7 +600,7 @@ ${
         used: usageRow.messages_count,
         daily_limit: dailyLimitUi,
         plan: planKey,
-        timezone: agencyTz,
+        timezone: tz,
         date: dateKey,
       },
     });
