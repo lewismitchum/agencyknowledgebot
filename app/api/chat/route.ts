@@ -531,15 +531,33 @@ ${
     await incrementUsage(db, ctx.agencyId, dateKey, "messages", 1);
     const usageAfter = await getUsageRow(db, ctx.agencyId, dateKey);
 
-    // ===== Memory refresh (transactional, safe) =====
+    // ✅ Always increment message_count in DB (don’t use stale convo.message_count)
+    await db.run(
+      `UPDATE conversations
+       SET message_count = COALESCE(message_count, 0) + 2,
+           updated_at = ?
+       WHERE id = ?`,
+      nowIso(),
+      convo.id
+    );
+
+    // ===== Auto memory refresh (DB-authoritative) =====
     const planKey = normalizePlan(plan);
     const threshold = summarizeThresholdForPlan(planKey);
 
-    const newCount = Number(convo.message_count ?? 0) + 2;
+    const convoRow = (await db.get(
+      `SELECT summary, message_count
+       FROM conversations
+       WHERE id = ?
+       LIMIT 1`,
+      convo.id
+    )) as { summary?: string | null; message_count?: number | null } | undefined;
 
-    if (newCount >= threshold) {
-      const msgsForSummary = await loadRecentMessages(db, convo.id, 120);
-      const memoryInput = buildMemoryInput({ priorSummary: convo.summary, messages: msgsForSummary });
+    const currentCount = Number(convoRow?.message_count ?? 0);
+
+    if (currentCount >= threshold) {
+      const msgsForSummary = await loadRecentMessages(db, convo.id, 200);
+      const memoryInput = buildMemoryInput({ priorSummary: convoRow?.summary ?? null, messages: msgsForSummary });
 
       let nextSummary = "";
       try {
@@ -565,31 +583,8 @@ ${
           await db.exec("COMMIT");
         } catch {
           await db.exec("ROLLBACK");
-          await db.run(
-            `UPDATE conversations
-             SET message_count = message_count + 2, updated_at = ?
-             WHERE id = ?`,
-            nowIso(),
-            convo.id
-          );
         }
-      } else {
-        await db.run(
-          `UPDATE conversations
-           SET message_count = message_count + 2, updated_at = ?
-           WHERE id = ?`,
-          nowIso(),
-          convo.id
-        );
       }
-    } else {
-      await db.run(
-        `UPDATE conversations
-         SET message_count = message_count + 2, updated_at = ?
-         WHERE id = ?`,
-        nowIso(),
-        convo.id
-      );
     }
 
     const limits = getPlanLimits(planKey);
