@@ -119,13 +119,14 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 }
 
 /**
- * Internal/business question detection (stricter).
- * Goal: only treat as "internal" when it plausibly depends on the user's org/client/process/docs.
+ * ✅ SUPER-CONSERVATIVE INTERNAL DETECTION
+ * Only treat as internal when the user explicitly references "our/my" org/client/process/docs.
+ * This avoids false positives like “what are albanese gummies”.
  */
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
-  // Expand general starters so ordinary “what are X” questions never become internal.
+  // common general question starters => never internal
   const generalStarters = [
     "what time",
     "what day",
@@ -154,6 +155,7 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (generalStarters.some((s) => t.startsWith(s))) return false;
 
+  // ONLY these explicit markers can trigger internal mode
   const explicitOrgMarkers = [
     "our company",
     "our agency",
@@ -178,37 +180,14 @@ function looksInternalBusinessQuestion(message: string) {
     "our messaging",
     "our kpi",
     "our dashboard",
-  ];
-  if (explicitOrgMarkers.some((m) => t.includes(m))) return true;
-
-  const internalHints = [
-    "pricing",
-    "proposal",
-    "contract",
-    "invoice",
-    "sow",
-    "statement of work",
-    "msa",
-    "onboarding",
-    "sop",
-    "process",
-    "policy",
-    "playbook",
-    "brand voice",
-    "brand guidelines",
-    "messaging",
-    "deliverable",
-    "scope",
-    "kpi",
-    "dashboard",
-    "workspace settings",
-    "seat limit",
-    "billing",
-    "stripe",
-    "plan",
+    "internal",
+    "for our business",
+    "for my business",
+    "in our docs",
+    "in my docs",
   ];
 
-  return internalHints.some((h) => t.includes(h));
+  return explicitOrgMarkers.some((m) => t.includes(m));
 }
 
 /**
@@ -484,13 +463,14 @@ export async function POST(req: NextRequest) {
       const hasVideos = videoTitles.length > 0;
 
       const mediaHint = hasImages
-        ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
+        ? "The user attached image(s). If image understanding is unavailable, be honest."
         : "If the user asks about the contents of an image/video file, be honest about limitations.";
 
-      // Tools:
-      // - Internal/business => docs-only (file_search). If no evidence => strict fallback.
-      // - Non-internal => allow public web_search (and also file_search if available).
+      // Tools policy:
+      // - internal => file_search only (docs-first + strict fallback)
+      // - non-internal => web_search allowed (and file_search allowed too)
       const tools: any[] = [];
+
       if (internal) {
         if (bot.vector_store_id) tools.push({ type: "file_search", vector_store_ids: [bot.vector_store_id] });
       } else {
@@ -502,9 +482,10 @@ export async function POST(req: NextRequest) {
         ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
 Do not add extra words before or after the fallback.`
-        : `This is NOT an internal/business question. Answer normally using general knowledge and (if needed) web_search.
+        : `This is NOT an internal/business question.
+Answer normally using general knowledge and (if needed) web_search.
 Do NOT say: "${FALLBACK}"
-Do NOT mention "uploaded files" unless the user asked about them.`;
+Do NOT mention "uploaded files" unless the user explicitly asked about their uploaded docs.`;
 
       const inputBlocks: any[] = [
         {
@@ -526,13 +507,13 @@ Do NOT mention "uploaded files" unless the user asked about them.`;
 You are Louis.Ai.
 
 Behavior:
-- Internal/business questions: be docs-first using file_search. Never fabricate company-specific details.
-- Non-internal questions: answer normally, and you MAY use web_search to be accurate/up-to-date.
+- Internal/business: use file_search. Never invent company-specific facts.
+- Non-internal: you may use web_search to be accurate/up-to-date.
 - ${mediaHint}
 - ${fallbackInstruction}
 ${
   hasVideos
-    ? "\nNote: The user attached video(s). Video understanding is not available yet unless transcript/frame data is provided."
+    ? "\nNote: Video understanding is not available yet unless transcript/frame data is provided."
     : ""
 }
 `.trim(),
@@ -543,7 +524,6 @@ ${
       const modelText =
         typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
-      // Strict fallback logic (internal only)
       const hasFileSearchTool = tools.some((t) => t?.type === "file_search");
       const hasEvidence = hasFileSearchTool ? responseHasFileSearchEvidence(resp) : false;
 
@@ -552,7 +532,6 @@ ${
       } else if (internal && hasFileSearchTool && !hasEvidence) {
         answer = FALLBACK;
       } else {
-        // Extra guard: never allow the exact fallback sentence on non-internal questions
         if (!internal && modelText === FALLBACK) {
           answer = "Sorry — I couldn’t generate a response.";
         } else {
