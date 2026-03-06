@@ -4,6 +4,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { UpgradeGate } from "@/components/upgrade-gate";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
+import {
+  Bot,
+  Inbox,
+  Mail,
+  PencilLine,
+  RefreshCw,
+  Search,
+  Send,
+  Sparkles,
+  FileText,
+  MessageSquare,
+  X,
+  ChevronRight,
+  Wand2,
+} from "lucide-react";
 
 type Upsell = { code?: string; message?: string };
 
@@ -62,7 +77,6 @@ function getFetchJsonStatus(e: any): number | null {
     const n = Number((e as any).status);
     return Number.isFinite(n) ? n : null;
   }
-  // Some callers may stuff status-like values elsewhere; keep conservative.
   return null;
 }
 
@@ -92,6 +106,112 @@ function isNotConnectedError(e: any) {
   return false;
 }
 
+function TopStat({
+  icon,
+  label,
+  value,
+  hint,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded-3xl border bg-card/75 p-5 shadow-sm backdrop-blur transition-all duration-200 hover:-translate-y-[2px] hover:shadow-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
+          <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
+          <div className="mt-2 text-xs text-muted-foreground">{hint}</div>
+        </div>
+        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground shadow-sm">
+          {icon}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ThreadRow({
+  thread,
+  active,
+  onClick,
+}: {
+  thread: GmailThreadRow;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cx(
+        "w-full rounded-2xl border px-4 py-3 text-left transition-all duration-200",
+        active ? "bg-accent/60 shadow-sm" : "bg-background/40 hover:-translate-y-[1px] hover:bg-accent/30"
+      )}
+      title={thread.subject || thread.snippet || thread.id}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="truncate text-[12px] text-muted-foreground">{shortText(thread.from || "", 48)}</div>
+        <div className="shrink-0 text-[11px] text-muted-foreground">{safeDateLabel(thread.date) || ""}</div>
+      </div>
+      <div className="mt-1 truncate text-sm font-medium">{shortText(thread.subject || "(no subject)", 72)}</div>
+      <div className="mt-1 truncate text-[12px] text-muted-foreground">{shortText(thread.snippet || "", 100)}</div>
+    </button>
+  );
+}
+
+function DraftRowButton({
+  draft,
+  active,
+  onClick,
+}: {
+  draft: DraftRow;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cx(
+        "w-full rounded-2xl border px-4 py-3 text-left transition-all duration-200",
+        active ? "bg-accent/60 shadow-sm" : "bg-background/40 hover:-translate-y-[1px] hover:bg-accent/30"
+      )}
+      title={draft.subject}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="truncate text-[12px] text-muted-foreground">Draft</div>
+        <div className="shrink-0 text-[11px] text-muted-foreground">{safeDateLabel(draft.created_at)}</div>
+      </div>
+      <div className="mt-1 truncate text-sm font-medium">{shortText(draft.subject || "(no subject)", 72)}</div>
+      <div className="mt-1 truncate text-[11px] font-mono text-muted-foreground">{shortText(draft.id, 50)}</div>
+    </button>
+  );
+}
+
+function MessageBubble({ msg }: { msg: GmailMessageRow }) {
+  const body = String(msg.body || msg.snippet || "").trim();
+  return (
+    <div className="rounded-3xl border bg-background/45 p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium">{msg.from || "(unknown sender)"}</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {msg.to ? `to ${msg.to}` : ""}
+            {msg.to && msg.date ? " · " : ""}
+            {safeDateLabel(msg.date)}
+          </div>
+        </div>
+      </div>
+
+      {msg.subject ? <div className="mt-3 text-sm font-medium">{msg.subject}</div> : null}
+      <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground">{body || "(no body)"}</div>
+    </div>
+  );
+}
+
 export default function EmailPage() {
   const [loading, setLoading] = useState(true);
   const [gated, setGated] = useState(false);
@@ -99,21 +219,17 @@ export default function EmailPage() {
   const [plan, setPlan] = useState<string | undefined>(undefined);
   const [upsell, setUpsell] = useState<Upsell | null>(null);
 
-  // Gmail-like nav: Inbox / Drafts / Compose / Docs Draft
   const [tab, setTab] = useState<"inbox" | "drafts" | "compose" | "docs-draft">("inbox");
 
   const [bots, setBots] = useState<Bot[]>([]);
   const [botId, setBotId] = useState("");
 
-  // ===== Top search =====
   const [q, setQ] = useState("");
   const [qApplied, setQApplied] = useState("");
 
-  // ===== Gmail connection state =====
   const [gmailConnected, setGmailConnected] = useState<boolean>(false);
   const [connectHint, setConnectHint] = useState<string | null>(null);
 
-  // ===== Inbox state =====
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [threadsError, setThreadsError] = useState("");
   const [threads, setThreads] = useState<GmailThreadRow[]>([]);
@@ -123,12 +239,9 @@ export default function EmailPage() {
   const [threadError, setThreadError] = useState("");
   const [thread, setThread] = useState<GmailThread | null>(null);
 
-  // ===== Reply / send =====
   const [replyDrafting, setReplyDrafting] = useState(false);
   const [replyDraftError, setReplyDraftError] = useState("");
   const [replyDraftId, setReplyDraftId] = useState<string | null>(null);
-
-  // Reply editor content
   const [replyBody, setReplyBody] = useState<string>("");
 
   const [confirmSend, setConfirmSend] = useState(false);
@@ -136,7 +249,6 @@ export default function EmailPage() {
   const [sendError, setSendError] = useState("");
   const [sendOk, setSendOk] = useState<string | null>(null);
 
-  // ===== Compose (new email) =====
   const [composeTo, setComposeTo] = useState("");
   const [composeCc, setComposeCc] = useState("");
   const [composeBcc, setComposeBcc] = useState("");
@@ -147,13 +259,11 @@ export default function EmailPage() {
   const [composeError, setComposeError] = useState("");
   const [composeOk, setComposeOk] = useState<string | null>(null);
 
-  // ===== AI drawer (not a column) =====
   const [aiOpen, setAiOpen] = useState(false);
   const [aiMsgs, setAiMsgs] = useState<AiChatMsg[]>([]);
   const [aiInput, setAiInput] = useState("");
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // ===== Draft-from-docs state =====
   const [tone, setTone] = useState("direct");
   const [recipientName, setRecipientName] = useState("");
   const [recipientCompany, setRecipientCompany] = useState("");
@@ -183,9 +293,12 @@ export default function EmailPage() {
   const canComposeSend = useMemo(() => {
     const toOk = composeTo.trim().length > 0;
     const bodyOk = composeBody.trim().length > 0;
-    const ok = toOk && bodyOk && composeConfirm && !composeSending;
-    return ok;
+    return toOk && bodyOk && composeConfirm && !composeSending;
   }, [composeTo, composeBody, composeConfirm, composeSending]);
+
+  const activeThread = threads.find((t) => t.id === selectedThreadId) || null;
+  const showThreadsColumn = tab === "inbox" || tab === "drafts";
+  const showReplyBar = tab === "inbox" && !!selectedThreadId && gmailConnected;
 
   useEffect(() => {
     if (!aiScrollRef.current) return;
@@ -197,7 +310,6 @@ export default function EmailPage() {
   }
 
   useEffect(() => {
-    // show tiny hint if coming back from callback
     const url = new URL(window.location.href);
     const connected = url.searchParams.get("connected");
     const err = url.searchParams.get("error");
@@ -229,7 +341,6 @@ export default function EmailPage() {
         setPlan(typeof j?.plan === "string" ? j.plan : undefined);
         setUpsell(j?.upsell ?? null);
 
-        // Optional: API can tell us upfront if Gmail is connected
         const connectedFromApi =
           typeof j?.gmail_connected === "boolean"
             ? j.gmail_connected
@@ -290,7 +401,6 @@ export default function EmailPage() {
             if (!cancelled) setDraftsLoading(false);
           }
 
-          // If Gmail is not connected (known), do NOT call threads endpoint.
           const isConnectedNow = connectedFromApi !== null ? connectedFromApi : gmailConnected;
 
           if (!isConnectedNow) {
@@ -298,7 +408,6 @@ export default function EmailPage() {
             setSelectedThreadId(null);
             setThreadsError("Gmail is not connected.");
           } else {
-            // inbox list
             try {
               setThreadsLoading(true);
               setThreadsError("");
@@ -328,7 +437,6 @@ export default function EmailPage() {
 
               const st = getFetchJsonStatus(e);
 
-              // Key: show connect CTA on 409 not_connected
               if (isFetchJsonError(e) && st === 409 && isNotConnectedError(e)) {
                 setGmailConnected(false);
                 setThreads([]);
@@ -805,6 +913,7 @@ export default function EmailPage() {
       setDraft(next);
 
       await refreshDrafts();
+      setTab("drafts");
     } catch (e: any) {
       const st = getFetchJsonStatus(e);
 
@@ -874,88 +983,185 @@ export default function EmailPage() {
     );
   }
 
-  const activeThread = threads.find((t) => t.id === selectedThreadId) || null;
-
-  const showThreadsColumn = tab === "inbox" || tab === "drafts";
-  const showReplyBar = tab === "inbox";
-
   return (
-    <div className="h-[calc(100vh-0px)] w-full bg-background text-foreground">
-      <div className="flex h-full">
-        {/* Email left rail (Gmail-ish) */}
-        <aside className="hidden w-[280px] shrink-0 border-r bg-background md:flex md:flex-col">
-          <div className="px-4 py-4">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-base font-semibold">Email</div>
-              <div className="text-[11px] text-muted-foreground font-mono">{plan ?? "unknown"}</div>
+    <div className="mx-auto max-w-[1600px] px-4 py-6 space-y-6">
+      <div className="relative overflow-hidden rounded-[28px] border bg-card/80 p-6 shadow-sm backdrop-blur md:p-7">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.12),transparent_50%)]" />
+
+        <div className="relative flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/65 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground backdrop-blur">
+              <Sparkles className="h-3.5 w-3.5" />
+              Corporation email
             </div>
+
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
+              Gmail-style inbox with docs-backed drafting.
+            </h1>
+
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+              Read threads, generate AI replies using your workspace docs, and send polished emails from one place.
+            </p>
+          </div>
+
+          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[320px]">
+            {!gmailConnected ? (
+              <button
+                type="button"
+                onClick={goConnectGmail}
+                className="rounded-2xl bg-foreground px-4 py-3 text-sm font-medium text-background shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
+              >
+                Connect Gmail
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  refreshThreads().catch(() => {});
+                  refreshDrafts().catch(() => {});
+                }}
+                className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+              >
+                Refresh inbox
+              </button>
+            )}
 
             <button
               type="button"
               onClick={() => setTab("compose")}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-foreground px-4 py-3 text-sm font-semibold text-background hover:opacity-95"
+              className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
             >
-              Compose
+              Compose new email
             </button>
+          </div>
+        </div>
+      </div>
 
-            <div className="mt-4">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Bot</div>
-              <select
-                value={botId}
-                onChange={(e) => setBotId(e.target.value)}
-                className="mt-2 h-10 w-full rounded-lg border bg-background px-3 text-sm"
-              >
-                {bots.length === 0 ? <option value="">No bots found</option> : null}
-                {bots.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                    {b.owner_user_id ? " (Private)" : " (Agency)"}
-                  </option>
-                ))}
-              </select>
-              <div className="mt-2 text-[11px] text-muted-foreground">Used for inbox AI + docs drafting.</div>
+      <div className="grid gap-4 md:grid-cols-4">
+        <TopStat
+          icon={<Mail className="h-5 w-5" />}
+          label="Connection"
+          value={gmailConnected ? "On" : "Off"}
+          hint={gmailConnected ? "Gmail connected" : "Connect to unlock inbox"}
+        />
+        <TopStat
+          icon={<Inbox className="h-5 w-5" />}
+          label="Threads"
+          value={String(threads.length)}
+          hint="Loaded in current inbox view"
+        />
+        <TopStat
+          icon={<FileText className="h-5 w-5" />}
+          label="Drafts"
+          value={String(drafts.length)}
+          hint="Saved docs-based drafts"
+        />
+        <TopStat
+          icon={<Bot className="h-5 w-5" />}
+          label="Bot"
+          value={botId ? shortText(bots.find((b) => b.id === botId)?.name || "Selected", 14) : "None"}
+          hint="Used for AI + docs drafting"
+        />
+      </div>
+
+      {connectHint ? (
+        <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">{connectHint}</div>
+      ) : null}
+
+      {!gmailConnected ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="text-sm text-amber-900">
+              <div className="font-semibold">Gmail not connected</div>
+              <div className="mt-1 text-xs">Connect Gmail to load inbox threads and send replies from Louis.Ai.</div>
             </div>
+            <button
+              type="button"
+              onClick={goConnectGmail}
+              className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+            >
+              Connect Gmail
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-[260px_380px_1fr]">
+        <aside className="rounded-[28px] border bg-card/75 p-4 shadow-sm backdrop-blur">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-base font-semibold">Email</div>
+            <div className="text-[11px] font-mono text-muted-foreground">{plan ?? "unknown"}</div>
           </div>
 
-          <nav className="px-2 pb-3">
+          <button
+            type="button"
+            onClick={() => setTab("compose")}
+            className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-foreground px-4 py-3 text-sm font-semibold text-background hover:opacity-95"
+          >
+            <PencilLine className="h-4 w-4" />
+            Compose
+          </button>
+
+          <div className="mt-5">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Bot</div>
+            <select
+              value={botId}
+              onChange={(e) => setBotId(e.target.value)}
+              className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+            >
+              {bots.length === 0 ? <option value="">No bots found</option> : null}
+              {bots.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                  {b.owner_user_id ? " (Private)" : " (Agency)"}
+                </option>
+              ))}
+            </select>
+            <div className="mt-2 text-[11px] text-muted-foreground">Used for inbox AI + docs drafting.</div>
+          </div>
+
+          <nav className="mt-5 space-y-1">
             <button
               type="button"
               onClick={() => setTab("inbox")}
               className={cx(
-                "w-full rounded-lg px-3 py-2 text-left text-sm",
+                "flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm transition-all duration-200",
                 tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted/60"
               )}
             >
+              <Inbox className="h-4 w-4" />
               Inbox
             </button>
             <button
               type="button"
               onClick={() => setTab("drafts")}
               className={cx(
-                "mt-1 w-full rounded-lg px-3 py-2 text-left text-sm",
+                "flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm transition-all duration-200",
                 tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted/60"
               )}
             >
+              <FileText className="h-4 w-4" />
               Drafts
             </button>
             <button
               type="button"
               onClick={() => setTab("docs-draft")}
               className={cx(
-                "mt-1 w-full rounded-lg px-3 py-2 text-left text-sm",
+                "flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm transition-all duration-200",
                 tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted/60"
               )}
             >
+              <Sparkles className="h-4 w-4" />
               Draft from docs
             </button>
           </nav>
 
-          <div className="mt-auto border-t p-3 space-y-2">
+          <div className="mt-6 border-t pt-4 space-y-2">
             {!gmailConnected ? (
               <button
                 type="button"
                 onClick={goConnectGmail}
-                className="w-full rounded-lg bg-foreground px-3 py-2 text-sm font-medium text-background hover:opacity-95"
+                className="w-full rounded-2xl bg-foreground px-3 py-2 text-sm font-medium text-background hover:opacity-95"
               >
                 Connect Gmail
               </button>
@@ -967,98 +1173,19 @@ export default function EmailPage() {
                 refreshThreads().catch(() => {});
                 refreshDrafts().catch(() => {});
               }}
-              className="w-full rounded-lg border px-3 py-2 text-sm hover:bg-muted"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border px-3 py-2 text-sm hover:bg-muted"
             >
+              <RefreshCw className="h-4 w-4" />
               Refresh
             </button>
           </div>
         </aside>
 
-        {/* Main app surface */}
-        <div className="flex h-full flex-1 flex-col">
-          {/* Top search bar (flat, like Gmail) */}
-          <header className="border-b bg-background px-3 py-3">
-            <div className="flex items-center gap-2">
-              <div className="md:hidden">
-                <div className="text-base font-semibold">Email</div>
-                <div className="text-[11px] text-muted-foreground font-mono">{plan ?? "unknown"}</div>
-              </div>
-
-              <div className="flex flex-1 items-center gap-2">
-                <div className="flex flex-1 items-center rounded-full border bg-background px-4">
-                  <input
-                    value={q}
-                    onChange={(e) => setQ(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        const next = String(q || "").trim();
-                        setQApplied(next);
-                        refreshThreads(next).catch(() => {});
-                      }
-                    }}
-                    placeholder="Search mail"
-                    className="h-10 w-full bg-transparent text-sm outline-none"
-                    disabled={!gmailConnected}
-                  />
-                  <button
-                    type="button"
-                    className="ml-2 rounded-full px-3 py-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-60"
-                    onClick={() => {
-                      const next = String(q || "").trim();
-                      setQApplied(next);
-                      refreshThreads(next).catch(() => {});
-                    }}
-                    title="Search"
-                    disabled={!gmailConnected}
-                  >
-                    Search
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  className={cx(
-                    "hidden items-center rounded-full border px-4 py-2 text-sm hover:bg-muted md:inline-flex",
-                    tab === "inbox" ? "md:inline-flex" : "md:hidden"
-                  )}
-                  onClick={() => setAiOpen(true)}
-                  title="Open AI assistant"
-                  disabled={!gmailConnected}
-                >
-                  AI
-                </button>
-              </div>
-            </div>
-
-            {connectHint ? (
-              <div className="mt-3 rounded-lg border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                {connectHint}
-              </div>
-            ) : null}
-
-            {!gmailConnected ? (
-              <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                <div className="text-sm text-amber-900">
-                  <div className="font-semibold">Gmail not connected</div>
-                  <div className="text-xs">Click “Connect Gmail” to link your inbox.</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={goConnectGmail}
-                  className="shrink-0 rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
-                >
-                  Connect Gmail
-                </button>
-              </div>
-            ) : null}
-          </header>
-
-          {/* Content columns */}
-          <div className="flex flex-1 overflow-hidden">
-            {/* Threads / Drafts list column */}
-            {showThreadsColumn ? (
-              <section className="w-[420px] shrink-0 border-r bg-background">
-                <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+        {showThreadsColumn ? (
+          <section className="rounded-[28px] border bg-card/75 shadow-sm backdrop-blur overflow-hidden">
+            <div className="border-b px-4 py-4">
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2">
                   <div className="text-sm font-semibold">{tab === "drafts" ? "Drafts" : "Threads"}</div>
                   <button
                     type="button"
@@ -1070,320 +1197,630 @@ export default function EmailPage() {
                   </button>
                 </div>
 
-                <div className="h-full overflow-auto">
-                  {tab === "inbox" ? (
-                    <div className="px-1 py-1">
-                      {!gmailConnected ? (
-                        <div className="m-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                          <div className="font-semibold">Connect Gmail to load inbox.</div>
-                          <div className="mt-2">
-                            <button
-                              type="button"
-                              onClick={goConnectGmail}
-                              className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
-                            >
-                              Connect Gmail
-                            </button>
-                          </div>
+                {tab === "inbox" ? (
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      value={q}
+                      onChange={(e) => setQ(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const next = String(q || "").trim();
+                          setQApplied(next);
+                          refreshThreads(next).catch(() => {});
+                        }
+                      }}
+                      placeholder="Search mail"
+                      className="h-11 w-full rounded-full border bg-background px-10 pr-24 text-sm outline-none"
+                      disabled={!gmailConnected}
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-3 py-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-60"
+                      onClick={() => {
+                        const next = String(q || "").trim();
+                        setQApplied(next);
+                        refreshThreads(next).catch(() => {});
+                      }}
+                      disabled={!gmailConnected}
+                    >
+                      Search
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="h-[760px] overflow-auto p-3">
+              {tab === "inbox" ? (
+                !gmailConnected ? (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                    <div className="font-semibold">Connect Gmail to load inbox.</div>
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={goConnectGmail}
+                        className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+                      >
+                        Connect Gmail
+                      </button>
+                    </div>
+                  </div>
+                ) : threadsLoading ? (
+                  <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+                ) : threadsError ? (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{threadsError}</div>
+                ) : threads.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">No threads found.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {threads.slice(0, 80).map((t) => (
+                      <ThreadRow
+                        key={t.id}
+                        thread={t}
+                        active={selectedThreadId === t.id}
+                        onClick={() => {
+                          setTab("inbox");
+                          loadThread(t.id).catch(() => {});
+                        }}
+                      />
+                    ))}
+                  </div>
+                )
+              ) : draftsLoading ? (
+                <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+              ) : draftsError ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{draftsError}</div>
+              ) : drafts.length === 0 ? (
+                <div className="p-4 text-sm text-muted-foreground">No drafts yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {openDraftError ? (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                      {openDraftError}
+                    </div>
+                  ) : null}
+
+                  {drafts.slice(0, 80).map((d) => (
+                    <DraftRowButton
+                      key={d.id}
+                      draft={d}
+                      active={selectedDraftId === d.id}
+                      onClick={() => onOpenDraft(d.id).catch(() => {})}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        <main className="rounded-[28px] border bg-card/75 shadow-sm backdrop-blur overflow-hidden">
+          {tab === "compose" ? (
+            <div className="h-[760px] overflow-auto px-6 py-6">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xl font-semibold tracking-tight">Compose</div>
+                  <div className="mt-1 text-sm text-muted-foreground">Send a new email.</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTab("docs-draft")}
+                    className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                  >
+                    Draft from docs
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTab("inbox")}
+                    className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                  >
+                    Back
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-6 space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <div className="text-sm font-medium">To</div>
+                    <input
+                      value={composeTo}
+                      onChange={(e) => setComposeTo(e.target.value)}
+                      className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+                      placeholder="name@company.com"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Cc</div>
+                      <input
+                        value={composeCc}
+                        onChange={(e) => setComposeCc(e.target.value)}
+                        className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+                        placeholder="optional"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium">Bcc</div>
+                      <input
+                        value={composeBcc}
+                        onChange={(e) => setComposeBcc(e.target.value)}
+                        className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+                        placeholder="optional"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-sm font-medium">Subject</div>
+                  <input
+                    value={composeSubject}
+                    onChange={(e) => setComposeSubject(e.target.value)}
+                    className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+                    placeholder="(no subject)"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-sm font-medium">Message</div>
+                  <textarea
+                    value={composeBody}
+                    onChange={(e) => setComposeBody(e.target.value)}
+                    rows={16}
+                    className="mt-2 w-full rounded-2xl border bg-background p-4 text-sm outline-none"
+                    placeholder="Write your email…"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={composeConfirm}
+                      onChange={(e) => setComposeConfirm(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    Confirm send
+                  </label>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setComposeTo("");
+                        setComposeCc("");
+                        setComposeBcc("");
+                        setComposeSubject("");
+                        setComposeBody("");
+                        setComposeError("");
+                        setComposeOk(null);
+                        setComposeConfirm(false);
+                      }}
+                      className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                      disabled={composeSending}
+                    >
+                      Clear
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onSendCompose().catch(() => {})}
+                      disabled={!canComposeSend}
+                      className="inline-flex items-center gap-2 rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
+                    >
+                      <Send className="h-4 w-4" />
+                      {composeSending ? "Sending…" : "Send"}
+                    </button>
+                  </div>
+                </div>
+
+                {composeError ? (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                    {composeError}
+                  </div>
+                ) : null}
+
+                {composeOk ? <div className="rounded-2xl border bg-muted/30 p-4 text-sm">{composeOk}</div> : null}
+              </div>
+            </div>
+          ) : tab === "docs-draft" ? (
+            <div className="h-[760px] overflow-auto px-6 py-6">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xl font-semibold tracking-tight">Draft from docs</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Generate a docs-backed email draft using the selected bot.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTab("compose")}
+                  className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                >
+                  Open compose
+                </button>
+              </div>
+
+              <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_1fr]">
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-sm font-medium">Tone</div>
+                    <select
+                      value={tone}
+                      onChange={(e) => setTone(e.target.value)}
+                      className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+                    >
+                      <option value="direct">Direct</option>
+                      <option value="professional">Professional</option>
+                      <option value="warm">Warm</option>
+                      <option value="persuasive">Persuasive</option>
+                    </select>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <div className="text-sm font-medium">Recipient name</div>
+                      <input
+                        value={recipientName}
+                        onChange={(e) => setRecipientName(e.target.value)}
+                        className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+                        placeholder="Jane Doe"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium">Recipient company</div>
+                      <input
+                        value={recipientCompany}
+                        onChange={(e) => setRecipientCompany(e.target.value)}
+                        className="mt-2 h-11 w-full rounded-xl border bg-background px-3 text-sm"
+                        placeholder="Acme"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-medium">Prompt</div>
+                    <textarea
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      rows={8}
+                      className="mt-2 w-full rounded-2xl border bg-background p-4 text-sm outline-none"
+                      placeholder="Write a follow-up email about the proposal using our uploaded docs."
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onDraftFromDocs().catch(() => {})}
+                      disabled={!canDraft}
+                      className="inline-flex items-center gap-2 rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
+                    >
+                      <Wand2 className="h-4 w-4" />
+                      {drafting ? "Drafting…" : "Generate draft"}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPrompt("");
+                        setRecipientName("");
+                        setRecipientCompany("");
+                        setDraft(null);
+                        setFallback(null);
+                        setDraftError("");
+                      }}
+                      className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  {draftError ? (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                      {draftError}
+                    </div>
+                  ) : null}
+
+                  {fallback ? (
+                    <div className="rounded-2xl border bg-muted/30 p-4 text-sm text-muted-foreground">{fallback}</div>
+                  ) : null}
+                </div>
+
+                <div className="rounded-3xl border bg-background/40 p-5 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Generated draft</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Review here, then move it into Compose.
+                      </div>
+                    </div>
+
+                    {draft ? (
+                      <button
+                        type="button"
+                        onClick={moveDraftIntoCompose}
+                        className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                      >
+                        Move to compose
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {draft ? (
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Subject</div>
+                        <div className="mt-2 rounded-2xl border bg-background p-3 text-sm">{draft.subject}</div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Body</div>
+                        <div className="mt-2 whitespace-pre-wrap rounded-2xl border bg-background p-4 text-sm leading-6">
+                          {draft.body}
                         </div>
-                      ) : threadsLoading ? (
-                        <div className="p-4 text-sm text-muted-foreground">Loading…</div>
-                      ) : threadsError ? (
-                        <div className="m-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                          {threadsError}
-                        </div>
-                      ) : threads.length === 0 ? (
-                        <div className="p-4 text-sm text-muted-foreground">No threads found.</div>
-                      ) : (
-                        <div>
-                          {threads.slice(0, 80).map((t) => {
-                            const active = selectedThreadId === t.id;
-                            return (
-                              <button
-                                key={t.id}
-                                type="button"
-                                onClick={() => {
-                                  setTab("inbox");
-                                  loadThread(t.id).catch(() => {});
-                                }}
-                                className={cx(
-                                  "w-full px-4 py-3 text-left transition",
-                                  active ? "bg-muted" : "hover:bg-muted/60"
-                                )}
-                                title={t.subject || t.snippet || t.id}
-                              >
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="truncate text-[12px] text-muted-foreground">
-                                    {shortText(t.from || "", 56)}
-                                  </div>
-                                  <div className="shrink-0 text-[11px] text-muted-foreground">
-                                    {safeDateLabel(t.date) || ""}
-                                  </div>
-                                </div>
-                                <div className="mt-1 truncate text-sm font-medium">
-                                  {shortText(t.subject || "(no subject)", 72)}
-                                </div>
-                                <div className="mt-1 truncate text-[12px] text-muted-foreground">
-                                  {shortText(t.snippet || "", 110)}
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
+                      </div>
                     </div>
                   ) : (
-                    <div className="px-1 py-1">
-                      {draftsLoading ? (
-                        <div className="p-4 text-sm text-muted-foreground">Loading…</div>
-                      ) : draftsError ? (
-                        <div className="m-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                          {draftsError}
-                        </div>
-                      ) : drafts.length === 0 ? (
-                        <div className="p-4 text-sm text-muted-foreground">No drafts yet.</div>
-                      ) : (
-                        <div>
-                          {openDraftError ? (
-                            <div className="m-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                              {openDraftError}
-                            </div>
-                          ) : null}
-
-                          {drafts.slice(0, 80).map((d) => {
-                            const active = selectedDraftId === d.id;
-                            return (
-                              <button
-                                key={d.id}
-                                type="button"
-                                onClick={() => onOpenDraft(d.id).catch(() => {})}
-                                disabled={openingDraft && active}
-                                className={cx(
-                                  "w-full px-4 py-3 text-left transition",
-                                  active ? "bg-muted" : "hover:bg-muted/60"
-                                )}
-                                title={d.subject}
-                              >
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="truncate text-[12px] text-muted-foreground">Draft</div>
-                                  <div className="shrink-0 text-[11px] text-muted-foreground">
-                                    {new Date(d.created_at).toLocaleString()}
-                                  </div>
-                                </div>
-                                <div className="mt-1 truncate text-sm font-medium">
-                                  {shortText(d.subject || "(no subject)", 80)}
-                                </div>
-                                <div className="mt-1 truncate text-[11px] font-mono text-muted-foreground">
-                                  {shortText(d.id, 54)}
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
+                    <div className="mt-6 flex min-h-[320px] items-center justify-center rounded-2xl border bg-background/50 p-6 text-sm text-muted-foreground">
+                      Generate a docs-backed draft to preview it here.
                     </div>
                   )}
                 </div>
-              </section>
-            ) : null}
+              </div>
+            </div>
+          ) : tab === "drafts" ? (
+            <div className="h-[760px] overflow-auto px-6 py-6">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xl font-semibold tracking-tight">Draft preview</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Open a saved draft from the left, then move it into Compose.
+                  </div>
+                </div>
 
-            {/* Reading pane / compose pane */}
-            <main className="flex flex-1 flex-col overflow-hidden bg-background">
-              {tab === "compose" ? (
-                <div className="h-full overflow-auto">
-                  <div className="mx-auto max-w-3xl px-6 py-6">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-lg font-semibold">Compose</div>
-                        <div className="mt-1 text-sm text-muted-foreground">Send a new email.</div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setTab("docs-draft")}
-                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
-                        >
-                          Draft from docs
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setTab("inbox")}
-                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
-                        >
-                          Back
-                        </button>
-                      </div>
-                    </div>
+                {draft ? (
+                  <button
+                    type="button"
+                    onClick={moveDraftIntoCompose}
+                    className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                  >
+                    Move to compose
+                  </button>
+                ) : null}
+              </div>
 
-                    <div className="mt-6 space-y-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div>
-                          <div className="text-sm font-medium">To</div>
-                          <input
-                            value={composeTo}
-                            onChange={(e) => setComposeTo(e.target.value)}
-                            className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
-                            placeholder="name@company.com"
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <div className="text-sm font-medium">Cc</div>
-                            <input
-                              value={composeCc}
-                              onChange={(e) => setComposeCc(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
-                              placeholder="optional"
-                            />
-                          </div>
-                          <div>
-                            <div className="text-sm font-medium">Bcc</div>
-                            <input
-                              value={composeBcc}
-                              onChange={(e) => setComposeBcc(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
-                              placeholder="optional"
-                            />
-                          </div>
-                        </div>
-                      </div>
+              {openingDraft ? (
+                <div className="mt-6 text-sm text-muted-foreground">Opening draft…</div>
+              ) : draft ? (
+                <div className="mt-6 space-y-4">
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Subject</div>
+                    <div className="mt-2 rounded-2xl border bg-background p-3 text-sm">{draft.subject}</div>
+                  </div>
 
-                      <div>
-                        <div className="text-sm font-medium">Subject</div>
-                        <input
-                          value={composeSubject}
-                          onChange={(e) => setComposeSubject(e.target.value)}
-                          className="mt-2 h-11 w-full rounded-lg border bg-background px-3 text-sm"
-                          placeholder="(no subject)"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="text-sm font-medium">Message</div>
-                        <textarea
-                          value={composeBody}
-                          onChange={(e) => setComposeBody(e.target.value)}
-                          rows={14}
-                          className="mt-2 w-full rounded-lg border bg-background p-3 text-sm outline-none"
-                          placeholder="Write your email…"
-                        />
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={composeConfirm}
-                            onChange={(e) => setComposeConfirm(e.target.checked)}
-                            className="h-4 w-4"
-                          />
-                          Confirm send
-                        </label>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setComposeTo("");
-                              setComposeCc("");
-                              setComposeBcc("");
-                              setComposeSubject("");
-                              setComposeBody("");
-                              setComposeError("");
-                              setComposeOk(null);
-                              setComposeConfirm(false);
-                            }}
-                            className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
-                            disabled={composeSending}
-                          >
-                            Clear
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => onSendCompose().catch(() => {})}
-                            disabled={!canComposeSend}
-                            className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
-                          >
-                            {composeSending ? "Sending…" : "Send"}
-                          </button>
-                        </div>
-                      </div>
-
-                      {composeError ? (
-                        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                          {composeError}
-                        </div>
-                      ) : null}
-
-                      {composeOk ? <div className="rounded-lg border bg-muted/30 p-3 text-sm">{composeOk}</div> : null}
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Body</div>
+                    <div className="mt-2 whitespace-pre-wrap rounded-2xl border bg-background p-4 text-sm leading-6">
+                      {draft.body}
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
-                  Pick Inbox/Drafts/Compose/Docs.
+                <div className="mt-6 flex min-h-[320px] items-center justify-center rounded-2xl border bg-background/50 p-6 text-sm text-muted-foreground">
+                  Select a draft from the left to preview it here.
                 </div>
               )}
-            </main>
-          </div>
-
-          {/* Mobile bottom nav */}
-          <div className="border-t bg-background p-3 md:hidden">
-            <div className="grid grid-cols-4 gap-2">
-              <button
-                type="button"
-                onClick={() => setTab("inbox")}
-                className={cx(
-                  "rounded-lg border px-3 py-2 text-sm",
-                  tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted"
-                )}
-              >
-                Inbox
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab("drafts")}
-                className={cx(
-                  "rounded-lg border px-3 py-2 text-sm",
-                  tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted"
-                )}
-              >
-                Drafts
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab("compose")}
-                className={cx(
-                  "rounded-lg border px-3 py-2 text-sm",
-                  tab === "compose" ? "bg-muted font-medium" : "hover:bg-muted"
-                )}
-              >
-                Compose
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab("docs-draft")}
-                className={cx(
-                  "rounded-lg border px-3 py-2 text-sm",
-                  tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted"
-                )}
-              >
-                Docs
-              </button>
             </div>
-          </div>
-        </div>
+          ) : (
+            <div className="h-[760px] overflow-hidden flex flex-col">
+              <div className="border-b px-6 py-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xl font-semibold tracking-tight">
+                      {thread?.subject || activeThread?.subject || "Inbox"}
+                    </div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      {activeThread?.from ? `Latest from ${activeThread.from}` : "Open a thread to read and reply."}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAiOpen(true)}
+                      className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                      disabled={!gmailConnected || !selectedThreadId}
+                    >
+                      Open AI
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-auto px-6 py-6">
+                {!gmailConnected ? (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                    Gmail not connected.
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={goConnectGmail}
+                        className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+                      >
+                        Connect Gmail
+                      </button>
+                    </div>
+                  </div>
+                ) : threadLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading thread…</div>
+                ) : threadError ? (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{threadError}</div>
+                ) : !thread ? (
+                  <div className="flex h-full items-center justify-center">
+                    <div className="max-w-md text-center">
+                      <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/70 text-muted-foreground shadow-sm">
+                        <Mail className="h-6 w-6" />
+                      </div>
+                      <div className="mt-4 text-sm font-medium text-foreground">Select a thread</div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        Open a thread from the left to read messages and draft a reply.
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {thread.messages.map((m) => (
+                      <MessageBubble key={m.id} msg={m} />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {showReplyBar ? (
+                <div className="border-t bg-background/70 px-6 py-4 backdrop-blur">
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setAiOpen(true)}
+                        disabled={!selectedThreadId || !botId.trim().length || !gmailConnected}
+                        className="inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm hover:bg-muted disabled:opacity-60"
+                      >
+                        <Sparkles className="h-4 w-4" />
+                        AI reply
+                      </button>
+
+                      <div className="text-xs text-muted-foreground">
+                        Generate a draft with AI, edit below, then confirm send.
+                      </div>
+                    </div>
+
+                    <textarea
+                      value={replyBody}
+                      onChange={(e) => setReplyBody(e.target.value)}
+                      rows={6}
+                      className="w-full rounded-2xl border bg-background p-4 text-sm outline-none"
+                      placeholder="AI draft will appear here, or write your own reply…"
+                    />
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={confirmSend}
+                          onChange={(e) => setConfirmSend(e.target.checked)}
+                          className="h-4 w-4"
+                        />
+                        Confirm send
+                      </label>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReplyBody("");
+                            setReplyDraftId(null);
+                            setSendError("");
+                            setSendOk(null);
+                            setConfirmSend(false);
+                          }}
+                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                        >
+                          Clear
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => onSendReply().catch(() => {})}
+                          disabled={sending || !replyBody.trim().length || !replyDraftId}
+                          className="inline-flex items-center gap-2 rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
+                        >
+                          <Send className="h-4 w-4" />
+                          {sending ? "Sending…" : "Send reply"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {replyDraftError ? (
+                      <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                        {replyDraftError}
+                      </div>
+                    ) : null}
+
+                    {sendError ? (
+                      <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                        {sendError}
+                      </div>
+                    ) : null}
+
+                    {sendOk ? <div className="rounded-2xl border bg-muted/30 p-4 text-sm">{sendOk}</div> : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </main>
       </div>
 
-      {/* AI Drawer (slide-over) */}
+      <div className="grid grid-cols-4 gap-2 md:hidden">
+        <button
+          type="button"
+          onClick={() => setTab("inbox")}
+          className={cx(
+            "rounded-2xl border px-3 py-2 text-sm",
+            tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted"
+          )}
+        >
+          Inbox
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("drafts")}
+          className={cx(
+            "rounded-2xl border px-3 py-2 text-sm",
+            tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted"
+          )}
+        >
+          Drafts
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("compose")}
+          className={cx(
+            "rounded-2xl border px-3 py-2 text-sm",
+            tab === "compose" ? "bg-muted font-medium" : "hover:bg-muted"
+          )}
+        >
+          Compose
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("docs-draft")}
+          className={cx(
+            "rounded-2xl border px-3 py-2 text-sm",
+            tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted"
+          )}
+        >
+          Docs
+        </button>
+      </div>
+
       {aiOpen ? (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/50" onClick={() => setAiOpen(false)} />
-          <aside className="absolute right-0 top-0 h-full w-full max-w-[520px] border-l bg-background shadow-xl">
+          <aside className="absolute right-0 top-0 h-full w-full max-w-[560px] border-l bg-background shadow-xl">
             <div className="flex h-full flex-col">
-              <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-                <div className="text-sm font-semibold">AI Assistant</div>
+              <div className="flex items-center justify-between gap-2 border-b px-4 py-4">
+                <div>
+                  <div className="text-sm font-semibold">AI Assistant</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Draft replies for the selected thread.
+                  </div>
+                </div>
                 <button
                   type="button"
                   className="rounded-full border px-4 py-2 text-xs hover:bg-muted"
@@ -1394,16 +1831,12 @@ export default function EmailPage() {
               </div>
 
               <div className="px-4 py-3">
-                <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
-                  Draft replies for the selected thread.
-                  <div className="mt-2">
-                    Thread:{" "}
-                    <span className="font-mono">{selectedThreadId ? shortText(selectedThreadId, 64) : "none"}</span>
-                  </div>
+                <div className="rounded-2xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Thread: <span className="font-mono">{selectedThreadId ? shortText(selectedThreadId, 64) : "none"}</span>
                 </div>
 
                 {!gmailConnected ? (
-                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                     Gmail not connected.
                     <div className="mt-2">
                       <button
@@ -1421,7 +1854,7 @@ export default function EmailPage() {
               <div ref={aiScrollRef} className="flex-1 overflow-auto px-4 pb-4">
                 <div className="space-y-2">
                   {aiMsgs.length === 0 ? (
-                    <div className="rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">
+                    <div className="rounded-2xl border bg-muted/20 p-4 text-sm text-muted-foreground">
                       Ask me to draft a reply for the selected thread.
                     </div>
                   ) : (
@@ -1429,7 +1862,7 @@ export default function EmailPage() {
                       <div
                         key={`${m.at}-${idx}`}
                         className={cx(
-                          "rounded-lg border p-3 text-sm whitespace-pre-wrap",
+                          "rounded-2xl border p-3 text-sm whitespace-pre-wrap",
                           m.role === "user" ? "bg-background" : "bg-muted/20"
                         )}
                       >
@@ -1444,7 +1877,7 @@ export default function EmailPage() {
               </div>
 
               <div className="border-t p-4">
-                <div className="rounded-lg border bg-background p-2">
+                <div className="rounded-2xl border bg-background p-2">
                   <textarea
                     value={aiInput}
                     onChange={(e) => setAiInput(e.target.value)}
@@ -1467,9 +1900,10 @@ export default function EmailPage() {
                     type="button"
                     onClick={() => onAiSend().catch(() => {})}
                     disabled={!selectedThreadId || !botId.trim().length || replyDrafting || !aiInput.trim().length || !gmailConnected}
-                    className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
+                    className="inline-flex items-center gap-2 rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-60"
                   >
                     {replyDrafting ? "Thinking…" : "Send"}
+                    {!replyDrafting ? <ChevronRight className="h-4 w-4" /> : null}
                   </button>
                 </div>
               </div>

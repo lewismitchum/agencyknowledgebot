@@ -3,6 +3,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import {
+  Bot,
+  Clock3,
+  FileText,
+  MessageSquare,
+  Paperclip,
+  Plus,
+  Send,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -60,7 +71,6 @@ async function safeJson(r: Response) {
 }
 
 function normalizeDailyRemaining(v: unknown): number | null {
-  // Canonical: unlimited must be NULL (never 99999 / huge sentinel).
   if (v === null) return null;
   if (typeof v === "number") {
     if (!Number.isFinite(v)) return 0;
@@ -94,17 +104,6 @@ function parseMaybeJson(text: string): any {
   }
 }
 
-/**
- * Minimal markdown renderer for assistant output.
- * Supports:
- * - paragraphs / line breaks
- * - bullet/numbered lists
- * - headings (#, ##, ###)
- * - inline code `...`
- * - code blocks ```...```
- *
- * No external deps (keeps bundle light).
- */
 function renderInline(text: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   const re = /`([^`]+)`/g;
@@ -173,11 +172,10 @@ function AssistantMarkdown({ text }: { text: string }) {
   while (i < lines.length) {
     const line = lines[i];
 
-    // code fence
     if (line.trim().startsWith("```")) {
       flushAllTextBlocks();
       const fence = line.trim();
-      const lang = fence.slice(3).trim(); // optional
+      const lang = fence.slice(3).trim();
       i++;
 
       const codeLines: string[] = [];
@@ -185,13 +183,12 @@ function AssistantMarkdown({ text }: { text: string }) {
         codeLines.push(lines[i]);
         i++;
       }
-      // consume closing fence if present
       if (i < lines.length && lines[i].trim().startsWith("```")) i++;
 
       blocks.push(
         <pre
           key={`code-${blocks.length}`}
-          className="overflow-x-auto rounded-xl border border-white/10 bg-black/10 p-3 text-[12px] leading-relaxed"
+          className="overflow-x-auto rounded-2xl border border-white/10 bg-black/10 p-3 text-[12px] leading-relaxed"
         >
           <code className="font-mono">
             {lang ? `${lang}\n` : ""}
@@ -204,14 +201,12 @@ function AssistantMarkdown({ text }: { text: string }) {
 
     const trimmed = line.trim();
 
-    // blank line
     if (!trimmed) {
       flushAllTextBlocks();
       i++;
       continue;
     }
 
-    // heading
     const h = trimmed.match(/^(#{1,3})\s+(.*)$/);
     if (h) {
       flushAllTextBlocks();
@@ -229,7 +224,6 @@ function AssistantMarkdown({ text }: { text: string }) {
       continue;
     }
 
-    // unordered list
     const ul = trimmed.match(/^[-*]\s+(.*)$/);
     if (ul) {
       if (listKind && listKind !== "ul") {
@@ -244,7 +238,6 @@ function AssistantMarkdown({ text }: { text: string }) {
       continue;
     }
 
-    // ordered list
     const ol = trimmed.match(/^\d+\.\s+(.*)$/);
     if (ol) {
       if (listKind && listKind !== "ol") {
@@ -259,7 +252,6 @@ function AssistantMarkdown({ text }: { text: string }) {
       continue;
     }
 
-    // normal text line (part of paragraph)
     if (listKind) {
       flushList(listKind, listItems);
       listKind = null;
@@ -274,6 +266,23 @@ function AssistantMarkdown({ text }: { text: string }) {
   return <div className="space-y-2">{blocks.length ? blocks : <span />}</div>;
 }
 
+function TopPill({
+  icon,
+  children,
+  variant = "outline",
+}: {
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+  variant?: "outline" | "secondary" | "default";
+}) {
+  return (
+    <Badge variant={variant} className="gap-1.5 rounded-full px-3 py-1">
+      {icon}
+      {children}
+    </Badge>
+  );
+}
+
 export default function ChatPage() {
   const [email, setEmail] = useState<string | null>(null);
   const [emailVerified, setEmailVerified] = useState(false);
@@ -283,12 +292,10 @@ export default function ChatPage() {
 
   const [documentsCount, setDocumentsCount] = useState(0);
 
-  // Timezone (for display + upload header)
   const [clientTimezone, setClientTimezone] = useState<string>("America/Chicago");
 
-  // Usage
   const [usageLoaded, setUsageLoaded] = useState(false);
-  const [dailyRemaining, setDailyRemaining] = useState<number | null>(null); // null => unlimited
+  const [dailyRemaining, setDailyRemaining] = useState<number | null>(null);
   const [dailyResetsInSeconds, setDailyResetsInSeconds] = useState(0);
 
   const [bots, setBots] = useState<BotRow[]>([]);
@@ -302,7 +309,6 @@ export default function ChatPage() {
   const [bootError, setBootError] = useState("");
   const [accessBlocked, setAccessBlocked] = useState<"pending" | "blocked" | null>(null);
 
-  // Attachments
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
@@ -317,7 +323,6 @@ export default function ChatPage() {
 
   const docsEmpty = documentsCount <= 0;
 
-  // For FormData uploads only (fetchJson doesn't touch multipart).
   const tzHeader = useMemo(() => {
     const tz = String(clientTimezone || "").trim() || "America/Chicago";
     return { "X-User-Timezone": tz };
@@ -326,8 +331,6 @@ export default function ChatPage() {
   useEffect(() => {
     const initialFromUrl = getBotIdFromUrl();
     if (initialFromUrl) setSelectedBotId(initialFromUrl);
-
-    // detect timezone early (travel-proof on client)
     setClientTimezone(detectIanaTimezone());
   }, []);
 
@@ -350,7 +353,6 @@ export default function ChatPage() {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        // ✅ server expects { timezone }
         body: JSON.stringify({ timezone: detected }),
       });
 
@@ -359,12 +361,9 @@ export default function ChatPage() {
       const j: any = await r.json().catch(() => null);
       const saved = String(j?.timezone ?? j?.time_zone ?? "").trim();
       if (saved) setClientTimezone(saved);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
-  /* session */
   useEffect(() => {
     (async () => {
       try {
@@ -394,10 +393,8 @@ export default function ChatPage() {
 
         setDocumentsCount(Number(j?.documents_count ?? 0));
 
-        // ✅ Persist client timezone to user profile (single source of truth).
         persistTimezoneIfNeeded(j?.user?.time_zone).catch(() => {});
 
-        // ✅ daily_remaining null => unlimited. Also protect against legacy sentinel (99999).
         setDailyRemaining(normalizeDailyRemaining(j?.daily_remaining));
 
         const reset = Number(j?.daily_resets_in_seconds ?? 0);
@@ -428,7 +425,6 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* bots */
   useEffect(() => {
     if (accessBlocked) {
       setBots([]);
@@ -482,7 +478,6 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessBlocked]);
 
-  /* hydrate messages when bot changes */
   useEffect(() => {
     if (!selectedBotId) return;
     if (accessBlocked) return;
@@ -555,7 +550,6 @@ export default function ChatPage() {
         fd.append("files", f);
       }
 
-      // Keep raw fetch here (multipart). Still send TZ header for travel-proof dateKey.
       const r = await fetch("/api/upload", {
         method: "POST",
         credentials: "include",
@@ -640,12 +634,10 @@ export default function ChatPage() {
 
       setMessages((m: Msg[]) => [...m, { role: "assistant", text: String(j?.answer ?? j?.text ?? "") }]);
 
-      // clear attachments after a successful send (so next prompt starts clean)
       setAttachments([]);
 
       setUsageLoaded(true);
 
-      // Prefer usage block (new). Fall back to daily_remaining (legacy).
       if (j?.usage && typeof j.usage === "object") {
         const used = Number(j.usage.used ?? 0);
         const limit = j.usage.daily_limit == null ? null : Number(j.usage.daily_limit);
@@ -739,19 +731,25 @@ export default function ChatPage() {
 
     return (
       <div className="mx-auto max-w-2xl space-y-4">
-        <Card className="rounded-3xl">
+        <Card className="rounded-[28px] border bg-card/80 shadow-sm backdrop-blur">
           <CardHeader>
-            <CardTitle className="text-xl">{title}</CardTitle>
+            <CardTitle className="text-xl tracking-tight">{title}</CardTitle>
             <CardDescription>{desc}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{email || "Unknown user"}</Badge>
-              <Badge variant="outline">Role: {meRole || "member"}</Badge>
-              <Badge variant={accessBlocked === "blocked" ? "destructive" : "outline"}>
+              <Badge variant="outline" className="rounded-full">
+                {email || "Unknown user"}
+              </Badge>
+              <Badge variant="outline" className="rounded-full">
+                Role: {meRole || "member"}
+              </Badge>
+              <Badge variant={accessBlocked === "blocked" ? "destructive" : "outline"} className="rounded-full">
                 Status: {meStatus || accessBlocked}
               </Badge>
-              <Badge variant="outline">TZ: {clientTimezone}</Badge>
+              <Badge variant="outline" className="rounded-full">
+                TZ: {clientTimezone}
+              </Badge>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -780,200 +778,298 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl">
-      <Card className="overflow-hidden rounded-3xl">
-        <CardHeader className="space-y-3">
-          <CardTitle className="text-xl">Louis.Ai</CardTitle>
-          <CardDescription>Docs-prioritized agency assistant (general questions allowed)</CardDescription>
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div className="relative overflow-hidden rounded-[28px] border bg-card/80 p-6 shadow-sm backdrop-blur md:p-7">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.12),transparent_50%)]" />
 
-          {bootError ? <div className="text-sm text-destructive">{bootError}</div> : null}
+        <div className="relative flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/65 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground backdrop-blur">
+              <Sparkles className="h-3.5 w-3.5" />
+              Louis chat
+            </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {!dailyKnown ? (
-              <Badge variant="outline">Usage loading…</Badge>
-            ) : dailyRemaining === null ? (
-              <Badge variant="secondary">Unlimited</Badge>
-            ) : dailyRemaining > 0 ? (
-              <Badge>{dailyRemaining} left today</Badge>
-            ) : dailyResetsInSeconds > 0 ? (
-              <Badge>{dailyRemaining} left today</Badge>
-            ) : (
-              <Badge variant="outline">Usage unavailable</Badge>
-            )}
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
+              Chat with your docs and your workflow.
+            </h1>
 
-            <Badge variant={emailVerified ? "secondary" : "outline"}>{emailVerified ? "Verified" : "Unverified"}</Badge>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+              Louis prioritizes your docs for internal answers, while still handling general reasoning when appropriate.
+            </p>
 
-            {dailyRemaining !== null && dailyResetsInSeconds > 0 ? (
-              <Badge variant="outline">Resets in {formatCountdown(dailyResetsInSeconds)}</Badge>
-            ) : null}
+            <div className="mt-5 flex flex-wrap items-center gap-2">
+              {!dailyKnown ? (
+                <TopPill icon={<Clock3 className="h-3.5 w-3.5" />}>Usage loading…</TopPill>
+              ) : dailyRemaining === null ? (
+                <TopPill icon={<ShieldCheck className="h-3.5 w-3.5" />} variant="secondary">
+                  Unlimited
+                </TopPill>
+              ) : dailyRemaining > 0 ? (
+                <TopPill icon={<MessageSquare className="h-3.5 w-3.5" />}>{dailyRemaining} left today</TopPill>
+              ) : dailyResetsInSeconds > 0 ? (
+                <TopPill icon={<Clock3 className="h-3.5 w-3.5" />}>{dailyRemaining} left today</TopPill>
+              ) : (
+                <TopPill variant="outline">Usage unavailable</TopPill>
+              )}
 
-            <Badge variant="outline">TZ: {clientTimezone}</Badge>
+              <TopPill variant={emailVerified ? "secondary" : "outline"}>
+                {emailVerified ? "Verified" : "Unverified"}
+              </TopPill>
 
-            {documentsCount > 0 ? (
-              <Badge variant="secondary">{documentsCount} docs</Badge>
-            ) : (
-              <Badge variant="outline">No docs yet</Badge>
-            )}
+              {dailyRemaining !== null && dailyResetsInSeconds > 0 ? (
+                <TopPill icon={<Clock3 className="h-3.5 w-3.5" />} variant="outline">
+                  Resets in {formatCountdown(dailyResetsInSeconds)}
+                </TopPill>
+              ) : null}
+
+              <TopPill variant="outline">TZ: {clientTimezone}</TopPill>
+
+              {documentsCount > 0 ? (
+                <TopPill icon={<FileText className="h-3.5 w-3.5" />} variant="secondary">
+                  {documentsCount} docs
+                </TopPill>
+              ) : (
+                <TopPill icon={<FileText className="h-3.5 w-3.5" />} variant="outline">
+                  No docs yet
+                </TopPill>
+              )}
+            </div>
           </div>
 
-          {docsEmpty ? (
-            <div className="rounded-2xl border border-white/10 bg-background/50 p-4 text-sm">
-              <div className="font-medium">No docs uploaded yet</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                You can still ask general questions. For internal/workspace answers, upload at least one doc so Louis can
-                cite it.
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button asChild size="sm" className="rounded-full">
-                  <Link href="/app/docs">Upload docs</Link>
-                </Button>
-                <Button size="sm" variant="outline" className="rounded-full" onClick={() => window.location.reload()}>
-                  Refresh
-                </Button>
+          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[280px]">
+            <div className="rounded-2xl border bg-background/60 p-3 backdrop-blur">
+              <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Active bot</div>
+              <div className="mt-2 flex items-center gap-2 text-sm font-medium">
+                <Bot className="h-4 w-4 text-muted-foreground" />
+                {botsLoading ? "Loading…" : selectedBotName || "None selected"}
               </div>
             </div>
-          ) : null}
 
-          <Separator />
-
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="text-sm text-muted-foreground">
-              Bot:{" "}
-              <span className="text-foreground font-medium">{botsLoading ? "Loading…" : selectedBotName || "None"}</span>
-            </div>
-
-            <select
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={selectedBotId}
-              disabled={botsLoading || bots.length === 0}
-              onChange={(e) => onChangeBot(e.target.value)}
-            >
-              {bots.length === 0 ? (
-                <option value="">No bots found</option>
-              ) : (
-                bots.map((b: BotRow) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))
-              )}
-            </select>
-
-            <div className="ml-auto flex items-center gap-2">
-              <Button size="sm" variant="outline" onClick={newChat} disabled={!selectedBotId}>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1 rounded-2xl" onClick={newChat} disabled={!selectedBotId}>
+                <Plus className="mr-2 h-4 w-4" />
                 New chat
+              </Button>
+              <Button asChild variant="outline" className="flex-1 rounded-2xl">
+                <Link href="/app/bots">Manage bots</Link>
               </Button>
             </div>
           </div>
+        </div>
+      </div>
+
+      {bootError ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{bootError}</div>
+      ) : null}
+
+      {docsEmpty ? (
+        <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-medium">No docs uploaded yet</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                You can still ask general questions. For internal answers, upload at least one doc so Louis can ground
+                its response in your workspace.
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button asChild className="rounded-2xl">
+                <Link href="/app/docs">Upload docs</Link>
+              </Button>
+              <Button size="sm" variant="outline" className="rounded-2xl" onClick={() => window.location.reload()}>
+                Refresh
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <Card className="overflow-hidden rounded-[28px] border bg-card/75 shadow-sm backdrop-blur">
+        <CardHeader className="space-y-4">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <CardTitle className="text-xl tracking-tight">Workspace chat</CardTitle>
+              <CardDescription className="mt-1">
+                Ask internal questions, attach docs, and keep conversation history tied to the selected bot.
+              </CardDescription>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-sm text-muted-foreground">Bot</div>
+              <select
+                className="h-10 rounded-2xl border bg-background/70 px-3 text-sm backdrop-blur"
+                value={selectedBotId}
+                disabled={botsLoading || bots.length === 0}
+                onChange={(e) => onChangeBot(e.target.value)}
+              >
+                {bots.length === 0 ? (
+                  <option value="">No bots found</option>
+                ) : (
+                  bots.map((b: BotRow) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          </div>
+
+          <Separator />
         </CardHeader>
 
         <CardContent className="grid gap-4">
-          <div className="h-[460px] overflow-y-auto rounded-[28px] border border-white/10 bg-background/50 p-4 shadow-sm backdrop-blur-xl">
+          <div className="h-[540px] overflow-y-auto rounded-[28px] border border-white/10 bg-background/45 p-4 shadow-sm backdrop-blur-xl">
             {messages.length === 0 ? (
-              <div className="text-sm text-muted-foreground">
-                {selectedBotId ? "Ask anything. Louis will use your docs when relevant." : "Select a bot to start chatting."}
+              <div className="flex h-full items-center justify-center">
+                <div className="max-w-md text-center">
+                  <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/70 text-muted-foreground shadow-sm">
+                    <MessageSquare className="h-6 w-6" />
+                  </div>
+                  <div className="mt-4 text-sm font-medium text-foreground">
+                    {selectedBotId ? "Start the conversation" : "Select a bot to begin"}
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    {selectedBotId
+                      ? "Ask anything. Louis will use your docs when relevant."
+                      : "Choose a bot above, then start chatting with your workspace knowledge."}
+                  </div>
+                </div>
               </div>
             ) : (
-              <div className="grid gap-3">
+              <div className="grid gap-4">
                 {messages.map((m: Msg, i: number) => (
                   <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`max-w-[85%] rounded-[22px] px-4 py-3 text-sm leading-relaxed shadow-sm border border-white/10 backdrop-blur-xl ${
-                        m.role === "user" ? "bg-foreground text-background" : "bg-background/60 text-foreground"
-                      }`}
-                    >
-                      {m.role === "assistant" ? (
-                        <AssistantMarkdown text={m.text} />
-                      ) : (
-                        <span className="whitespace-pre-wrap">{m.text}</span>
-                      )}
+                    <div className={`max-w-[88%] ${m.role === "user" ? "items-end" : "items-start"}`}>
+                      <div className="mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                        {m.role === "user" ? "You" : "Louis"}
+                      </div>
+                      <div
+                        className={`rounded-[24px] border border-white/10 px-4 py-3 text-sm leading-relaxed shadow-sm backdrop-blur-xl ${
+                          m.role === "user"
+                            ? "bg-foreground text-background"
+                            : "bg-background/70 text-foreground"
+                        }`}
+                      >
+                        {m.role === "assistant" ? (
+                          <AssistantMarkdown text={m.text} />
+                        ) : (
+                          <span className="whitespace-pre-wrap">{m.text}</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
+
                 {loading && (
-                  <div className="rounded-[22px] bg-background/60 px-4 py-3 text-sm text-muted-foreground">Thinking…</div>
+                  <div className="flex justify-start">
+                    <div className="max-w-[88%]">
+                      <div className="mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                        Louis
+                      </div>
+                      <div className="rounded-[24px] border border-white/10 bg-background/70 px-4 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur-xl">
+                        Thinking…
+                      </div>
+                    </div>
+                  </div>
                 )}
+
                 <div ref={bottomRef} />
               </div>
             )}
           </div>
 
-          {/* Attachments row */}
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => uploadFiles(e.target.files).catch(() => {})}
-            />
+          <div className="rounded-[28px] border bg-background/45 p-4 shadow-sm backdrop-blur">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => uploadFiles(e.target.files).catch(() => {})}
+              />
 
-            <Button
-              type="button"
-              variant="outline"
-              className="rounded-full"
-              onClick={openFilePicker}
-              disabled={!selectedBotId || uploadingAttachments || dailyBlocked}
-              title="Attach files (images/videos/docs)"
-            >
-              {uploadingAttachments ? "Uploading…" : "Attach"}
-            </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="rounded-full"
+                onClick={openFilePicker}
+                disabled={!selectedBotId || uploadingAttachments || dailyBlocked}
+                title="Attach files (images/videos/docs)"
+              >
+                <Paperclip className="mr-2 h-4 w-4" />
+                {uploadingAttachments ? "Uploading…" : "Attach"}
+              </Button>
 
-            {attachments.length ? (
-              <div className="flex flex-wrap items-center gap-2">
-                {attachments.slice(0, 8).map((a) => (
-                  <span
-                    key={a.document_id}
-                    className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs"
-                    title={a.document_id}
-                  >
-                    <span className="max-w-[220px] truncate">{a.filename || "file"}</span>
-                    <button
-                      type="button"
-                      className="rounded-full border px-2 py-0.5 text-[11px] hover:bg-muted"
-                      onClick={() => removeAttachment(a.document_id)}
-                      aria-label="Remove attachment"
+              {attachments.length ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {attachments.slice(0, 8).map((a) => (
+                    <span
+                      key={a.document_id}
+                      className="inline-flex items-center gap-2 rounded-full border bg-background/60 px-3 py-1 text-xs backdrop-blur"
+                      title={a.document_id}
                     >
-                      ×
-                    </button>
-                  </span>
-                ))}
-                {attachments.length > 8 ? (
-                  <span className="text-xs text-muted-foreground">+{attachments.length - 8} more</span>
-                ) : null}
+                      <span className="max-w-[220px] truncate">{a.filename || "file"}</span>
+                      <button
+                        type="button"
+                        className="rounded-full border px-2 py-0.5 text-[11px] hover:bg-muted"
+                        onClick={() => removeAttachment(a.document_id)}
+                        aria-label="Remove attachment"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {attachments.length > 8 ? (
+                    <span className="text-xs text-muted-foreground">+{attachments.length - 8} more</span>
+                  ) : null}
+                </div>
+              ) : (
+                <span className="text-xs text-muted-foreground">No attachments</span>
+              )}
+            </div>
+
+            {attachError ? <div className="mt-3 text-xs text-destructive">{attachError}</div> : null}
+
+            <div className="mt-4 grid gap-3">
+              <Textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={
+                  !selectedBotId
+                    ? "Select a bot first…"
+                    : dailyBlocked
+                    ? "Daily limit reached…"
+                    : docsEmpty
+                    ? "Ask anything… (Upload docs for internal answers)"
+                    : "Ask a question… (Ctrl/⌘ + Enter to send)"
+                }
+                disabled={!selectedBotId || dailyBlocked || uploadingAttachments}
+                className="min-h-[130px] rounded-[24px] border bg-background/70 px-4 py-3 text-sm shadow-sm backdrop-blur"
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send();
+                }}
+              />
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-xs text-muted-foreground">
+                  {dailyBlocked
+                    ? `Daily limit reached. Resets in ${formatCountdown(dailyResetsInSeconds)}.`
+                    : "Louis prioritizes your uploaded docs for internal answers."}
+                </div>
+
+                <Button onClick={send} disabled={!canSend} className="rounded-2xl px-5">
+                  <Send className="mr-2 h-4 w-4" />
+                  {loading ? "Sending…" : uploadingAttachments ? "Uploading…" : dailyBlocked ? "Daily limit reached" : "Send"}
+                </Button>
               </div>
-            ) : (
-              <span className="text-xs text-muted-foreground">No attachments</span>
-            )}
-
-            {attachError ? <div className="w-full text-xs text-destructive">{attachError}</div> : null}
+            </div>
           </div>
-
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={
-              !selectedBotId
-                ? "Select a bot first…"
-                : dailyBlocked
-                ? "Daily limit reached…"
-                : docsEmpty
-                ? "Ask anything… (Upload docs for internal answers)"
-                : "Ask a question… (Ctrl/⌘ + Enter to send)"
-            }
-            disabled={!selectedBotId || dailyBlocked || uploadingAttachments}
-            onKeyDown={(e) => {
-              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send();
-            }}
-          />
-
-          <Button onClick={send} disabled={!canSend}>
-            {loading ? "Sending…" : uploadingAttachments ? "Uploading…" : dailyBlocked ? "Daily limit reached" : "Send"}
-          </Button>
         </CardContent>
       </Card>
 
-      <div className="mt-4 text-xs text-muted-foreground">
+      <div className="text-xs text-muted-foreground">
         Need to manage bots?{" "}
         <Link className="underline" href="/app/bots">
           Go to Bots

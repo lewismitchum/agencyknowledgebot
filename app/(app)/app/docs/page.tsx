@@ -1,8 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { UpgradeGate } from "@/components/upgrade-gate";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
+import {
+  ArrowRight,
+  Bot,
+  FileText,
+  Image,
+  RefreshCw,
+  Sparkles,
+  Upload,
+  Video,
+} from "lucide-react";
 
 type DocRow = {
   id: string;
@@ -67,6 +78,43 @@ function labelMime(mime: string | null | undefined) {
   return m.toUpperCase();
 }
 
+function iconForMime(mime: string | null | undefined) {
+  if (!mime) return <FileText className="h-4 w-4" />;
+  const m = String(mime).toLowerCase();
+  if (m.startsWith("image/")) return <Image className="h-4 w-4" />;
+  if (m.startsWith("video/")) return <Video className="h-4 w-4" />;
+  return <FileText className="h-4 w-4" />;
+}
+
+function prettyPlan(plan: string | null | undefined) {
+  const v = String(plan || "").toLowerCase();
+  if (v === "personal" || v === "home") return "Home";
+  if (v === "pro") return "Pro";
+  if (v === "enterprise") return "Enterprise";
+  if (v === "corp" || v === "corporation") return "Corporation";
+  return "Free";
+}
+
+function TopStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded-3xl border bg-background/80 p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md">
+      <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-2 text-xs text-muted-foreground">{hint}</div>
+    </div>
+  );
+}
+
 const BOT_STORAGE_KEY = "louis.docs.selectedBotId";
 
 export default function DocsPage() {
@@ -79,20 +127,14 @@ export default function DocsPage() {
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Upload state
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string>("");
 
-  // Repair state
-  const [repairing, setRepairing] = useState(false);
-
-  // Extraction state
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [extractMsg, setExtractMsg] = useState<string>("");
   const [extractGated, setExtractGated] = useState(false);
 
-  // Plan / uploads
   const [plan, setPlan] = useState<string | null>(null);
   const [uploadsUsed, setUploadsUsed] = useState<number>(0);
   const [uploadsLimit, setUploadsLimit] = useState<number | null>(null);
@@ -106,8 +148,6 @@ export default function DocsPage() {
     for (const b of bots) m.set(b.id, b.name);
     return m;
   }, [bots]);
-
-  const defaultBot = useMemo(() => bots.find((b) => b.owner_user_id == null) ?? null, [bots]);
 
   const selectedBot = useMemo(
     () => bots.find((b) => b.id === selectedBotId) ?? null,
@@ -124,14 +164,11 @@ export default function DocsPage() {
 
   function handleCommonErrors(e: any) {
     if (!isFetchJsonError(e)) return false;
-
     const status = getFetchJsonStatus(e);
-
     if (status === 401) {
       window.location.href = "/login";
       return true;
     }
-
     return false;
   }
 
@@ -148,7 +185,6 @@ export default function DocsPage() {
       setUploadsRemaining(j?.uploads_remaining == null ? null : Number(j.uploads_remaining));
     } catch (e: any) {
       if (handleCommonErrors(e)) return;
-      // ignore
     }
   }
 
@@ -260,33 +296,6 @@ export default function DocsPage() {
       setError(e?.message ?? "Delete failed");
     } finally {
       setDeletingId(null);
-    }
-  }
-
-  async function onRepairVectorStore() {
-    if (!selectedBotId) return;
-
-    setRepairing(true);
-    setUploadMsg("");
-    setExtractMsg("");
-    setError(null);
-
-    try {
-      await fetchJson("/api/fix-vector-store", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ bot_id: selectedBotId }),
-      });
-
-      await loadBots(); // refresh vector_store_id
-      await loadDocs(selectedBotId);
-      setUploadMsg("Vector store repaired. You can upload now.");
-    } catch (e: any) {
-      if (handleCommonErrors(e)) return;
-      setError(e?.message ?? "Repair failed");
-    } finally {
-      setRepairing(false);
     }
   }
 
@@ -433,43 +442,25 @@ export default function DocsPage() {
       if (isFetchJsonError(e)) {
         const status = getFetchJsonStatus(e);
 
-        // Upload limit
-        if (status === 403) {
-          const code = String((e as any).code || "").toUpperCase();
-          const bodyErr = String(((e as any).body && (((e as any).body.error || (e as any).body.code)) ) || "").toUpperCase();
-
-          if (code === "DAILY_UPLOAD_LIMIT_EXCEEDED" || bodyErr === "DAILY_UPLOAD_LIMIT_EXCEEDED") {
-            await refreshMe();
-            const used = (e as any).body?.used ?? "?";
-            const daily = (e as any).body?.daily_limit ?? "?";
-            setUploadMsg(`Daily upload limit reached (${used}/${daily}).`);
-            setUploading(false);
-            return;
-          }
+        if (status === 401) {
+          window.location.href = "/login";
+          return;
         }
 
-        // vector_store missing on server
+        if (status === 415) {
+          setUploadMsg("That file type isn’t allowed on your plan. Upgrade to upload images/video.");
+          setUploading(false);
+          return;
+        }
+
         if (status === 409) {
           setUploadMsg("This bot has no vector store yet. Click Repair Vector Store above.");
           setUploading(false);
           return;
         }
 
-        // OpenAI billing/quota
         if (status === 402) {
           setUploadMsg("OpenAI quota/billing issue. Uploads are temporarily unavailable.");
-          setUploading(false);
-          return;
-        }
-
-        if (status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-
-        // MIME blocked by plan (server-side truth)
-        if (status === 415) {
-          setUploadMsg("That file type isn’t allowed on your plan. Upgrade to upload images/video.");
           setUploading(false);
           return;
         }
@@ -498,230 +489,309 @@ export default function DocsPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6">
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Documents</h1>
-          <p className="text-sm text-muted-foreground">
-            Documents are scoped to a single bot. Choose a bot, upload docs, and manage them here.
-          </p>
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8">
+      <section className="relative overflow-hidden rounded-[32px] border bg-gradient-to-br from-background via-background to-muted/40 p-6 shadow-sm md:p-8">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.10),transparent_50%)]" />
 
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            {defaultBot ? (
-              <span className="rounded-full border bg-muted/30 px-3 py-1 text-xs text-muted-foreground">
-                Default bot: <span className="text-foreground">{defaultBot.name}</span>
+        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/70 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5" />
+              Bot knowledge
+            </div>
+
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-5xl">Documents</h1>
+
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+              Documents are attached to one bot at a time. Upload files, manage knowledge, and run extraction from here.
+            </p>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              {plan ? (
+                <span className="rounded-full border bg-background/70 px-3 py-1 text-xs text-muted-foreground">
+                  Plan: <span className="text-foreground">{prettyPlan(plan)}</span>
+                </span>
+              ) : null}
+
+              <span className="rounded-full border bg-background/70 px-3 py-1 text-xs text-muted-foreground">
+                {uploadsBadge}
               </span>
-            ) : null}
 
-            {plan ? (
-              <span className="rounded-full border bg-muted/30 px-3 py-1 text-xs text-muted-foreground">
-                Plan: <span className="text-foreground">{plan}</span>
-              </span>
-            ) : null}
+              {uploadsBlocked ? (
+                <span className="rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-100">
+                  Uploads paused
+                </span>
+              ) : null}
 
-            <span className="rounded-full border bg-muted/30 px-3 py-1 text-xs text-muted-foreground">
-              {uploadsBadge}
-            </span>
-
-            {uploadsBlocked ? (
-              <span className="rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700">
-                Uploads paused (daily limit)
-              </span>
-            ) : null}
+              {isVectorStoreMissing ? (
+                <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100">
+                  Vector store missing
+                </span>
+              ) : null}
+            </div>
           </div>
-        </div>
 
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={async () => {
-              if (!selectedBotId) return;
-              await refreshMe();
-              await loadDocs(selectedBotId);
-            }}
-            className="rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
-            disabled={loading || !selectedBotId}
-          >
-            Refresh
-          </button>
-
-          <a href="/app/billing" className="rounded-md border px-3 py-2 text-sm hover:bg-muted">
-            Billing
-          </a>
-        </div>
-      </div>
-
-      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-muted-foreground">
-          {loading ? "Loading…" : `${count} document${count === 1 ? "" : "s"}`}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Bot:</span>
-          <select
-            value={selectedBotId}
-            onChange={(e) => setSelectedBotId(e.target.value)}
-            className="rounded-md border bg-background px-3 py-2 text-sm"
-          >
-            {bots.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {isVectorStoreMissing ? (
-        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          <div className="font-medium">This bot can’t accept uploads yet.</div>
-          <div className="mt-1">
-            Vector store is missing for <span className="font-medium">{selectedBot?.name}</span>. Repair it, then upload.
-          </div>
-          <div className="mt-3">
+          <div className="flex w-full flex-col gap-2 lg:w-auto lg:min-w-[280px]">
             <button
               type="button"
-              onClick={onRepairVectorStore}
-              disabled={repairing || !selectedBotId}
-              className="rounded-md bg-amber-700 px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
+              onClick={async () => {
+                if (!selectedBotId) return;
+                await refreshMe();
+                await loadDocs(selectedBotId);
+              }}
+              className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background/70 px-4 text-sm transition hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50"
+              disabled={loading || !selectedBotId}
             >
-              {repairing ? "Repairing…" : "Repair Vector Store"}
+              <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              {loading ? "Refreshing..." : "Refresh"}
             </button>
+
+            <Link
+              href="/app/billing"
+              className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background/70 px-4 text-sm transition hover:-translate-y-[1px] hover:bg-muted"
+            >
+              Billing
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Link>
           </div>
         </div>
-      ) : null}
+
+        <div className="relative mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <TopStat
+            label="Selected bot"
+            value={selectedBot?.name || "—"}
+            hint="Documents are scoped to this bot"
+          />
+          <TopStat
+            label="Documents"
+            value={loading ? "—" : String(count)}
+            hint="Files currently indexed on this bot"
+          />
+          <TopStat
+            label="Uploads left"
+            value={uploadsRemaining == null ? "∞" : String(Math.max(0, uploadsRemaining))}
+            hint="Remaining for today"
+          />
+          <TopStat
+            label="Media uploads"
+            value={isProPlus ? "On" : "Off"}
+            hint={isProPlus ? "Images and video allowed" : "Upgrade for multimedia"}
+          />
+        </div>
+      </section>
+
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="text-sm text-muted-foreground">
+          {loading ? "Loading…" : `${count} document${count === 1 ? "" : "s"} in ${selectedBot?.name || "this bot"}`}
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <span className="text-xs text-muted-foreground">Bot</span>
+          <div className="relative">
+            <Bot className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <select
+              value={selectedBotId}
+              onChange={(e) => setSelectedBotId(e.target.value)}
+              className="h-11 min-w-[220px] rounded-2xl border bg-background pl-9 pr-4 text-sm outline-none ring-0 transition focus:border-foreground/20 focus:ring-2 focus:ring-ring"
+            >
+              {bots.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
 
       {error ? (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <div className="rounded-3xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-100">
+          {error}
+        </div>
       ) : null}
 
-      {extractMsg ? <div className="mb-4 rounded-md border bg-muted/40 p-3 text-sm">{extractMsg}</div> : null}
+      {extractMsg ? (
+        <div className="rounded-3xl border bg-background p-4 text-sm shadow-sm">{extractMsg}</div>
+      ) : null}
 
-      <div className="mb-4 rounded-lg border p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex-1">
-            <div className="text-sm font-medium">Upload</div>
-            <div className="text-xs text-muted-foreground">{uploadSupportedLabel}</div>
+      <div className="grid gap-6 xl:grid-cols-[1fr_0.95fr]">
+        <div className="rounded-[28px] border bg-card/80 p-5 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex-1">
+              <div className="text-lg font-semibold tracking-tight">Upload to this bot</div>
+              <div className="mt-1 text-sm text-muted-foreground">{uploadSupportedLabel}</div>
 
-            <input
-              ref={fileRef}
-              type="file"
-              accept={uploadAccept}
-              className="mt-2 block w-full text-sm"
-              disabled={uploading || !selectedBotId || isVectorStoreMissing || uploadsBlocked}
-            />
+              <div className="mt-4 rounded-3xl border border-dashed bg-muted/25 p-4">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept={uploadAccept}
+                  className="block w-full cursor-pointer rounded-2xl border bg-background px-3 py-5 text-sm transition hover:bg-muted/30"
+                  disabled={uploading || !selectedBotId || isVectorStoreMissing || uploadsBlocked}
+                />
 
-            {uploadsBlocked ? (
-              <div className="mt-2 text-xs text-muted-foreground">
-                Daily upload limit reached.{" "}
-                <a href="/app/billing" className="underline">
-                  Upgrade
-                </a>{" "}
-                for more uploads.
+                {uploadsBlocked ? (
+                  <div className="mt-3 text-xs text-muted-foreground">
+                    Daily upload limit reached.{" "}
+                    <Link href="/app/billing" className="underline">
+                      Upgrade
+                    </Link>{" "}
+                    for more uploads.
+                  </div>
+                ) : null}
+
+                {isVectorStoreMissing ? (
+                  <div className="mt-3 text-xs text-muted-foreground">
+                    This bot has no vector store yet. Repair Vector Store before uploading.
+                  </div>
+                ) : null}
               </div>
-            ) : null}
+            </div>
+
+            <button
+              type="button"
+              onClick={onUpload}
+              disabled={uploading || !selectedBotId || isVectorStoreMissing || uploadsBlocked}
+              className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-5 text-sm font-medium text-primary-foreground shadow-sm transition hover:-translate-y-[1px] hover:opacity-95 disabled:opacity-50"
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              {uploading ? "Uploading..." : "Upload"}
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={onUpload}
-            disabled={uploading || !selectedBotId || isVectorStoreMissing || uploadsBlocked}
-            className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:opacity-90 disabled:opacity-50"
-          >
-            {uploading ? "Uploading…" : "Upload"}
-          </button>
+          {uploadMsg ? (
+            <div className="mt-4 rounded-2xl border bg-background p-3 text-sm">{uploadMsg}</div>
+          ) : null}
         </div>
 
-        {uploadMsg ? <div className="mt-3 rounded-md border bg-muted/40 p-3 text-sm">{uploadMsg}</div> : null}
+        <div className="rounded-[28px] border bg-card/80 p-5 shadow-sm">
+          <div className="text-lg font-semibold tracking-tight">Knowledge rules</div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-3xl border bg-background p-4 shadow-sm">
+              <div className="text-sm font-semibold">Bot scoped</div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Every upload belongs to a single bot and only strengthens that bot’s knowledge.
+              </div>
+            </div>
+
+            <div className="rounded-3xl border bg-background p-4 shadow-sm">
+              <div className="text-sm font-semibold">Plan aware</div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Free/Home support docs. Pro and above also support images and video.
+              </div>
+            </div>
+
+            <div className="rounded-3xl border bg-background p-4 shadow-sm">
+              <div className="text-sm font-semibold">Extraction</div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Run extraction on a document to pull schedule events and tasks into the workspace.
+              </div>
+            </div>
+
+            <div className="rounded-3xl border bg-background p-4 shadow-sm">
+              <div className="text-sm font-semibold">Safe cleanup</div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Deleting a document removes it from this bot and clears its attached derived data.
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div className="rounded-lg border">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b bg-muted/40">
-              <tr>
-                <th className="px-4 py-3 font-medium">Filename</th>
-                <th className="px-4 py-3 font-medium">Bot</th>
-                <th className="px-4 py-3 font-medium">Size</th>
-                <th className="px-4 py-3 font-medium">Uploaded</th>
-                <th className="px-4 py-3 font-medium"></th>
-              </tr>
-            </thead>
+      <div className="space-y-4">
+        {loading ? (
+          <div className="rounded-[28px] border bg-card/70 p-8 text-sm text-muted-foreground shadow-sm">
+            Loading documents…
+          </div>
+        ) : docs.length === 0 ? (
+          <div className="rounded-[28px] border bg-card/70 p-10 shadow-sm">
+            <div className="mx-auto flex max-w-md flex-col items-center text-center">
+              <div className="inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/80">
+                <FileText className="h-6 w-6 text-muted-foreground" />
+              </div>
+              <div className="mt-4 text-lg font-semibold tracking-tight">No documents yet</div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Upload your first document to start building knowledge for this bot.
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {docs.map((doc) => {
+              const mimeLabel = labelMime(doc.mime_type);
 
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td className="px-4 py-4 text-muted-foreground" colSpan={5}>
-                    Loading documents…
-                  </td>
-                </tr>
-              ) : docs.length === 0 ? (
-                <tr>
-                  <td className="px-4 py-4 text-muted-foreground" colSpan={5}>
-                    No documents for this bot yet.
-                  </td>
-                </tr>
-              ) : (
-                docs.map((doc) => {
-                  const mimeLabel = labelMime(doc.mime_type);
-                  return (
-                    <tr key={doc.id} className="border-b last:border-b-0">
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="font-medium">{doc.filename}</div>
-                          {mimeLabel ? (
-                            <span className="rounded-full border bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground">
-                              {mimeLabel}
+              return (
+                <div
+                  key={doc.id}
+                  className="rounded-[28px] border bg-card/80 p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70">
+                          {iconForMime(doc.mime_type)}
+                        </span>
+
+                        <div className="min-w-0">
+                          <div className="truncate text-base font-semibold tracking-tight">
+                            {doc.filename}
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-2">
+                            {mimeLabel ? (
+                              <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
+                                {mimeLabel}
+                              </span>
+                            ) : null}
+
+                            <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
+                              {formatBytes(doc.bytes)}
                             </span>
-                          ) : null}
+                          </div>
                         </div>
-                        {doc.openai_file_id ? (
-                          <div className="text-xs text-muted-foreground">OpenAI file: {doc.openai_file_id}</div>
-                        ) : null}
-                      </td>
+                      </div>
 
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {doc.bot_id ? botNameById.get(doc.bot_id) ?? doc.bot_id : "—"}
-                      </td>
-
-                      <td className="px-4 py-3 text-muted-foreground">{formatBytes(doc.bytes)}</td>
-
-                      <td className="px-4 py-3 text-muted-foreground">{formatDate(doc.created_at)}</td>
-
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => onExtract(doc)}
-                            disabled={extractingId === doc.id || !selectedBotId}
-                            className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-                            title="Extract schedule events / tasks from this document"
-                          >
-                            {extractingId === doc.id ? "Extracting…" : "Extract"}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => onDelete(doc)}
-                            disabled={deletingId === doc.id}
-                            className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-                          >
-                            {deletingId === doc.id ? "Deleting…" : "Delete"}
-                          </button>
+                      <div className="mt-4 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                        <div className="rounded-2xl border bg-background/70 px-3 py-2">
+                          Bot: {doc.bot_id ? botNameById.get(doc.bot_id) ?? doc.bot_id : "—"}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                        <div className="rounded-2xl border bg-background/70 px-3 py-2">
+                          Uploaded: {formatDate(doc.created_at)}
+                        </div>
+                      </div>
+
+                      {doc.openai_file_id ? (
+                        <div className="mt-3 truncate text-xs text-muted-foreground">
+                          OpenAI file: {doc.openai_file_id}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onExtract(doc)}
+                      disabled={extractingId === doc.id || !selectedBotId}
+                      className="rounded-2xl border bg-background/70 px-4 py-2 text-sm transition hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50"
+                    >
+                      {extractingId === doc.id ? "Extracting..." : "Extract"}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onDelete(doc)}
+                      disabled={deletingId === doc.id}
+                      className="rounded-2xl border bg-background/70 px-4 py-2 text-sm transition hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50"
+                    >
+                      {deletingId === doc.id ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
-
-      <p className="mt-4 text-xs text-muted-foreground">
-        Deleting should remove both the database record and the vector-store file (handled server-side in the DELETE route).
-      </p>
     </div>
   );
 }

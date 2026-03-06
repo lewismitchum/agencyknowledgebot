@@ -40,7 +40,6 @@ a {
 
 @layer base {
   :root {
-    /* Premium light mode */
     --background: 0 0% 99%;
     --foreground: 222.2 47.4% 11.2%;
 
@@ -73,7 +72,6 @@ a {
   }
 
   .dark {
-    /* Premium dark mode */
     --background: 0 0% 4%;
     --foreground: 0 0% 98%;
 
@@ -103,7 +101,6 @@ a {
     --ring: 0 0% 83%;
   }
 
-  /* shadcn/tailwind pattern: keep tokens in CSS vars, apply via utilities */
   * {
     @apply border-border;
   }
@@ -155,7 +152,7 @@ a {
 }
 
 /* --------------------------------------------------
-   Premium surfaces (glass / bubbles)
+   Premium surfaces
 -------------------------------------------------- */
 
 .surface {
@@ -166,6 +163,14 @@ a {
     0 20px 70px hsl(var(--foreground) / 0.08);
   backdrop-filter: blur(14px);
   border-radius: 28px;
+  transition: all .25s ease;
+}
+
+.surface:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 1px 0 hsl(var(--foreground) / 0.04),
+    0 30px 110px hsl(var(--foreground) / 0.12);
 }
 
 .surface-strong {
@@ -179,6 +184,7 @@ a {
 }
 
 /* Main cards */
+
 .card-premium {
   background: hsl(var(--card) / 0.82);
   border: 1px solid hsl(var(--border) / 0.9);
@@ -187,6 +193,36 @@ a {
     0 24px 90px hsl(var(--foreground) / 0.10);
   backdrop-filter: blur(14px);
   border-radius: 28px;
+  transition: all .25s ease;
+}
+
+.card-premium:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    0 1px 0 hsl(var(--foreground) / 0.05),
+    0 35px 120px hsl(var(--foreground) / 0.14);
+}
+
+/* --------------------------------------------------
+   Buttons feel modern
+-------------------------------------------------- */
+
+button,
+.btn {
+  transition:
+    transform .12s ease,
+    box-shadow .12s ease,
+    background .12s ease;
+}
+
+button:hover,
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+button:active,
+.btn:active {
+  transform: translateY(1px);
 }
 
 /* --------------------------------------------------
@@ -198,4 +234,23 @@ a {
     radial-gradient(80% 120% at 50% 0%, hsl(var(--primary) / 0.14), transparent 70%),
     hsl(var(--secondary));
   border: 1px solid hsl(var(--border));
+}
+
+/* --------------------------------------------------
+   Subtle page animation
+-------------------------------------------------- */
+
+@keyframes fadeInPage {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+main {
+  animation: fadeInPage .25s ease;
 }

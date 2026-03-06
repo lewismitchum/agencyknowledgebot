@@ -520,8 +520,8 @@ export default function SpreadsheetsPage() {
             ) : null}
 
             <div className="overflow-x-auto rounded-xl border">
-              <table className="w-full text-left text-sm">
-                <thead className="border-b bg-muted/40">
+              <table className="w-full text-left text-sm border-separate border-spacing-y-1">
+                <thead className="border-b bg-muted/30 backdrop-blur supports-[backdrop-filter]:bg-muted/20">
                   <tr>
                     {genTable.columns.map((c, idx) => (
                       <th key={idx} className="px-3 py-2 font-medium">
@@ -646,8 +646,8 @@ export default function SpreadsheetsPage() {
           ) : null}
 
           <div className="overflow-x-auto rounded-xl border">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b bg-muted/40">
+            <table className="w-full text-left text-sm border-separate border-spacing-y-1">
+              <thead className="border-b bg-muted/30 backdrop-blur supports-[backdrop-filter]:bg-muted/20">
                 <tr>
                   <th className="px-3 py-2 font-medium">Row</th>
                   <th className="px-3 py-2 font-medium">Col</th>

@@ -4,6 +4,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { UpgradeGate } from "@/components/upgrade-gate";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
+import {
+  CalendarDays,
+  CheckSquare,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Filter,
+  Layers3,
+  Plus,
+  Search,
+  Sparkles,
+} from "lucide-react";
 
 type BotLite = { id: string; name: string };
 
@@ -65,7 +77,6 @@ function tzHeaders() {
 }
 
 function dayKeyInTz(d: Date, tz: string) {
-  // en-CA -> YYYY-MM-DD
   try {
     return new Intl.DateTimeFormat("en-CA", {
       timeZone: tz,
@@ -84,7 +95,6 @@ function dayKeyInTz(d: Date, tz: string) {
 }
 
 function dateFromDayKey(dayKey: string) {
-  // Noon UTC avoids DST edge weirdness when adding/subtracting days.
   return new Date(`${dayKey}T12:00:00Z`);
 }
 
@@ -101,7 +111,6 @@ function ymdToParts(dayKey: string) {
 }
 
 function dowInTz(d: Date, tz: string) {
-  // 0..6 = Sun..Sat
   const label = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(d);
   const map: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
   return map[label] ?? 0;
@@ -109,8 +118,8 @@ function dowInTz(d: Date, tz: string) {
 
 function startOfWeekByTz(anchorDayKey: string, weekStartsOn: "sun" | "mon", tz: string) {
   const d = dateFromDayKey(anchorDayKey);
-  const day = dowInTz(d, tz); // 0 Sun .. 6 Sat
-  const offset = weekStartsOn === "sun" ? day : day === 0 ? 6 : day - 1; // Mon-start
+  const day = dowInTz(d, tz);
+  const offset = weekStartsOn === "sun" ? day : day === 0 ? 6 : day - 1;
   const start = addDaysUtc(d, -offset);
   return dayKeyInTz(start, tz);
 }
@@ -132,7 +141,6 @@ function endOfMonthByTz(anchorDayKey: string) {
   const p = ymdToParts(anchorDayKey);
   if (!p) return anchorDayKey;
 
-  // first day of next month, minus 1 day
   let y = p.y;
   let mo = p.mo + 1;
   if (mo === 13) {
@@ -141,7 +149,7 @@ function endOfMonthByTz(anchorDayKey: string) {
   }
   const nextFirst = `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-01`;
   const prev = addDaysUtc(dateFromDayKey(nextFirst), -1);
-  return prev.toISOString().slice(0, 10); // safe because it's noon UTC
+  return prev.toISOString().slice(0, 10);
 }
 
 function sameMonthByKey(a: string, b: string) {
@@ -193,22 +201,16 @@ function isFetchJsonError(e: any): e is FetchJsonError {
   return !!e && typeof e === "object" && ("status" in e || "code" in e);
 }
 
-// Accepts:
-// - ISO strings like 2026-03-05T14:00:00Z or 2026-03-05T14:00:00-05:00
-// - Local strings like 2026-03-05 14:00 or 2026-03-05 2:00pm
-// Returns UTC ISO for storage.
 function localInputToUtcIso(input: string) {
   const raw = String(input || "").trim();
   if (!raw) return "";
 
-  // ISO-ish: let Date parse it
   if (raw.includes("T")) {
     const d = new Date(raw);
     if (!Number.isNaN(d.getTime())) return d.toISOString();
     return raw;
   }
 
-  // YYYY-MM-DD HH:mm
   let m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$/.exec(raw);
   if (m) {
     const y = Number(m[1]);
@@ -216,12 +218,11 @@ function localInputToUtcIso(input: string) {
     const da = Number(m[3]);
     const hh = Number(m[4]);
     const mm = Number(m[5]);
-    const d = new Date(y, mo - 1, da, hh, mm, 0, 0); // local browser tz
+    const d = new Date(y, mo - 1, da, hh, mm, 0, 0);
     if (!Number.isNaN(d.getTime())) return d.toISOString();
     return raw;
   }
 
-  // YYYY-MM-DD h:mm(am|pm)
   m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})\s*(am|pm)$/i.exec(raw);
   if (m) {
     const y = Number(m[1]);
@@ -232,15 +233,41 @@ function localInputToUtcIso(input: string) {
     const ap = String(m[6]).toLowerCase();
     if (ap === "pm" && hh < 12) hh += 12;
     if (ap === "am" && hh === 12) hh = 0;
-    const d = new Date(y, mo - 1, da, hh, mm, 0, 0); // local browser tz
+    const d = new Date(y, mo - 1, da, hh, mm, 0, 0);
     if (!Number.isNaN(d.getTime())) return d.toISOString();
     return raw;
   }
 
-  // last attempt: Date parse (local)
   const d = new Date(raw);
   if (!Number.isNaN(d.getTime())) return d.toISOString();
   return raw;
+}
+
+function TopStat({
+  icon,
+  label,
+  value,
+  hint,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded-3xl border bg-card/75 p-5 shadow-sm backdrop-blur transition-all duration-200 hover:-translate-y-[2px] hover:shadow-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
+          <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
+          <div className="mt-2 text-xs text-muted-foreground">{hint}</div>
+        </div>
+        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground shadow-sm">
+          {icon}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function SchedulePage() {
@@ -428,7 +455,6 @@ export default function SchedulePage() {
   }, []);
 
   useEffect(() => {
-    // once we know tz (prefs or agency), reset anchor day key to "today in tz"
     const today = dayKeyInTz(new Date(), tz);
     setAnchorDayKey(today);
   }, [tz]);
@@ -520,6 +546,10 @@ export default function SchedulePage() {
 
   const selectedDayTasks = useMemo(() => tasksByDay.get(dayKey) || [], [tasksByDay, dayKey]);
   const noDueTasks = useMemo(() => tasksByDay.get("no_due") || [], [tasksByDay]);
+
+  const totalVisibleEvents = filteredEvents.length;
+  const totalVisibleTasks = filteredTasks.length;
+  const openTasksCount = filteredTasks.filter((t: any) => t.status === "open").length;
 
   async function toggleTask(id: string, status: "open" | "done") {
     setErr("");
@@ -619,7 +649,7 @@ export default function SchedulePage() {
   }
 
   const headerLabel = useMemo(() => {
-    if (view === "day") return dayKey;
+    if (view === "day") return formatReadableDateKey(dayKey, tz);
     if (view === "week") return `${weekDays[0]} → ${weekDays[6]}`;
     return formatReadableDateKey(startOfMonthByTz(dayKey), tz).replace(/,\s*\d{4}$/, (m) => m);
   }, [view, dayKey, weekDays, tz]);
@@ -639,106 +669,179 @@ export default function SchedulePage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl">
-      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Schedule</h1>
-          <p className="mt-2 text-sm text-muted-foreground">{tzLabel} · personalized views · tasks + events</p>
-        </div>
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div className="relative overflow-hidden rounded-[28px] border bg-card/80 p-6 shadow-sm backdrop-blur md:p-7">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.12),transparent_50%)]" />
 
-        <div className="flex flex-col gap-2 md:flex-row md:items-center">
-          <select
-            value={botId}
-            onChange={(e) => setBotId(e.target.value)}
-            className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-64"
-          >
-            <option value={ALL_BOTS_ID}>All bots</option>
-            {bots.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+        <div className="relative flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/65 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground backdrop-blur">
+              <Sparkles className="h-3.5 w-3.5" />
+              Schedule
+            </div>
 
-          <div className="flex rounded-xl border bg-background p-1">
-            {(["day", "week", "month"] as const).map((v) => (
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
+              Turn documents into a clean working calendar.
+            </h1>
+
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+              Review events, manage tasks, and keep your day organized with a schedule view tailored to your timezone.
+            </p>
+
+            <div className="mt-5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">TZ: {tzLabel}</span>
+              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">
+                {botId === ALL_BOTS_ID ? "All bots" : botNameById.get(botId) || "Selected bot"}
+              </span>
+              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">
+                {view.toUpperCase()} view
+              </span>
+            </div>
+          </div>
+
+          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[320px]">
+            <div className="grid grid-cols-2 gap-2">
               <button
-                key={v}
-                onClick={() => {
-                  setView(v);
-                  savePrefs({ ...prefs, default_view: v });
-                }}
-                className={[
-                  "rounded-lg px-3 py-1.5 text-sm transition-colors",
-                  view === v ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                ].join(" ")}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+                onClick={() => (view === "month" ? moveAnchorMonth(-1) : moveAnchor(prevDelta))}
                 type="button"
               >
-                {v.toUpperCase()}
+                <ChevronLeft className="h-4 w-4" />
+                Prev
               </button>
-            ))}
+              <button
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+                onClick={() => (view === "month" ? moveAnchorMonth(1) : moveAnchor(nextDelta))}
+                type="button"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+
+            <button
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
+              onClick={() => setAnchorDayKey(dayKeyInTz(new Date(), tz))}
+              type="button"
+            >
+              <Clock3 className="h-4 w-4" />
+              Jump to today
+            </button>
           </div>
         </div>
       </div>
 
-      {err ? <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div> : null}
+      <div className="grid gap-4 md:grid-cols-4">
+        <TopStat
+          icon={<CalendarDays className="h-5 w-5" />}
+          label="Events"
+          value={String(totalVisibleEvents)}
+          hint="Visible in current filters"
+        />
+        <TopStat
+          icon={<CheckSquare className="h-5 w-5" />}
+          label="Tasks"
+          value={String(totalVisibleTasks)}
+          hint="Visible in current filters"
+        />
+        <TopStat
+          icon={<Layers3 className="h-5 w-5" />}
+          label="Open"
+          value={String(openTasksCount)}
+          hint="Open tasks still active"
+        />
+        <TopStat
+          icon={<Clock3 className="h-5 w-5" />}
+          label="Focus day"
+          value={view === "month" ? dayKey.slice(5) : dayKey.slice(5)}
+          hint={headerLabel}
+        />
+      </div>
 
-      <div className="mt-6 grid gap-4 md:grid-cols-3">
-        <div className="rounded-3xl border bg-card p-5 shadow-sm md:col-span-2">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-2">
-              <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
-                onClick={() => (view === "month" ? moveAnchorMonth(-1) : moveAnchor(prevDelta))}
-                type="button"
-              >
-                ←
-              </button>
-              <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
-                onClick={() => setAnchorDayKey(dayKeyInTz(new Date(), tz))}
-                type="button"
-              >
-                Today
-              </button>
-              <button
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
-                onClick={() => (view === "month" ? moveAnchorMonth(1) : moveAnchor(nextDelta))}
-                type="button"
-              >
-                →
-              </button>
-              <span className="ml-2 text-sm font-medium">{headerLabel}</span>
+      {err ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div> : null}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur md:col-span-2">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-lg font-medium tracking-tight">{headerLabel}</div>
+              <div className="mt-1 text-xs text-muted-foreground">Filter, search, and switch views instantly.</div>
             </div>
 
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search events and tasks…"
-              className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-72"
-            />
+            <div className="flex flex-col gap-2 md:flex-row md:items-center">
+              <select
+                value={botId}
+                onChange={(e) => setBotId(e.target.value)}
+                className="w-full rounded-2xl border bg-background/70 px-3 py-2 text-sm outline-none backdrop-blur focus:ring-2 focus:ring-ring md:w-64"
+              >
+                <option value={ALL_BOTS_ID}>All bots</option>
+                {bots.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+
+              <div className="flex rounded-2xl border bg-background/60 p-1 backdrop-blur">
+                {(["day", "week", "month"] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => {
+                      setView(v);
+                      savePrefs({ ...prefs, default_view: v });
+                    }}
+                    className={[
+                      "rounded-xl px-3 py-2 text-sm transition-colors",
+                      view === v ? "bg-accent text-foreground shadow-sm" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    ].join(" ")}
+                    type="button"
+                  >
+                    {v.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
-          <div className="mt-4 rounded-2xl border bg-background/40 p-3">
-            <div className="flex flex-wrap items-center gap-3 text-sm">
-              <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
-              <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
-              <Toggle label="Show done" checked={prefs.show_done_tasks} onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })} />
+          <div className="mt-4 rounded-2xl border bg-background/45 p-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center">
+              <div className="flex flex-wrap items-center gap-2">
+                <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
+                <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
+                <Toggle
+                  label="Show done"
+                  checked={prefs.show_done_tasks}
+                  onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })}
+                />
+              </div>
 
-              <div className="ml-auto flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Week starts</span>
-                <select
-                  value={prefs.week_starts_on}
-                  onChange={(e) => savePrefs({ ...prefs, week_starts_on: e.target.value as any })}
-                  className="rounded-xl border bg-background px-2 py-1.5 text-xs outline-none disabled:opacity-60"
-                >
-                  <option value="mon">Mon</option>
-                  <option value="sun">Sun</option>
-                </select>
+              <div className="md:ml-auto flex flex-col gap-2 sm:flex-row sm:items-center">
+                <div className="flex items-center gap-2">
+                  <Filter className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">Week starts</span>
+                  <select
+                    value={prefs.week_starts_on}
+                    onChange={(e) => savePrefs({ ...prefs, week_starts_on: e.target.value as any })}
+                    className="rounded-xl border bg-background px-2 py-1.5 text-xs outline-none disabled:opacity-60"
+                  >
+                    <option value="mon">Mon</option>
+                    <option value="sun">Sun</option>
+                  </select>
+                </div>
+
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search events and tasks…"
+                    className="w-full rounded-2xl border bg-background px-10 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-72"
+                  />
+                </div>
 
                 <button
                   onClick={() => botId && loadData(botId)}
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-accent disabled:opacity-60"
+                  className="rounded-2xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent disabled:opacity-60"
                   type="button"
                 >
                   Refresh
@@ -749,7 +852,7 @@ export default function SchedulePage() {
 
           <div className="mt-6">
             {loading ? (
-              <div className="text-sm text-muted-foreground">Loading…</div>
+              <div className="rounded-2xl border bg-background/45 p-6 text-sm text-muted-foreground">Loading…</div>
             ) : view === "day" ? (
               <DayView
                 dayKey={dayKey}
@@ -792,7 +895,7 @@ export default function SchedulePage() {
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-3xl border bg-card p-5 shadow-sm">
+          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">Daily to-do</div>
@@ -801,7 +904,7 @@ export default function SchedulePage() {
 
               <button
                 onClick={() => setView("day")}
-                className="shrink-0 rounded-xl border px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60"
+                className="shrink-0 rounded-xl border px-3 py-2 text-xs text-muted-foreground transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent hover:text-foreground disabled:opacity-60"
                 type="button"
                 title="Open day view"
               >
@@ -813,11 +916,11 @@ export default function SchedulePage() {
               <div className="mt-4 rounded-2xl border bg-muted p-3 text-sm text-muted-foreground">Tasks are hidden.</div>
             ) : (
               <>
-                <div className="mt-4 text-xs font-medium text-muted-foreground">Due this day</div>
+                <div className="mt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Due this day</div>
                 {selectedDayTasks.length ? (
                   <div className="mt-2 space-y-2">
                     {selectedDayTasks.map((t: any) => (
-                      <div key={t.id} className="rounded-2xl border p-3">
+                      <div key={t.id} className="rounded-2xl border bg-background/45 p-3 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-sm">
                         <div className="flex items-start justify-between gap-3">
                           <button
                             onClick={() => toggleTask(t.id, t.status)}
@@ -843,7 +946,7 @@ export default function SchedulePage() {
 
                           <button
                             onClick={() => deleteTask(t.id)}
-                            className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                            className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent hover:text-foreground"
                             title="Delete task"
                             type="button"
                           >
@@ -858,14 +961,14 @@ export default function SchedulePage() {
                 )}
 
                 <div className="mt-5 flex items-center justify-between gap-3">
-                  <div className="text-xs font-medium text-muted-foreground">No due date</div>
+                  <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">No due date</div>
                   <div className="text-[11px] text-muted-foreground">{noDueTasks.length ? `${noDueTasks.length} total` : ""}</div>
                 </div>
 
                 {noDueTasks.length ? (
                   <div className="mt-2 space-y-2">
                     {noDueTasks.slice(0, 6).map((t: any) => (
-                      <div key={t.id} className="rounded-2xl border p-3">
+                      <div key={t.id} className="rounded-2xl border bg-background/45 p-3 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-sm">
                         <div className="flex items-start justify-between gap-3">
                           <button
                             onClick={() => toggleTask(t.id, t.status)}
@@ -889,7 +992,7 @@ export default function SchedulePage() {
 
                           <button
                             onClick={() => deleteTask(t.id)}
-                            className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                            className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent hover:text-foreground"
                             title="Delete task"
                             type="button"
                           >
@@ -907,9 +1010,19 @@ export default function SchedulePage() {
             )}
           </div>
 
-          <div className="rounded-3xl border bg-card p-5 shadow-sm">
-            <div className="text-sm font-medium">Quick add</div>
-            <div className="mt-1 text-xs text-muted-foreground">Manual add is fine. Auto extraction becomes paid-only later.</div>
+          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Quick add</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Manual add is fine. Auto extraction becomes paid-only later.
+                </div>
+              </div>
+
+              <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground shadow-sm">
+                <Plus className="h-4 w-4" />
+              </div>
+            </div>
 
             <QuickAdd botId={botId} onAdded={() => botId && loadData(botId)} />
           </div>
@@ -932,8 +1045,10 @@ function Toggle({
     <button
       onClick={() => onChange(!checked)}
       className={[
-        "rounded-xl border px-3 py-2 text-sm transition-colors",
-        checked ? "bg-accent text-foreground" : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
+        "rounded-xl border px-3 py-2 text-sm transition-all duration-200",
+        checked
+          ? "bg-accent text-foreground shadow-sm"
+          : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
       ].join(" ")}
       type="button"
     >
@@ -972,7 +1087,7 @@ function DayView({
 }) {
   return (
     <div className="space-y-4">
-      <div className="text-sm font-medium">
+      <div className="rounded-2xl border bg-background/45 p-4 text-sm font-medium">
         Day: <span className="font-mono">{dayKey}</span>
       </div>
 
@@ -980,7 +1095,7 @@ function DayView({
         {events.length ? (
           <div className="space-y-2">
             {events.map((e: any) => (
-              <div key={e.id} className="rounded-2xl border p-3">
+              <div key={e.id} className="rounded-2xl border bg-background/45 p-3 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -996,7 +1111,7 @@ function DayView({
 
                   <button
                     onClick={() => onDeleteEvent(e.id)}
-                    className="rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                    className="rounded-xl border px-3 py-1.5 text-xs text-muted-foreground transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent hover:text-foreground"
                     title="Delete event"
                     type="button"
                   >
@@ -1015,7 +1130,7 @@ function DayView({
         {tasks.length ? (
           <div className="space-y-2">
             {tasks.map((t: any) => (
-              <div key={t.id} className="rounded-2xl border p-3">
+              <div key={t.id} className="rounded-2xl border bg-background/45 p-3 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-sm">
                 <div className="flex items-start justify-between gap-3">
                   <button
                     onClick={() => onToggleTask(t.id, t.status)}
@@ -1037,7 +1152,7 @@ function DayView({
 
                   <button
                     onClick={() => onDeleteTask(t.id)}
-                    className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                    className="shrink-0 rounded-xl border px-3 py-1.5 text-xs text-muted-foreground transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent hover:text-foreground"
                     title="Delete task"
                     type="button"
                   >
@@ -1080,14 +1195,14 @@ function WeekView({
         const ev = eventsByDay.get(k) || [];
         const tk = tasksByDay.get(k) || [];
         return (
-          <div key={k} className="rounded-2xl border p-4">
-            <div className="font-medium">{k}</div>
+          <div key={k} className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-sm">
+            <div className="font-medium">{formatReadableDateKey(k, tz)}</div>
 
-            <div className="mt-3 text-xs font-medium text-muted-foreground">Events</div>
+            <div className="mt-3 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Events</div>
             {ev.length ? (
               <div className="mt-2 space-y-2">
                 {ev.slice(0, 4).map((e: any) => (
-                  <div key={e.id} className="rounded-xl border p-2">
+                  <div key={e.id} className="rounded-xl border bg-background/70 p-2">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
@@ -1115,11 +1230,11 @@ function WeekView({
               <div className="mt-2 text-sm text-muted-foreground">—</div>
             )}
 
-            <div className="mt-4 text-xs font-medium text-muted-foreground">Tasks</div>
+            <div className="mt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Tasks</div>
             {tk.length ? (
               <div className="mt-2 space-y-2">
                 {tk.slice(0, 4).map((t: any) => (
-                  <div key={t.id} className="rounded-xl border p-2">
+                  <div key={t.id} className="rounded-xl border bg-background/70 p-2">
                     <div className="flex items-center justify-between gap-2">
                       <button
                         onClick={() => onToggleTask(t.id, t.status)}
@@ -1168,7 +1283,7 @@ function MonthView({
   onSelectDay,
 }: {
   monthDays: string[];
-  anchorMonthKey: string; // YYYY-MM
+  anchorMonthKey: string;
   selectedDayKey: string;
   weekStartsOn: "sun" | "mon";
   eventsByDay: Map<string, (EventRow & { bot_id?: string })[]>;
@@ -1205,9 +1320,9 @@ function MonthView({
               key={k}
               onClick={() => onSelectDay(k)}
               className={[
-                "min-h-[110px] rounded-2xl border p-2 text-left transition-colors hover:bg-accent/40",
-                inMonth ? "bg-background/40" : "bg-muted/30 opacity-70",
-                isSelected ? "ring-2 ring-ring" : "",
+                "min-h-[118px] rounded-2xl border p-2 text-left transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent/30",
+                inMonth ? "bg-background/45" : "bg-muted/30 opacity-70",
+                isSelected ? "ring-2 ring-ring shadow-sm" : "",
               ].join(" ")}
               title="Open day"
               type="button"
@@ -1225,12 +1340,12 @@ function MonthView({
 
               <div className="mt-2 space-y-1">
                 {ev.slice(0, 2).map((e: any) => (
-                  <div key={e.id} className="truncate rounded-lg border px-2 py-1 text-xs" title={e.title}>
+                  <div key={e.id} className="truncate rounded-lg border bg-background/70 px-2 py-1 text-xs" title={e.title}>
                     {e.title}
                   </div>
                 ))}
                 {tk.slice(0, 2).map((t: any) => (
-                  <div key={t.id} className="flex items-center gap-2 rounded-lg border px-2 py-1 text-xs">
+                  <div key={t.id} className="flex items-center gap-2 rounded-lg border bg-background/70 px-2 py-1 text-xs">
                     <button
                       onClick={(ev) => {
                         ev.preventDefault();
@@ -1331,14 +1446,14 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
 
   return (
     <div className="mt-4 space-y-3">
-      <div className="flex rounded-xl border bg-background p-1">
+      <div className="flex rounded-2xl border bg-background p-1">
         {(["event", "task"] as const).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
             className={[
-              "flex-1 rounded-lg px-3 py-2 text-sm transition-colors disabled:opacity-60",
-              mode === m ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              "flex-1 rounded-xl px-3 py-2 text-sm transition-colors disabled:opacity-60",
+              mode === m ? "bg-accent text-foreground shadow-sm" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
             type="button"
             disabled={loading}
@@ -1352,7 +1467,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder={mode === "event" ? "Event title" : "Task title"}
-        className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+        className="w-full rounded-2xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
         disabled={loading}
       />
 
@@ -1360,14 +1475,14 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
         value={when}
         onChange={(e) => setWhen(e.target.value)}
         placeholder={mode === "event" ? "Start (local) e.g. 2026-03-05 14:00" : "Due (local) e.g. 2026-03-05 17:00 (or blank)"}
-        className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+        className="w-full rounded-2xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
         disabled={loading}
       />
 
       <button
         onClick={submit}
         disabled={loading || !botId || botId === ALL_BOTS_ID}
-        className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+        className="w-full rounded-2xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95 disabled:opacity-60"
         type="button"
       >
         {botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}

@@ -3,6 +3,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import {
+  ArrowRight,
+  Bot,
+  Building2,
+  Lock,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Wrench,
+} from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -40,10 +51,50 @@ function formatDate(iso: string | null) {
 }
 
 function pickMaxAgencyBotsFromAny(limits: any): number | null {
-  const raw = limits?.max_agency_bots ?? limits?.agency_bots ?? limits?.max_bots ?? limits?.bots ?? null;
+  const raw =
+    limits?.max_agency_bots ?? limits?.agency_bots ?? limits?.max_bots ?? limits?.bots ?? null;
   if (raw == null) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
+}
+
+function prettyPlan(plan: string | null | undefined) {
+  const v = String(plan || "").toLowerCase();
+  if (v === "personal" || v === "home") return "Home";
+  if (v === "pro") return "Pro";
+  if (v === "enterprise") return "Enterprise";
+  if (v === "corp" || v === "corporation") return "Corporation";
+  return "Free";
+}
+
+function TopStat({
+  icon,
+  label,
+  value,
+  hint,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded-3xl border bg-background/80 p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            {label}
+          </div>
+          <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
+          <div className="mt-2 text-xs text-muted-foreground">{hint}</div>
+        </div>
+
+        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-muted/30 text-muted-foreground shadow-sm">
+          {icon}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function BotsPage() {
@@ -73,7 +124,10 @@ export default function BotsPage() {
     setLoading(true);
     setMsg("");
     try {
-      const j = (await fetchJson<any>("/api/bots", { credentials: "include", cache: "no-store" })) as BotsResponse | any;
+      const j = (await fetchJson<any>("/api/bots", {
+        credentials: "include",
+        cache: "no-store",
+      })) as BotsResponse | any;
 
       const rows = Array.isArray(j?.bots) ? j.bots : [];
       const normalized: BotRow[] = rows.map((b: any) => ({
@@ -110,17 +164,13 @@ export default function BotsPage() {
 
       const p = String(j?.plan ?? j?.agency?.plan ?? "") || null;
       setPlan(p);
-
-      // limits may or may not be present depending on /api/me implementation.
       setLimits(j?.limits ?? null);
 
       const roleRaw = String(j?.user?.role ?? "member").toLowerCase();
       setMeRole(roleRaw === "owner" ? "owner" : roleRaw === "admin" ? "admin" : "member");
-
       setMeUserId(String(j?.user?.id ?? ""));
     } catch (e: any) {
       if (e instanceof FetchJsonError && (e.info.status === 401 || e.info.status === 403)) return;
-      // non-fatal
     }
   }
 
@@ -147,6 +197,20 @@ export default function BotsPage() {
     if (botLimitMax == null) return false;
     return botLimitUsed >= botLimitMax;
   }, [botLimitUsed, botLimitMax]);
+
+  const agencyBotsCount = useMemo(
+    () => bots.filter((b) => (b.scope ? b.scope === "agency" : b.owner_user_id == null)).length,
+    [bots]
+  );
+
+  const privateBotsCount = useMemo(
+    () => bots.filter((b) => (b.scope ? b.scope === "private" : !!b.owner_user_id)).length,
+    [bots]
+  );
+
+  const readyBotsCount = useMemo(() => bots.filter((b) => !!b.vector_store_id).length, [bots]);
+
+  const missingVectorCount = useMemo(() => bots.filter((b) => !b.vector_store_id).length, [bots]);
 
   const isError = /fail|error|required|cannot|unauth|forbidden|quota|billing|limit/i.test(msg);
 
@@ -204,9 +268,9 @@ export default function BotsPage() {
         }
         const raw = String(e.info.bodyText || "").trim();
 
-        // preserve your existing UX for known error codes
         if (raw === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only rename your own private bots.");
-        else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
+        else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER")
+          setMsg("Owner/admin only.");
         else setMsg(raw || `Rename failed (${e.info.status})`);
 
         return;
@@ -214,7 +278,6 @@ export default function BotsPage() {
 
       setMsg(e?.message || "Rename failed");
     } finally {
-      // keep renamingId cleared by cancelRename on success; otherwise leave it
       if (renamingId && renamingId !== bot.id) setRenamingId(null);
     }
   }
@@ -262,17 +325,23 @@ export default function BotsPage() {
 
         const body = String(e.info.bodyText || "").trim();
 
-        // Keep your old special cases (server may return plain codes or JSON).
         if (body.includes("BOT_LIMIT_EXCEEDED")) {
           const used = botLimitUsed;
           const limit = botLimitMax ?? null;
-          setMsg(limit == null ? "Agency bot limit reached." : `Agency bot limit reached (${used} / ${limit}). Upgrade in Billing.`);
+          setMsg(
+            limit == null
+              ? "Agency bot limit reached."
+              : `Agency bot limit reached (${used} / ${limit}). Upgrade in Billing.`
+          );
           await loadMe();
           await loadBots();
           return;
         }
 
-        if (body.includes("FORBIDDEN_NOT_ADMIN_OR_OWNER") || body.includes("FORBIDDEN_NOT_OWNER")) {
+        if (
+          body.includes("FORBIDDEN_NOT_ADMIN_OR_OWNER") ||
+          body.includes("FORBIDDEN_NOT_OWNER")
+        ) {
           setMsg("Only owner/admin can create agency bots.");
           return;
         }
@@ -324,7 +393,9 @@ export default function BotsPage() {
       return;
     }
 
-    const okConfirm = window.confirm(`Delete "${bot.name}"?\n\nThis will remove the bot and related data. This cannot be undone.`);
+    const okConfirm = window.confirm(
+      `Delete "${bot.name}"?\n\nThis will remove the bot and related data. This cannot be undone.`
+    );
     if (!okConfirm) return;
 
     setDeletingId(bot.id);
@@ -347,7 +418,8 @@ export default function BotsPage() {
         const raw = String(e.info.bodyText || "").trim();
 
         if (raw === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only delete your own private bots.");
-        else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER") setMsg("Owner/admin only.");
+        else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER")
+          setMsg("Owner/admin only.");
         else setMsg(raw || `Delete failed (${e.info.status})`);
 
         return;
@@ -365,257 +437,467 @@ export default function BotsPage() {
   }, [botLimitUsed, botLimitMax]);
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Bots</h1>
-        <p className="text-sm text-muted-foreground">Agency bots are shared. Private bots are personal.</p>
-      </div>
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-8">
+      <section className="relative overflow-hidden rounded-[32px] border bg-gradient-to-br from-background via-background to-muted/40 p-6 shadow-sm md:p-8">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.10),transparent_50%)]" />
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-        <Card className="card-premium rounded-3xl">
-          <CardHeader className="space-y-2">
-            <div className="flex items-center justify-between">
+        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/70 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5" />
+              Workspace bots
+            </div>
+
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-5xl">
+              Create bots for every workflow.
+            </h1>
+
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+              Agency bots are shared across your workspace. Private bots stay personal. Each bot
+              needs a vector store to answer from docs reliably.
+            </p>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Badge variant="secondary" className="rounded-full px-3 py-1">
+                Shared + private bots
+              </Badge>
+              <Badge variant="outline" className="rounded-full px-3 py-1">
+                Docs-backed answers
+              </Badge>
+              <Badge variant="outline" className="rounded-full px-3 py-1">
+                Role-based control
+              </Badge>
+              <Badge variant="outline" className="rounded-full px-3 py-1">
+                Vector-store repair
+              </Badge>
+            </div>
+          </div>
+
+          <div className="flex w-full flex-col gap-2 lg:w-auto lg:min-w-[280px]">
+            <Button asChild className="h-11 rounded-2xl">
+              <Link href="/app/chat">Go to chat</Link>
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={loadBots}
+              className="h-11 rounded-2xl"
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Refresh bots
+            </Button>
+          </div>
+        </div>
+
+        <div className="relative mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <TopStat
+            icon={<Building2 className="h-5 w-5" />}
+            label="Agency bots"
+            value={String(agencyBotsCount)}
+            hint={botLimitMax == null ? "Unlimited on current plan" : `Limit ${botLimitMax}`}
+          />
+          <TopStat
+            icon={<Lock className="h-5 w-5" />}
+            label="Private bots"
+            value={String(privateBotsCount)}
+            hint="Visible only to their owner"
+          />
+          <TopStat
+            icon={<ShieldCheck className="h-5 w-5" />}
+            label="Ready"
+            value={String(readyBotsCount)}
+            hint="Bots with vector stores attached"
+          />
+          <TopStat
+            icon={<Wrench className="h-5 w-5" />}
+            label="Need repair"
+            value={String(missingVectorCount)}
+            hint="Missing vector stores"
+          />
+        </div>
+      </section>
+
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <Card className="rounded-[28px] border shadow-sm">
+          <CardHeader className="pb-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <CardTitle>Your bots</CardTitle>
-                <CardDescription>Each bot needs a vector store to answer from docs.</CardDescription>
+                <CardTitle className="text-xl tracking-tight">Your bots</CardTitle>
+                <CardDescription className="mt-2">
+                  Manage workspace bots, repair vector stores, and keep assistants organized.
+                </CardDescription>
               </div>
-              <div className="flex gap-2">
-                <Link href="/app/chat">
-                  <Button size="sm" variant="secondary" className="rounded-full">
-                    Go to chat
-                  </Button>
-                </Link>
-                <Button size="sm" variant="outline" className="rounded-full" onClick={loadBots}>
-                  Refresh
-                </Button>
-              </div>
-            </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              {defaultBot && (
-                <span className="text-muted-foreground">
-                  Default agency bot: <span className="font-medium text-foreground">{defaultBot.name}</span>
-                </span>
-              )}
-              <Badge variant="outline" className="rounded-full">
-                {botLimitText}
-              </Badge>
-              {plan ? (
+              <div className="flex flex-wrap gap-2">
+                {defaultBot ? (
+                  <Badge variant="outline" className="rounded-full">
+                    Default agency bot: {defaultBot.name}
+                  </Badge>
+                ) : null}
                 <Badge variant="outline" className="rounded-full">
-                  Plan: {plan}
+                  {botLimitText}
                 </Badge>
-              ) : null}
-              {agencyBotAtCap ? (
-                <Badge variant="destructive" className="rounded-full">
-                  Agency bot cap reached
+                {plan ? (
+                  <Badge variant="outline" className="rounded-full">
+                    Plan: {prettyPlan(plan)}
+                  </Badge>
+                ) : null}
+                {agencyBotAtCap ? (
+                  <Badge variant="destructive" className="rounded-full">
+                    Agency bot cap reached
+                  </Badge>
+                ) : null}
+                <Badge variant="outline" className="rounded-full">
+                  Role: {meRole}
                 </Badge>
-              ) : null}
-              <Badge variant="outline" className="rounded-full">
-                Role: {meRole}
-              </Badge>
+              </div>
             </div>
-
-            <Separator />
           </CardHeader>
 
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-4">
             {msg ? (
-              <div className={`rounded-2xl border p-3 text-sm ${isError ? "border-red-200 bg-red-50 text-red-700" : "bg-background/60"}`}>
+              <div
+                className={`rounded-3xl border p-4 text-sm ${
+                  isError
+                    ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-100"
+                    : "bg-background"
+                }`}
+              >
                 {msg}
               </div>
             ) : null}
 
-            <div className="overflow-x-auto rounded-2xl border bg-background/60">
-              <table className="w-full text-sm">
-                <thead className="border-b bg-muted/40">
-                  <tr>
-                    <th className="px-4 py-3 text-left">Name</th>
-                    <th className="px-4 py-3 text-left">Type</th>
-                    <th className="px-4 py-3 text-left">Status</th>
-                    <th className="px-4 py-3 text-left">Created</th>
-                    <th className="px-4 py-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-4 text-muted-foreground">
-                        Loading…
-                      </td>
-                    </tr>
-                  ) : bots.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-4 text-muted-foreground">
-                        No bots yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    bots.map((b) => {
-                      const missing = !b.vector_store_id;
-                      const isPrivate = b.scope ? b.scope === "private" : !!b.owner_user_id;
-                      const canManage = canManageBot(b);
+            {loading ? (
+              <div className="rounded-[28px] border bg-muted/20 p-8 text-sm text-muted-foreground">
+                Loading bots…
+              </div>
+            ) : bots.length === 0 ? (
+              <div className="rounded-[28px] border bg-muted/20 p-10 text-center">
+                <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/80">
+                  <Bot className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <div className="mt-4 text-lg font-semibold tracking-tight">No bots yet</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  Create your first bot on the right to start organizing knowledge.
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {bots.map((b) => {
+                  const missing = !b.vector_store_id;
+                  const isPrivate = b.scope ? b.scope === "private" : !!b.owner_user_id;
+                  const canManage = canManageBot(b);
 
-                      return (
-                        <tr key={b.id} className="border-b last:border-b-0">
-                          <td className="px-4 py-3">
-                            {renamingId === b.id ? (
-                              <div className="flex flex-col gap-2">
-                                <Input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} placeholder="Bot name" />
-                                <div className="flex items-center gap-2">
-                                  <Button size="sm" className="h-7 rounded-full px-3" onClick={() => submitRename(b)}>
-                                    Save
-                                  </Button>
-                                  <Button size="sm" variant="outline" className="h-7 rounded-full px-3" onClick={cancelRename}>
-                                    Cancel
-                                  </Button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="font-medium">{b.name}</div>
-                            )}
-
-                            {b.description ? <div className="text-xs text-muted-foreground">{b.description}</div> : null}
-                          </td>
-
-                          <td className="px-4 py-3">
-                            <Badge variant="outline" className="rounded-full">
-                              {isPrivate ? "Private bot" : "Agency bot"}
-                            </Badge>
-                          </td>
-
-                          <td className="px-4 py-3">
-                            {missing ? (
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Badge variant="outline" className="rounded-full border-amber-200 bg-amber-50 text-amber-800">
-                                  Missing vector store
-                                </Badge>
+                  return (
+                    <div
+                      key={b.id}
+                      className="rounded-[28px] border bg-background p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md"
+                    >
+                      <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                        <div className="min-w-0 flex-1">
+                          {renamingId === b.id ? (
+                            <div className="max-w-md space-y-3">
+                              <Input
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                placeholder="Bot name"
+                                className="rounded-2xl"
+                              />
+                              <div className="flex items-center gap-2">
                                 <Button
                                   size="sm"
-                                  variant="secondary"
-                                  className="h-7 rounded-full px-3"
-                                  disabled={repairingId === b.id}
-                                  onClick={() => repairVectorStore(b.id)}
+                                  className="h-9 rounded-full px-4"
+                                  onClick={() => submitRename(b)}
                                 >
-                                  {repairingId === b.id ? "Repairing…" : "Repair"}
+                                  Save
                                 </Button>
-                                <span className="text-xs text-muted-foreground">(requires OpenAI quota/billing)</span>
-                              </div>
-                            ) : (
-                              <Badge variant="outline" className="rounded-full">
-                                Ready
-                              </Badge>
-                            )}
-                          </td>
-
-                          <td className="px-4 py-3 text-muted-foreground">{formatDate(b.created_at)}</td>
-
-                          <td className="px-4 py-3">
-                            <div className="flex justify-end gap-2">
-                              {canManage && renamingId !== b.id ? (
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  className="h-7 rounded-full px-3"
-                                  onClick={() => startRename(b)}
-                                  disabled={!canRenameBot(b)}
+                                  className="h-9 rounded-full px-4"
+                                  onClick={cancelRename}
                                 >
-                                  Rename
+                                  Cancel
                                 </Button>
-                              ) : null}
-
-                              {canManage ? (
-                                <Button
-                                  size="sm"
-                                  variant="destructive"
-                                  className="h-7 rounded-full px-3"
-                                  disabled={deletingId === b.id || !canDeleteBot(b)}
-                                  onClick={() => deleteBot(b)}
-                                >
-                                  {deletingId === b.id ? "Deleting…" : "Delete"}
-                                </Button>
-                              ) : (
-                                <span className="text-xs text-muted-foreground">—</span>
-                              )}
+                              </div>
                             </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-start gap-3">
+                                <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-muted/30 text-muted-foreground shadow-sm">
+                                  {isPrivate ? (
+                                    <Lock className="h-4 w-4" />
+                                  ) : (
+                                    <Building2 className="h-4 w-4" />
+                                  )}
+                                </div>
+
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <div className="truncate text-base font-semibold tracking-tight">
+                                      {b.name}
+                                    </div>
+                                    <Badge variant="outline" className="rounded-full">
+                                      {isPrivate ? "Private" : "Agency"}
+                                    </Badge>
+                                    {missing ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="rounded-full border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100"
+                                      >
+                                        Missing vector store
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="secondary" className="rounded-full">
+                                        Ready
+                                      </Badge>
+                                    )}
+                                  </div>
+
+                                  <div className="mt-2 text-sm text-muted-foreground">
+                                    {isPrivate
+                                      ? "Private bot visible only to you."
+                                      : "Agency bot shared across the workspace."}
+                                  </div>
+
+                                  {b.description ? (
+                                    <div className="mt-2 text-sm text-muted-foreground">
+                                      {b.description}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              <div className="mt-4 grid gap-3 text-xs text-muted-foreground sm:grid-cols-2">
+                                <div className="rounded-2xl border bg-muted/20 px-3 py-2">
+                                  Created: {formatDate(b.created_at)}
+                                </div>
+                                <div className="rounded-2xl border bg-muted/20 px-3 py-2">
+                                  Vector store: {missing ? "Missing" : "Attached"}
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="flex w-full flex-col gap-3 xl:w-auto xl:min-w-[320px]">
+                          {missing ? (
+                            <div className="rounded-3xl border bg-muted/20 p-4">
+                              <div className="text-sm font-semibold">Repair required</div>
+                              <div className="mt-2 text-sm text-muted-foreground">
+                                This bot needs a vector store before it can answer from uploaded docs.
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                className="mt-3 h-9 rounded-full px-4"
+                                disabled={repairingId === b.id}
+                                onClick={() => repairVectorStore(b.id)}
+                              >
+                                {repairingId === b.id ? "Repairing…" : "Repair vector store"}
+                              </Button>
+                            </div>
+                          ) : null}
+
+                          <div className="flex flex-wrap gap-2 xl:justify-end">
+                            {canManage && renamingId !== b.id ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-9 rounded-full px-4"
+                                onClick={() => startRename(b)}
+                                disabled={!canRenameBot(b)}
+                              >
+                                Rename
+                              </Button>
+                            ) : null}
+
+                            {canManage ? (
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                className="h-9 rounded-full px-4"
+                                disabled={deletingId === b.id || !canDeleteBot(b)}
+                                onClick={() => deleteBot(b)}
+                              >
+                                {deletingId === b.id ? "Deleting…" : "Delete"}
+                              </Button>
+                            ) : (
+                              <span className="self-center text-xs text-muted-foreground">No actions</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        <Card className="card-premium rounded-3xl">
-          <CardHeader>
-            <CardTitle>Create a bot</CardTitle>
-            <CardDescription>Examples: Ops Bot, Sales Bot, Brand Bot.</CardDescription>
-            <Separator />
-          </CardHeader>
+        <div className="space-y-6">
+          <Card className="rounded-[28px] border shadow-sm">
+            <CardHeader className="pb-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-xl tracking-tight">Create a bot</CardTitle>
+                  <CardDescription className="mt-2">
+                    Examples: Ops Bot, Sales Bot, Brand Bot, Support Bot.
+                  </CardDescription>
+                </div>
 
-          <CardContent className="space-y-3">
-            <div>
-              <label className="text-sm font-medium">Bot type</label>
-              <div className="mt-2 flex gap-2">
-                {(["agency", "private"] as const).map((t) => (
+                <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-muted/30 text-muted-foreground shadow-sm">
+                  <Plus className="h-5 w-5" />
+                </div>
+              </div>
+            </CardHeader>
+
+            <CardContent className="space-y-5">
+              <div>
+                <label className="text-sm font-medium">Bot type</label>
+                <div className="mt-2 grid grid-cols-2 gap-2">
                   <button
-                    key={t}
-                    onClick={() => setScope(t)}
-                    className={`rounded-xl border px-3 py-2 text-sm ${
-                      scope === t ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent"
+                    onClick={() => setScope("agency")}
+                    className={`rounded-2xl border px-4 py-4 text-sm transition ${
+                      scope === "agency"
+                        ? "border-foreground/15 bg-foreground text-background shadow-sm"
+                        : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
                     }`}
                     type="button"
                   >
-                    {t === "agency" ? "Agency bot" : "Private bot"}
+                    <div className="flex flex-col items-start gap-1 text-left">
+                      <span className="font-medium">Agency bot</span>
+                      <span
+                        className={`text-xs ${
+                          scope === "agency" ? "text-background/80" : "text-muted-foreground"
+                        }`}
+                      >
+                        Shared with your workspace
+                      </span>
+                    </div>
                   </button>
-                ))}
+
+                  <button
+                    onClick={() => setScope("private")}
+                    className={`rounded-2xl border px-4 py-4 text-sm transition ${
+                      scope === "private"
+                        ? "border-foreground/15 bg-foreground text-background shadow-sm"
+                        : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                    type="button"
+                  >
+                    <div className="flex flex-col items-start gap-1 text-left">
+                      <span className="font-medium">Private bot</span>
+                      <span
+                        className={`text-xs ${
+                          scope === "private" ? "text-background/80" : "text-muted-foreground"
+                        }`}
+                      >
+                        Visible only to you
+                      </span>
+                    </div>
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {scope === "agency" ? (
-              <div className="rounded-2xl border bg-background/60 p-3 text-xs text-muted-foreground">
-                {botLimitMax == null ? `Agency bot limit: unlimited (used ${botLimitUsed}).` : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
-                {agencyBotAtCap ? " Upgrade in Billing to add more." : ""}
+              {scope === "agency" ? (
+                <div className="rounded-3xl border bg-muted/20 p-4 text-sm text-muted-foreground">
+                  {botLimitMax == null
+                    ? `Agency bot limit: unlimited (used ${botLimitUsed}).`
+                    : `Agency bot limit: ${botLimitUsed} / ${botLimitMax}.`}
+                  {agencyBotAtCap ? " Upgrade in Billing to add more." : ""}
+                </div>
+              ) : null}
+
+              <div>
+                <label className="text-sm font-medium">Name</label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder={scope === "agency" ? "Ops Bot" : "My Personal Bot"}
+                  className="mt-2 rounded-2xl"
+                />
               </div>
-            ) : null}
 
-            <div>
-              <label className="text-sm font-medium">Name</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ops Bot" />
-            </div>
+              <div>
+                <label className="text-sm font-medium">Description (optional)</label>
+                <Textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Internal SOP assistant"
+                  className="mt-2 min-h-[110px] rounded-2xl"
+                />
+              </div>
 
-            <div>
-              <label className="text-sm font-medium">Description (optional)</label>
-              <Textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Internal SOP assistant"
-                className="min-h-[90px]"
-              />
-            </div>
+              <Button
+                onClick={createBot}
+                disabled={creating || !name.trim() || (scope === "agency" && agencyBotAtCap)}
+                className="h-11 w-full rounded-2xl"
+              >
+                {creating ? "Creating..." : "Create bot"}
+              </Button>
 
-            <Button
-              onClick={createBot}
-              disabled={creating || !name.trim() || (scope === "agency" && agencyBotAtCap)}
-              className="rounded-full"
-            >
-              {creating ? "Creating..." : "Create bot"}
-            </Button>
+              {scope === "agency" && agencyBotAtCap ? (
+                <div className="text-xs text-muted-foreground">
+                  Creation disabled: agency bot limit reached.
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
 
-            {scope === "agency" && agencyBotAtCap ? (
-              <div className="text-xs text-muted-foreground">Creation disabled: agency bot limit reached.</div>
-            ) : null}
+          <Card className="rounded-[28px] border shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-xl tracking-tight">Bot rules</CardTitle>
+              <CardDescription className="mt-2">
+                Quick reminders for how bot ownership and knowledge work.
+              </CardDescription>
+            </CardHeader>
 
-            <div className="pt-2 text-xs text-muted-foreground">
-              Need to upgrade?{" "}
-              <Link className="underline" href="/app/billing">
-                Go to Billing
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
+            <CardContent className="space-y-3">
+              <div className="rounded-3xl border bg-background p-4 shadow-sm">
+                <div className="text-sm font-semibold">Agency bots</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  Shared across the workspace and typically managed by owner/admin.
+                </div>
+              </div>
+
+              <div className="rounded-3xl border bg-background p-4 shadow-sm">
+                <div className="text-sm font-semibold">Private bots</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  Personal to one user and not visible to the rest of the agency.
+                </div>
+              </div>
+
+              <div className="rounded-3xl border bg-background p-4 shadow-sm">
+                <div className="text-sm font-semibold">Vector stores</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  Bots need a vector store attached before docs-based answers work reliably.
+                </div>
+              </div>
+
+              <div className="rounded-3xl border bg-muted/20 p-4">
+                <div className="text-sm font-semibold">Need more shared bots?</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  Upgrade your workspace plan for more agency bots and premium features.
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button asChild className="rounded-full">
+                    <Link href="/app/billing">Go to Billing</Link>
+                  </Button>
+                  <Button asChild variant="outline" className="rounded-full">
+                    <Link href="/app/docs">
+                      Open Docs
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );

@@ -134,10 +134,10 @@ export default function ExtractionsPage() {
         </div>
 
         <div className="flex gap-2">
-          <button onClick={load} className="rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50" disabled={loading}>
+          <button onClick={load} className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50" disabled={loading}>
             Refresh
           </button>
-          <Link href="/app/docs" className="rounded-md border px-3 py-2 text-sm hover:bg-muted">
+          <Link href="/app/docs" className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-muted">
             Back to docs
           </Link>
         </div>
@@ -147,10 +147,10 @@ export default function ExtractionsPage() {
         <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
       ) : null}
 
-      <div className="rounded-lg border">
+      <div className="rounded-2xl border bg-card/70 shadow-sm backdrop-blur transition-all duration-200 hover:shadow-md">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b bg-muted/40">
+          <table className="w-full text-left text-sm border-separate border-spacing-y-1">
+            <thead className="border-b bg-muted/30 backdrop-blur supports-[backdrop-filter]:bg-muted/20">
               <tr>
                 <th className="px-4 py-3 font-medium">Run ID</th>
                 <th className="px-4 py-3 font-medium">Document</th>
@@ -187,7 +187,7 @@ export default function ExtractionsPage() {
                         type="button"
                         onClick={() => onDeleteRun(r.id)}
                         disabled={deletingId === r.id}
-                        className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                        className="rounded-md border bg-background/60 px-3 py-1.5 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50"
                       >
                         {deletingId === r.id ? "Deleting…" : "Delete"}
                       </button>

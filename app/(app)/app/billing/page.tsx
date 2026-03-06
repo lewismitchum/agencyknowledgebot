@@ -4,6 +4,16 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import {
+  ArrowRight,
+  Building2,
+  CheckCircle2,
+  CreditCard,
+  FileSpreadsheet,
+  Mail,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,7 +52,6 @@ function normalizeUiPlan(p: string | null | undefined): PlanKey {
   if (!s) return "free";
   if (s === "home") return "home";
   if (s === "personal") return "home";
-  if (s === "home") return "home";
   if (s === "free") return "free";
   if (s === "pro") return "pro";
   if (s === "enterprise") return "enterprise";
@@ -53,9 +62,18 @@ function normalizeUiPlan(p: string | null | undefined): PlanKey {
 
 function prettyPlan(p: string | null | undefined) {
   const n = normalizeUiPlan(p);
-  if (n === "home") return "home";
-  if (n === "corporation") return "corporation";
-  return n;
+  if (n === "home") return "Home";
+  if (n === "corporation") return "Corporation";
+  if (n === "enterprise") return "Enterprise";
+  if (n === "pro") return "Pro";
+  return "Free";
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString();
 }
 
 function BillingStatusBanner() {
@@ -70,7 +88,7 @@ function BillingStatusBanner() {
       return {
         variant: "success" as const,
         title: "Payment successful",
-        description: "Your plan will update shortly. You can refresh in a moment.",
+        description: "Your workspace plan should update shortly. If it does not, refresh in a moment.",
       };
     }
 
@@ -78,7 +96,7 @@ function BillingStatusBanner() {
       return {
         variant: "warning" as const,
         title: "Checkout canceled",
-        description: "No worries — you can try again anytime.",
+        description: "No charge was made. You can upgrade again whenever you’re ready.",
       };
     }
 
@@ -88,17 +106,95 @@ function BillingStatusBanner() {
   if (!banner) return null;
 
   return (
-    <Card className="mb-6">
-      <CardHeader>
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle className="text-base">{banner.title}</CardTitle>
-          <Badge variant={banner.variant === "success" ? "default" : "secondary"}>
-            {banner.variant === "success" ? "Success" : "Canceled"}
-          </Badge>
+    <Card className="overflow-hidden rounded-[28px] border shadow-sm">
+      <CardContent className="p-0">
+        <div
+          className={[
+            "border-b px-6 py-4",
+            banner.variant === "success"
+              ? "bg-emerald-50 text-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-100"
+              : "bg-amber-50 text-amber-900 dark:bg-amber-950/20 dark:text-amber-100",
+          ].join(" ")}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">{banner.title}</div>
+              <div className="mt-1 text-sm opacity-90">{banner.description}</div>
+            </div>
+
+            <Badge
+              variant={banner.variant === "success" ? "default" : "secondary"}
+              className="rounded-full"
+            >
+              {banner.variant === "success" ? "Success" : "Canceled"}
+            </Badge>
+          </div>
         </div>
-        <CardDescription>{banner.description}</CardDescription>
-      </CardHeader>
+      </CardContent>
     </Card>
+  );
+}
+
+function TopStat({
+  icon,
+  label,
+  value,
+  hint,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded-3xl border bg-background/80 p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            {label}
+          </div>
+          <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
+          <div className="mt-2 text-xs text-muted-foreground">{hint}</div>
+        </div>
+
+        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-muted/30 text-muted-foreground shadow-sm">
+          {icon}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FeatureLine({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex gap-2 text-sm text-muted-foreground">
+      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+      <span>{children}</span>
+    </li>
+  );
+}
+
+function PlanHighlight({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "success";
+}) {
+  return (
+    <div
+      className={[
+        "rounded-2xl border px-4 py-3",
+        tone === "success"
+          ? "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-950/20 dark:text-emerald-100"
+          : "bg-background/70",
+      ].join(" ")}
+    >
+      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+      <div className="mt-1 text-sm font-semibold">{value}</div>
+    </div>
   );
 }
 
@@ -126,7 +222,6 @@ function BillingContent() {
   const statusParam = sp.get("status");
   const isSuccess = successParam === "1" || statusParam === "success";
 
-  // ✅ You-only switcher (set in Vercel + local env). Empty => never show.
   const allowedUserId = (process.env.NEXT_PUBLIC_TIER_SWITCHER_USER_ID || "").trim();
 
   async function loadMeOnce(signal?: AbortSignal) {
@@ -149,17 +244,25 @@ function BillingContent() {
         setCurrentPlan(planUi);
         setDevPlan(planUi);
 
-        if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
-        if (a?.stripe_customer_id) setHasStripeCustomer(true);
+        if (typeof a?.stripe_current_period_end === "string") {
+          setPeriodEnd(a.stripe_current_period_end);
+        } else {
+          setPeriodEnd(null);
+        }
 
-        setStripeSubscriptionId(typeof a?.stripe_subscription_id === "string" ? a.stripe_subscription_id : null);
+        setHasStripeCustomer(Boolean(a?.stripe_customer_id));
+
+        setStripeSubscriptionId(
+          typeof a?.stripe_subscription_id === "string" ? a.stripe_subscription_id : null
+        );
 
         const tu = Number((a as any)?.trial_used ?? 0) === 1;
         setTrialUsed(tu);
 
         const tdl = (a as any)?.trial_days_left;
-        if (tdl === null || typeof tdl === "undefined") setTrialDaysLeft(null);
-        else {
+        if (tdl === null || typeof tdl === "undefined") {
+          setTrialDaysLeft(null);
+        } else {
           const n = Number(tdl);
           setTrialDaysLeft(Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null);
         }
@@ -184,7 +287,6 @@ function BillingContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Auto-refresh after successful checkout (webhook may take a moment)
   useEffect(() => {
     if (!isSuccess) return;
 
@@ -228,7 +330,6 @@ function BillingContent() {
     try {
       setLoadingPlan(plan);
 
-      // Server should accept legacy "home" too, but we send canonical "home".
       const data = await fetchJson<any>("/api/billing/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -331,14 +432,18 @@ function BillingContent() {
       name: "Free",
       price: "$0",
       badge: "Default",
-      bullets: ["1 shared bot", "5 uploads/day (docs only)", "20 chats/day", "No schedule/extraction"],
+      icon: <ShieldCheck className="h-5 w-5" />,
+      bullets: ["1 shared bot", "5 uploads/day (docs only)", "20 chats/day", "No schedule or extraction"],
       cta: { label: "Go to Chat", href: "/app/chat", variant: "secondary" as const },
+      accent:
+        "border-border bg-card/75",
     },
     {
       key: "home" as const,
       name: "Home",
       price: "$89/mo",
-      badge: "Everyday planning",
+      badge: "Best starting point",
+      icon: <Sparkles className="h-5 w-5" />,
       bullets: [
         "1 shared bot",
         "Up to 5 members (owner/admin excluded from seats)",
@@ -348,12 +453,15 @@ function BillingContent() {
       ],
       cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("home"),
+      accent:
+        "border-primary/20 bg-[radial-gradient(700px_220px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))]",
     },
     {
       key: "pro" as const,
       name: "Pro",
       price: "$349/mo",
       badge: "Multimedia",
+      icon: <Building2 className="h-5 w-5" />,
       bullets: [
         "3 shared bots",
         "Up to 15 members (owner/admin excluded from seats)",
@@ -363,12 +471,14 @@ function BillingContent() {
       ],
       cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("pro"),
+      accent: "border-border bg-card/75",
     },
     {
       key: "enterprise" as const,
       name: "Enterprise",
       price: "$999/mo",
       badge: "Teams",
+      icon: <CreditCard className="h-5 w-5" />,
       bullets: [
         "5 shared bots",
         "Up to 50 members (owner/admin excluded from seats)",
@@ -378,12 +488,14 @@ function BillingContent() {
       ],
       cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("enterprise"),
+      accent: "border-border bg-card/75",
     },
     {
       key: "corporation" as const,
       name: "Corporation",
       price: "$1899/mo",
       badge: "Email + spreadsheets",
+      icon: <Mail className="h-5 w-5" />,
       bullets: [
         "10 shared bots",
         "Up to 100 members (owner/admin excluded from seats)",
@@ -395,56 +507,124 @@ function BillingContent() {
       ],
       cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("corporation"),
+      accent: "border-border bg-card/75",
     },
   ] as const;
 
   const isPaid = currentPlan !== "free";
   const trialEligible = !trialUsed && !stripeSubscriptionId;
-
-  // ✅ you-only gate (must also be owner)
   const showDevSwitcher = !!allowedUserId && !!meUserId && allowedUserId === meUserId && isOwner;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-8">
-      <div className="mb-6">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold">Billing</h1>
-            <p className="text-muted-foreground mt-1">
-              Home is for everyday life (planning + reminders + turning docs into tasks/events). Upgrades apply to your whole
-              workspace.
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8">
+      <section className="relative overflow-hidden rounded-[32px] border bg-gradient-to-br from-background via-background to-muted/40 p-6 shadow-sm md:p-8">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.10),transparent_50%)]" />
+
+        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/70 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground backdrop-blur">
+              <Sparkles className="h-3.5 w-3.5" />
+              Workspace billing
+            </div>
+
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-5xl">
+              Upgrade the whole workspace, not just one seat.
+            </h1>
+
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+              Louis.Ai plans apply to your entire agency. Upgrade once to unlock more bots, more
+              uploads, schedule workflows, multimedia, email, and spreadsheet AI for the workspace.
             </p>
+
+            <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <PlanHighlight label="Current plan" value={prettyPlan(currentPlan)} />
+              <PlanHighlight
+                label="Subscription"
+                value={isPaid ? "Active" : "Free workspace"}
+                tone={isPaid ? "success" : "default"}
+              />
+              <PlanHighlight
+                label="Trial"
+                value={
+                  trialDaysLeft != null
+                    ? trialDaysLeft > 0
+                      ? `${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"} left`
+                      : "Ended"
+                    : trialEligible
+                    ? "Available"
+                    : "Already used"
+                }
+              />
+              <PlanHighlight
+                label="Renewal"
+                value={formatDateTime(periodEnd) || "Not scheduled"}
+              />
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {trialEligible ? (
+                <Badge variant="secondary" className="rounded-full px-3 py-1">
+                  7-day free trial available
+                </Badge>
+              ) : null}
+              {hasStripeCustomer ? (
+                <Badge variant="outline" className="rounded-full px-3 py-1">
+                  Stripe customer linked
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="rounded-full px-3 py-1">
+                  No Stripe customer yet
+                </Badge>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary">Current: {prettyPlan(currentPlan)}</Badge>
-
+          <div className="flex w-full flex-col gap-2 lg:w-auto lg:min-w-[280px]">
             <Button
               variant="outline"
               onClick={openPortal}
               disabled={!hasStripeCustomer || !isPaid || portalLoading}
               title={!hasStripeCustomer ? "No Stripe customer yet" : !isPaid ? "Upgrade first" : "Manage subscription"}
+              className="h-11 rounded-2xl"
             >
-              {portalLoading ? "Opening…" : "Manage"}
+              {portalLoading ? "Opening..." : "Manage subscription"}
+            </Button>
+
+            <Button asChild variant="outline" className="h-11 rounded-2xl">
+              <Link href="/pricing">
+                Full pricing details
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
             </Button>
           </div>
         </div>
+      </section>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {trialDaysLeft != null ? (
-            <Badge variant={trialDaysLeft > 0 ? "secondary" : "outline"}>
-              {trialDaysLeft > 0 ? `Trial: ${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"} left` : "Trial ended"}
-            </Badge>
-          ) : null}
-
-          {trialEligible ? <Badge variant="secondary">7-day free trial available</Badge> : null}
-        </div>
-
-        {periodEnd ? (
-          <p className="text-xs text-muted-foreground mt-2">
-            Renews: <span className="font-mono">{periodEnd}</span>
-          </p>
-        ) : null}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <TopStat
+          icon={<ShieldCheck className="h-5 w-5" />}
+          label="Current plan"
+          value={prettyPlan(currentPlan)}
+          hint="Applied to the full workspace"
+        />
+        <TopStat
+          icon={<CreditCard className="h-5 w-5" />}
+          label="Subscription"
+          value={isPaid ? "Active" : "Free"}
+          hint={hasStripeCustomer ? "Stripe customer linked" : "No Stripe customer yet"}
+        />
+        <TopStat
+          icon={<Mail className="h-5 w-5" />}
+          label="Email"
+          value={currentPlan === "corporation" ? "On" : "Off"}
+          hint="Corp-only inbox features"
+        />
+        <TopStat
+          icon={<FileSpreadsheet className="h-5 w-5" />}
+          label="Sheets"
+          value={currentPlan === "corporation" ? "On" : currentPlan !== "free" ? "Planned" : "Off"}
+          hint="Spreadsheet AI on paid tiers"
+        />
       </div>
 
       <Suspense fallback={null}>
@@ -452,15 +632,17 @@ function BillingContent() {
       </Suspense>
 
       {showDevSwitcher ? (
-        <Card className="mb-6">
+        <Card className="rounded-[28px] border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-base">Owner-only tier switcher</CardTitle>
+            <CardTitle className="text-base tracking-tight">Owner-only tier switcher</CardTitle>
             <CardDescription>
-              This updates <code>agencies.plan</code> for your current workspace only (manual override).
+              This updates <code>agencies.plan</code> for your current workspace only.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-muted-foreground">Useful for testing paid gates without Stripe.</div>
+            <div className="text-sm text-muted-foreground">
+              Useful for testing paid gates without running Stripe checkout.
+            </div>
 
             <div className="flex items-center gap-2">
               <select
@@ -476,86 +658,152 @@ function BillingContent() {
                 <option value="corporation">corporation</option>
               </select>
 
-              <Badge variant="secondary">{devSaving ? "Saving…" : "Ready"}</Badge>
+              <Badge variant="secondary" className="rounded-full">
+                {devSaving ? "Saving..." : "Ready"}
+              </Badge>
             </div>
           </CardContent>
         </Card>
       ) : null}
 
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-base">How billing works</CardTitle>
-          <CardDescription>Plan enforcement is server-side. This page is the UI for upgrades and status.</CardDescription>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground space-y-2">
-          <p>
-            Louis.Ai is a secure knowledge + planning OS. Your shared bots/docs are available to your workspace; private bots/docs
-            are isolated per user.
-          </p>
-          <p>Schedule/to-do/calendar extraction is a paid feature. Notifications can exist on all tiers.</p>
-          <p>
-            {trialEligible
-              ? "If you upgrade now, your first subscription starts with a 7-day free trial (one-time per workspace)."
-              : "Trials are one-time per workspace. If you’ve already had a subscription or trial, checkout starts billing immediately."}
-          </p>
-        </CardContent>
-      </Card>
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <Card className="rounded-[28px] border shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-xl tracking-tight">How workspace billing works</CardTitle>
+            <CardDescription className="mt-2">
+              One owner upgrade updates the agency plan for everyone in the workspace.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm text-muted-foreground">
+            <div className="rounded-3xl border bg-muted/25 p-4">
+              Louis.Ai is billed at the workspace level. Shared bots and docs belong to the
+              agency, while private bots and docs stay isolated per user.
+            </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-3xl border bg-muted/25 p-4">
+              Schedule, to-do, and calendar extraction are paid features. Corporation also
+              unlocks email and spreadsheet AI workflows.
+            </div>
+
+            <div className="rounded-3xl border bg-muted/25 p-4">
+              {trialEligible
+                ? "If you upgrade now, your first subscription starts with a 7-day free trial. Trials are one-time per workspace."
+                : "Trials are one-time per workspace. If your workspace already used a trial or subscription, checkout begins billing immediately."}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-[28px] border shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-xl tracking-tight">Best for right now</CardTitle>
+            <CardDescription className="mt-2">
+              Most agencies should start with Home, then move up when they need more bots or
+              multimedia.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded-3xl border bg-background p-4 shadow-sm">
+              <div className="text-sm font-semibold">Home</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Best fit for smaller agencies that want shared planning, extraction, and day-to-day
+                team use.
+              </div>
+            </div>
+
+            <div className="rounded-3xl border bg-background p-4 shadow-sm">
+              <div className="text-sm font-semibold">Pro</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Better when you need multiple shared bots, more members, and multimedia uploads.
+              </div>
+            </div>
+
+            <div className="rounded-3xl border bg-background p-4 shadow-sm">
+              <div className="text-sm font-semibold">Corporation</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                For agencies that want the full operating system: email workflows, spreadsheets,
+                and maximum scale.
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
         {plans.map((p) => {
           const isCurrent = currentPlan === p.key;
           const isPaidCheckout = p.key !== "free";
+          const highlighted = p.key === "home";
 
           return (
-            <Card key={p.key} className={isCurrent ? "ring-1 ring-border" : ""}>
-              <CardHeader>
+            <Card
+              key={p.key}
+              className={[
+                "relative overflow-hidden rounded-[28px] border shadow-sm transition-all duration-200 hover:-translate-y-[2px] hover:shadow-md",
+                p.accent,
+                isCurrent ? "ring-1 ring-border" : "",
+                highlighted ? "xl:scale-[1.01]" : "",
+              ].join(" ")}
+            >
+              {highlighted ? (
+                <div className="absolute inset-x-0 top-0 h-1 bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--accent)))]" />
+              ) : null}
+
+              <CardHeader className="space-y-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <CardTitle className="text-lg">{p.name}</CardTitle>
-                    <CardDescription className="mt-1">{p.price}</CardDescription>
+                    <CardTitle className="text-xl tracking-tight">{p.name}</CardTitle>
+                    <CardDescription className="mt-1 text-base">{p.price}</CardDescription>
                   </div>
-                  <Badge variant="secondary">{isCurrent ? "Current plan" : (p as any).badge}</Badge>
+
+                  <div className="flex flex-col items-end gap-2">
+                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground shadow-sm">
+                      {p.icon}
+                    </div>
+                    <Badge variant={isCurrent ? "default" : "secondary"} className="rounded-full">
+                      {isCurrent ? "Current plan" : p.badge}
+                    </Badge>
+                  </div>
                 </div>
+
+                {isPaidCheckout && trialEligible && !isCurrent ? (
+                  <Badge variant="outline" className="w-fit rounded-full">
+                    Includes 7-day free trial
+                  </Badge>
+                ) : null}
               </CardHeader>
-              <CardContent className="space-y-3">
+
+              <CardContent className="space-y-4">
                 <Separator />
-                <ul className="text-sm text-muted-foreground space-y-2">
+
+                <ul className="space-y-2">
                   {p.bullets.map((b) => (
-                    <li key={b} className="flex gap-2">
-                      <span className="mt-1">•</span>
-                      <span>{b}</span>
-                    </li>
+                    <FeatureLine key={b}>{b}</FeatureLine>
                   ))}
                 </ul>
 
-                {isPaidCheckout && trialEligible && !isCurrent ? (
-                  <div className="pt-1">
-                    <Badge variant="secondary">Includes 7-day free trial</Badge>
-                  </div>
-                ) : null}
-
-                <div className="pt-2 flex items-center gap-2">
+                <div className="flex items-center gap-2 pt-2">
                   {p.key === "free" ? (
-                    <Button asChild variant={(p as any).cta.variant}>
-                      <Link href={(p as any).cta.href}>{(p as any).cta.label}</Link>
+                    <Button asChild variant={p.cta.variant} className="rounded-2xl">
+                      <Link href={p.cta.href}>{p.cta.label}</Link>
                     </Button>
                   ) : (
                     <Button
-                      variant={(p as any).cta.variant}
-                      onClick={(p as any).onClick}
+                      variant={p.cta.variant}
+                      onClick={p.onClick}
                       disabled={isCurrent || loadingPlan === p.key}
+                      className="rounded-2xl"
                     >
-                      {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : (p as any).cta.label}
+                      {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : p.cta.label}
                     </Button>
                   )}
 
-                  <Button asChild variant="ghost">
-                    <Link href="/pricing">Plan details</Link>
+                  <Button asChild variant="ghost" className="rounded-2xl">
+                    <Link href="/pricing">Details</Link>
                   </Button>
                 </div>
 
                 <p className="text-xs text-muted-foreground">
-                  Note: checkout + webhook wiring updates <code>agencies.plan</code>.
+                  Plan updates are enforced server-side after checkout and webhook processing.
                 </p>
               </CardContent>
             </Card>
