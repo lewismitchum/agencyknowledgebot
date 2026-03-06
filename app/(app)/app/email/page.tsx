@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { UpgradeGate } from "@/components/upgrade-gate";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 import {
-  Bot,
+  Bot as BotIcon,
   Inbox,
   Mail,
   PencilLine,
@@ -14,15 +14,14 @@ import {
   Send,
   Sparkles,
   FileText,
-  MessageSquare,
-  X,
   ChevronRight,
   Wand2,
+  PanelLeft,
 } from "lucide-react";
 
 type Upsell = { code?: string; message?: string };
 
-type Bot = {
+type BotRow = {
   id: string;
   name: string;
   owner_user_id?: string | null;
@@ -148,7 +147,9 @@ function ThreadRow({
       onClick={onClick}
       className={cx(
         "w-full rounded-2xl border px-4 py-3 text-left transition-all duration-200",
-        active ? "bg-accent/60 shadow-sm" : "bg-background/40 hover:-translate-y-[1px] hover:bg-accent/30"
+        active
+          ? "border-primary/25 bg-accent/60 shadow-sm"
+          : "bg-background/40 hover:-translate-y-[1px] hover:bg-accent/30"
       )}
       title={thread.subject || thread.snippet || thread.id}
     >
@@ -177,7 +178,9 @@ function DraftRowButton({
       onClick={onClick}
       className={cx(
         "w-full rounded-2xl border px-4 py-3 text-left transition-all duration-200",
-        active ? "bg-accent/60 shadow-sm" : "bg-background/40 hover:-translate-y-[1px] hover:bg-accent/30"
+        active
+          ? "border-primary/25 bg-accent/60 shadow-sm"
+          : "bg-background/40 hover:-translate-y-[1px] hover:bg-accent/30"
       )}
       title={draft.subject}
     >
@@ -193,6 +196,7 @@ function DraftRowButton({
 
 function MessageBubble({ msg }: { msg: GmailMessageRow }) {
   const body = String(msg.body || msg.snippet || "").trim();
+
   return (
     <div className="rounded-3xl border bg-background/45 p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -220,8 +224,9 @@ export default function EmailPage() {
   const [upsell, setUpsell] = useState<Upsell | null>(null);
 
   const [tab, setTab] = useState<"inbox" | "drafts" | "compose" | "docs-draft">("inbox");
+  const [mobilePanel, setMobilePanel] = useState<"nav" | "list" | "detail">("list");
 
-  const [bots, setBots] = useState<Bot[]>([]);
+  const [bots, setBots] = useState<BotRow[]>([]);
   const [botId, setBotId] = useState("");
 
   const [q, setQ] = useState("");
@@ -297,7 +302,8 @@ export default function EmailPage() {
   }, [composeTo, composeBody, composeConfirm, composeSending]);
 
   const activeThread = threads.find((t) => t.id === selectedThreadId) || null;
-  const showThreadsColumn = tab === "inbox" || tab === "drafts";
+  const activeBotName = botId ? bots.find((b) => b.id === botId)?.name || "Selected" : "None";
+  const showListColumn = tab === "inbox" || tab === "drafts";
   const showReplyBar = tab === "inbox" && !!selectedThreadId && gmailConnected;
 
   useEffect(() => {
@@ -363,13 +369,13 @@ export default function EmailPage() {
             });
 
             const list = Array.isArray(b?.bots) ? b.bots : Array.isArray(b) ? b : [];
-            const parsed: Bot[] = list
+            const parsed: BotRow[] = list
               .map((x: any) => ({
                 id: String(x?.id || ""),
                 name: String(x?.name || "Bot"),
                 owner_user_id: x?.owner_user_id ?? null,
               }))
-              .filter((x: Bot) => x.id);
+              .filter((x: BotRow) => x.id);
 
             if (cancelled) return;
 
@@ -516,7 +522,11 @@ export default function EmailPage() {
           : cleaned;
 
       setThreads(filtered);
-      if (!selectedThreadId && filtered[0]?.id) setSelectedThreadId(filtered[0].id);
+
+      if (!filtered.some((t) => t.id === selectedThreadId)) {
+        setSelectedThreadId(filtered[0]?.id || null);
+        setThread(null);
+      }
     } catch (e: any) {
       const st = getFetchJsonStatus(e);
 
@@ -539,6 +549,7 @@ export default function EmailPage() {
     if (!gmailConnected) return;
 
     setSelectedThreadId(id);
+    setMobilePanel("detail");
     setThreadLoading(true);
     setThreadError("");
     setThread(null);
@@ -576,13 +587,13 @@ export default function EmailPage() {
 
       setThread({
         id,
-        subject: subject || (messages[messages.length - 1]?.subject || ""),
+        subject: subject || messages[messages.length - 1]?.subject || "",
         messages: messages.filter((x) => x.id),
       });
 
       setAiMsgs((prev) => {
         if (prev.length) return prev;
-        const s = subject || (messages[messages.length - 1]?.subject || "");
+        const s = subject || messages[messages.length - 1]?.subject || "";
         return [
           {
             role: "assistant",
@@ -810,6 +821,7 @@ export default function EmailPage() {
 
       await refreshThreads();
       setTab("inbox");
+      setMobilePanel("list");
     } catch (e: any) {
       const st = getFetchJsonStatus(e);
 
@@ -839,6 +851,7 @@ export default function EmailPage() {
     if (!draftId) return;
 
     setSelectedDraftId(draftId);
+    setMobilePanel("detail");
     setOpeningDraft(true);
     setOpenDraftError("");
 
@@ -914,6 +927,7 @@ export default function EmailPage() {
 
       await refreshDrafts();
       setTab("drafts");
+      setMobilePanel("detail");
     } catch (e: any) {
       const st = getFetchJsonStatus(e);
 
@@ -950,6 +964,7 @@ export default function EmailPage() {
     setComposeOk(null);
     setComposeConfirm(false);
     setTab("compose");
+    setMobilePanel("detail");
   }
 
   useEffect(() => {
@@ -958,6 +973,14 @@ export default function EmailPage() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }
   }, [tab, gmailConnected]);
+
+  useEffect(() => {
+    if (tab === "compose" || tab === "docs-draft") {
+      setMobilePanel("detail");
+    } else if (tab === "inbox" || tab === "drafts") {
+      setMobilePanel(selectedThreadId || selectedDraftId || draft ? "detail" : "list");
+    }
+  }, [tab, selectedThreadId, selectedDraftId, draft]);
 
   if (loading) return <div className="p-6">Loading…</div>;
 
@@ -984,7 +1007,7 @@ export default function EmailPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1600px] px-4 py-6 space-y-6">
+    <div className="mx-auto max-w-[1600px] space-y-6 px-4 py-6">
       <div className="relative overflow-hidden rounded-[28px] border bg-card/80 p-6 shadow-sm backdrop-blur md:p-7">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.12),transparent_50%)]" />
 
@@ -1028,7 +1051,10 @@ export default function EmailPage() {
 
             <button
               type="button"
-              onClick={() => setTab("compose")}
+              onClick={() => {
+                setTab("compose");
+                setMobilePanel("detail");
+              }}
               className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
             >
               Compose new email
@@ -1057,9 +1083,9 @@ export default function EmailPage() {
           hint="Saved docs-based drafts"
         />
         <TopStat
-          icon={<Bot className="h-5 w-5" />}
+          icon={<BotIcon className="h-5 w-5" />}
           label="Bot"
-          value={botId ? shortText(bots.find((b) => b.id === botId)?.name || "Selected", 14) : "None"}
+          value={botId ? shortText(activeBotName, 14) : "None"}
           hint="Used for AI + docs drafting"
         />
       </div>
@@ -1087,7 +1113,12 @@ export default function EmailPage() {
       ) : null}
 
       <div className="grid gap-4 lg:grid-cols-[260px_380px_1fr]">
-        <aside className="rounded-[28px] border bg-card/75 p-4 shadow-sm backdrop-blur">
+        <aside
+          className={cx(
+            "rounded-[28px] border bg-card/75 p-4 shadow-sm backdrop-blur",
+            mobilePanel !== "nav" && "hidden lg:block"
+          )}
+        >
           <div className="flex items-center justify-between gap-2">
             <div className="text-base font-semibold">Email</div>
             <div className="text-[11px] font-mono text-muted-foreground">{plan ?? "unknown"}</div>
@@ -1095,7 +1126,10 @@ export default function EmailPage() {
 
           <button
             type="button"
-            onClick={() => setTab("compose")}
+            onClick={() => {
+              setTab("compose");
+              setMobilePanel("detail");
+            }}
             className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-foreground px-4 py-3 text-sm font-semibold text-background hover:opacity-95"
           >
             <PencilLine className="h-4 w-4" />
@@ -1123,7 +1157,10 @@ export default function EmailPage() {
           <nav className="mt-5 space-y-1">
             <button
               type="button"
-              onClick={() => setTab("inbox")}
+              onClick={() => {
+                setTab("inbox");
+                setMobilePanel("list");
+              }}
               className={cx(
                 "flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm transition-all duration-200",
                 tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted/60"
@@ -1134,7 +1171,10 @@ export default function EmailPage() {
             </button>
             <button
               type="button"
-              onClick={() => setTab("drafts")}
+              onClick={() => {
+                setTab("drafts");
+                setMobilePanel("list");
+              }}
               className={cx(
                 "flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm transition-all duration-200",
                 tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted/60"
@@ -1145,7 +1185,10 @@ export default function EmailPage() {
             </button>
             <button
               type="button"
-              onClick={() => setTab("docs-draft")}
+              onClick={() => {
+                setTab("docs-draft");
+                setMobilePanel("detail");
+              }}
               className={cx(
                 "flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm transition-all duration-200",
                 tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted/60"
@@ -1156,7 +1199,7 @@ export default function EmailPage() {
             </button>
           </nav>
 
-          <div className="mt-6 border-t pt-4 space-y-2">
+          <div className="mt-6 space-y-2 border-t pt-4">
             {!gmailConnected ? (
               <button
                 type="button"
@@ -1181,12 +1224,27 @@ export default function EmailPage() {
           </div>
         </aside>
 
-        {showThreadsColumn ? (
-          <section className="rounded-[28px] border bg-card/75 shadow-sm backdrop-blur overflow-hidden">
+        {showListColumn ? (
+          <section
+            className={cx(
+              "overflow-hidden rounded-[28px] border bg-card/75 shadow-sm backdrop-blur",
+              mobilePanel !== "list" && "hidden lg:block"
+            )}
+          >
             <div className="border-b px-4 py-4">
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-semibold">{tab === "drafts" ? "Drafts" : "Threads"}</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMobilePanel("nav")}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border lg:hidden"
+                    >
+                      <PanelLeft className="h-4 w-4" />
+                    </button>
+                    <div className="text-sm font-semibold">{tab === "drafts" ? "Drafts" : "Threads"}</div>
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => (tab === "drafts" ? refreshDrafts() : refreshThreads()).catch(() => {})}
@@ -1295,25 +1353,47 @@ export default function EmailPage() {
           </section>
         ) : null}
 
-        <main className="rounded-[28px] border bg-card/75 shadow-sm backdrop-blur overflow-hidden">
+        <main
+          className={cx(
+            "overflow-hidden rounded-[28px] border bg-card/75 shadow-sm backdrop-blur",
+            mobilePanel !== "detail" && "hidden lg:block"
+          )}
+        >
           {tab === "compose" ? (
             <div className="h-[760px] overflow-auto px-6 py-6">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xl font-semibold tracking-tight">Compose</div>
-                  <div className="mt-1 text-sm text-muted-foreground">Send a new email.</div>
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setMobilePanel("nav")}
+                    className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full border lg:hidden"
+                  >
+                    <PanelLeft className="h-4 w-4" />
+                  </button>
+
+                  <div>
+                    <div className="text-xl font-semibold tracking-tight">Compose</div>
+                    <div className="mt-1 text-sm text-muted-foreground">Send a new email.</div>
+                  </div>
                 </div>
+
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setTab("docs-draft")}
+                    onClick={() => {
+                      setTab("docs-draft");
+                      setMobilePanel("detail");
+                    }}
                     className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                   >
                     Draft from docs
                   </button>
                   <button
                     type="button"
-                    onClick={() => setTab("inbox")}
+                    onClick={() => {
+                      setTab("inbox");
+                      setMobilePanel("list");
+                    }}
                     className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                   >
                     Back
@@ -1429,15 +1509,29 @@ export default function EmailPage() {
           ) : tab === "docs-draft" ? (
             <div className="h-[760px] overflow-auto px-6 py-6">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xl font-semibold tracking-tight">Draft from docs</div>
-                  <div className="mt-1 text-sm text-muted-foreground">
-                    Generate a docs-backed email draft using the selected bot.
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setMobilePanel("nav")}
+                    className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full border lg:hidden"
+                  >
+                    <PanelLeft className="h-4 w-4" />
+                  </button>
+
+                  <div>
+                    <div className="text-xl font-semibold tracking-tight">Draft from docs</div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      Generate a docs-backed email draft using the selected bot.
+                    </div>
                   </div>
                 </div>
+
                 <button
                   type="button"
-                  onClick={() => setTab("compose")}
+                  onClick={() => {
+                    setTab("compose");
+                    setMobilePanel("detail");
+                  }}
                   className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
                 >
                   Open compose
@@ -1534,9 +1628,7 @@ export default function EmailPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-sm font-medium">Generated draft</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Review here, then move it into Compose.
-                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">Review here, then move it into Compose.</div>
                     </div>
 
                     {draft ? (
@@ -1575,10 +1667,20 @@ export default function EmailPage() {
           ) : tab === "drafts" ? (
             <div className="h-[760px] overflow-auto px-6 py-6">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xl font-semibold tracking-tight">Draft preview</div>
-                  <div className="mt-1 text-sm text-muted-foreground">
-                    Open a saved draft from the left, then move it into Compose.
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setMobilePanel("list")}
+                    className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full border lg:hidden"
+                  >
+                    <ChevronRight className="h-4 w-4 rotate-180" />
+                  </button>
+
+                  <div>
+                    <div className="text-xl font-semibold tracking-tight">Draft preview</div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      Open a saved draft from the left, then move it into Compose.
+                    </div>
                   </div>
                 </div>
 
@@ -1616,15 +1718,25 @@ export default function EmailPage() {
               )}
             </div>
           ) : (
-            <div className="h-[760px] overflow-hidden flex flex-col">
+            <div className="flex h-[760px] flex-col overflow-hidden">
               <div className="border-b px-6 py-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="text-xl font-semibold tracking-tight">
-                      {thread?.subject || activeThread?.subject || "Inbox"}
-                    </div>
-                    <div className="mt-1 text-sm text-muted-foreground">
-                      {activeThread?.from ? `Latest from ${activeThread.from}` : "Open a thread to read and reply."}
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setMobilePanel("list")}
+                      className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full border lg:hidden"
+                    >
+                      <ChevronRight className="h-4 w-4 rotate-180" />
+                    </button>
+
+                    <div>
+                      <div className="text-xl font-semibold tracking-tight">
+                        {thread?.subject || activeThread?.subject || "Inbox"}
+                      </div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        {activeThread?.from ? `Latest from ${activeThread.from}` : "Open a thread to read and reply."}
+                      </div>
                     </div>
                   </div>
 
@@ -1766,10 +1878,13 @@ export default function EmailPage() {
         </main>
       </div>
 
-      <div className="grid grid-cols-4 gap-2 md:hidden">
+      <div className="grid grid-cols-4 gap-2 lg:hidden">
         <button
           type="button"
-          onClick={() => setTab("inbox")}
+          onClick={() => {
+            setTab("inbox");
+            setMobilePanel("list");
+          }}
           className={cx(
             "rounded-2xl border px-3 py-2 text-sm",
             tab === "inbox" ? "bg-muted font-medium" : "hover:bg-muted"
@@ -1779,7 +1894,10 @@ export default function EmailPage() {
         </button>
         <button
           type="button"
-          onClick={() => setTab("drafts")}
+          onClick={() => {
+            setTab("drafts");
+            setMobilePanel("list");
+          }}
           className={cx(
             "rounded-2xl border px-3 py-2 text-sm",
             tab === "drafts" ? "bg-muted font-medium" : "hover:bg-muted"
@@ -1789,7 +1907,10 @@ export default function EmailPage() {
         </button>
         <button
           type="button"
-          onClick={() => setTab("compose")}
+          onClick={() => {
+            setTab("compose");
+            setMobilePanel("detail");
+          }}
           className={cx(
             "rounded-2xl border px-3 py-2 text-sm",
             tab === "compose" ? "bg-muted font-medium" : "hover:bg-muted"
@@ -1799,7 +1920,10 @@ export default function EmailPage() {
         </button>
         <button
           type="button"
-          onClick={() => setTab("docs-draft")}
+          onClick={() => {
+            setTab("docs-draft");
+            setMobilePanel("detail");
+          }}
           className={cx(
             "rounded-2xl border px-3 py-2 text-sm",
             tab === "docs-draft" ? "bg-muted font-medium" : "hover:bg-muted"
@@ -1817,9 +1941,7 @@ export default function EmailPage() {
               <div className="flex items-center justify-between gap-2 border-b px-4 py-4">
                 <div>
                   <div className="text-sm font-semibold">AI Assistant</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    Draft replies for the selected thread.
-                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">Draft replies for the selected thread.</div>
                 </div>
                 <button
                   type="button"
@@ -1862,7 +1984,7 @@ export default function EmailPage() {
                       <div
                         key={`${m.at}-${idx}`}
                         className={cx(
-                          "rounded-2xl border p-3 text-sm whitespace-pre-wrap",
+                          "whitespace-pre-wrap rounded-2xl border p-3 text-sm",
                           m.role === "user" ? "bg-background" : "bg-muted/20"
                         )}
                       >

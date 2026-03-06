@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 type ProposeBody = {
   csv?: string;
   instruction?: string;
-  bot_id?: string; // optional: allows tying proposals to a bot
+  bot_id?: string;
 };
 
 function safeJsonParse(s: string): any | null {
@@ -35,9 +35,9 @@ function extractJsonFromText(text: string): any | null {
   const raw = safeJsonParse(t);
   if (raw) return raw;
 
-  const m = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (m?.[1]) {
-    const inner = safeJsonParse(m[1].trim());
+  const fenced = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    const inner = safeJsonParse(fenced[1].trim());
     if (inner) return inner;
   }
 
@@ -57,17 +57,19 @@ function normalizeProposal(obj: any) {
     .map((u: any) => {
       const row = Number(u?.row);
       const col = String(u?.col ?? "");
-      const value_new = String(u?.new ?? u?.value_new ?? "");
-      const value_old = u?.old == null ? null : typeof u?.old === "string" ? u.old : String(u.old);
+      const valueNew = String(u?.new ?? u?.value_new ?? "");
+      const valueOld = u?.old == null ? null : typeof u?.old === "string" ? u.old : String(u.old);
       const reason = String(u?.reason ?? "");
+
       if (!Number.isFinite(row) || row < 1) return null;
       if (!col.trim()) return null;
-      if (!value_new.trim()) return null;
+      if (!valueNew.trim()) return null;
+
       return {
         row: Math.floor(row),
         col: col.trim(),
-        old: value_old,
-        new: value_new,
+        old: valueOld,
+        new: valueNew,
         reason: reason ? clampString(reason, 300) : "",
       };
     })
@@ -85,6 +87,27 @@ function makeId(prefix: string) {
       ? (globalThis.crypto as any).randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}_${uuid}`;
+}
+
+async function getAuthorizedBotId(db: Db, agencyId: string, userId: string, rawBotId?: string) {
+  const botId = clampString(rawBotId ?? "", 200).trim();
+  if (!botId) return null;
+
+  const bot = await db.get(
+    `SELECT id, agency_id, owner_user_id
+     FROM bots
+     WHERE id = ? AND agency_id = ?
+     LIMIT 1`,
+    botId,
+    agencyId
+  );
+
+  if (!bot) return null;
+
+  const ownerUserId = bot.owner_user_id == null ? null : String(bot.owner_user_id);
+  if (ownerUserId && ownerUserId !== userId) return null;
+
+  return String(bot.id);
 }
 
 export async function OPTIONS() {
@@ -107,9 +130,14 @@ export async function GET(req: NextRequest) {
           ok: true,
           plan: planKey,
           can_apply: false,
+          modes: {
+            docs: false,
+            csv: false,
+            ai: false,
+          },
           upsell: {
             code: "PLAN_REQUIRED",
-            message: "Upgrade to unlock spreadsheet AI proposals and updates.",
+            message: "Upgrade to unlock spreadsheet AI generation and updates.",
           },
         },
         { status: 200 }
@@ -124,6 +152,11 @@ export async function GET(req: NextRequest) {
       can_apply: canApply,
       propose_enabled: true,
       apply_enabled: true,
+      modes: {
+        docs: true,
+        csv: true,
+        ai: true,
+      },
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
@@ -150,10 +183,19 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => null)) as ProposeBody | null;
     const csv = clampString(body?.csv ?? "", 200_000);
     const instruction = clampString(body?.instruction ?? "", 2000);
-    const botId = clampString(body?.bot_id ?? "", 200);
 
-    if (!csv.trim()) return Response.json({ ok: false, error: "MISSING_CSV" }, { status: 400 });
-    if (!instruction.trim()) return Response.json({ ok: false, error: "MISSING_INSTRUCTION" }, { status: 400 });
+    if (!csv.trim()) {
+      return Response.json({ ok: false, error: "MISSING_CSV" }, { status: 400 });
+    }
+
+    if (!instruction.trim()) {
+      return Response.json({ ok: false, error: "MISSING_INSTRUCTION" }, { status: 400 });
+    }
+
+    const authorizedBotId = await getAuthorizedBotId(db, ctx.agencyId, ctx.userId, body?.bot_id);
+    if (body?.bot_id && !authorizedBotId) {
+      return Response.json({ ok: false, error: "BOT_NOT_FOUND_OR_FORBIDDEN" }, { status: 403 });
+    }
 
     const prompt = `
 You are Louis.Ai. You propose spreadsheet edits WITHOUT applying them.
@@ -163,11 +205,12 @@ Input is a CSV snapshot of a sheet, and a user instruction describing what shoul
 Return STRICT JSON ONLY with this schema:
 {
   "updates": [
-    { "row": 1-based row number in the CSV (including header row if present),
-      "col": column name (if header exists) OR column letter (A, B, C...) if no header,
-      "old": previous value (string or null if unknown),
-      "new": new value (string),
-      "reason": short explanation
+    {
+      "row": 1,
+      "col": "Status",
+      "old": "Pending",
+      "new": "Paid",
+      "reason": "matched invoice rule"
     }
   ],
   "notes": "optional short notes"
@@ -175,9 +218,10 @@ Return STRICT JSON ONLY with this schema:
 
 Rules:
 - Be conservative. If unsure, omit the update.
-- Do not invent columns that don't exist.
+- Do not invent columns that do not exist.
+- Prefer header names when a header row exists.
 - Keep updates under 200 items.
-- JSON only, no markdown.
+- JSON only. No markdown. No explanation outside JSON.
 
 CSV:
 ${csv}
@@ -198,7 +242,6 @@ ${instruction}
 
     const parsed = extractJsonFromText(text) ?? {};
     const proposal = normalizeProposal(parsed);
-
     const proposalId = makeId("sprop");
 
     await db.run(
@@ -209,9 +252,9 @@ ${instruction}
       ctx.agencyId,
       ctx.userId,
       ctx.userId,
-      botId || null,
-      instruction || null,
-      csv || null,
+      authorizedBotId,
+      instruction,
+      csv,
       JSON.stringify(proposal)
     );
 
