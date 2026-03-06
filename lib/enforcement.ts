@@ -22,13 +22,14 @@ export async function enforceDailyMessages(
 ): Promise<EnforcementResult> {
   const p = normalizePlan(plan);
   const limits = getPlanLimits(p);
-  const usage = await getUserUsageRow(db, agencyId, userId, dateKey);
 
   const limit = limits.daily_messages; // number | null
   if (limit == null) return { ok: true }; // unlimited
 
   const n = Number(limit);
   if (!Number.isFinite(n) || n <= 0) return { ok: true };
+
+  const usage = await getUserUsageRow(db, agencyId, userId, dateKey);
 
   if (usage.messages_count >= n) {
     return {
