@@ -28,6 +28,15 @@ function safeFilename(s: string) {
   return `${base || "spreadsheet"}.xlsx`;
 }
 
+function safeSheetName(s: string) {
+  const cleaned = clampString(s || "Sheet1", 31)
+    .replace(/[\\/*?:[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned || "Sheet1";
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -47,6 +56,7 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => null)) as ExportBody | null;
 
     const title = clampString(body?.title ?? "Spreadsheet", 120).trim() || "Spreadsheet";
+
     const columns = Array.isArray(body?.columns)
       ? body.columns.map((c) => clampString(c ?? "", 120).trim()).filter(Boolean).slice(0, 200)
       : [];
@@ -64,22 +74,31 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: false, error: "MISSING_COLUMNS" }, { status: 400 });
     }
 
-    const normalizedRows = rows.map((row) => {
-      const next = Array.from({ length: columns.length }, (_, i) => String((row as string[])?.[i] ?? ""));
-      return next;
-    });
+    const normalizedRows = rows.map((row) =>
+      Array.from({ length: columns.length }, (_, i) => String((row as string[])?.[i] ?? ""))
+    );
 
     const aoa = [columns, ...normalizedRows];
 
     const wb = XLSX.utils.book_new();
+    wb.Props = {
+      Title: title,
+      Subject: "Louis.Ai Spreadsheet Export",
+      Author: "Louis.Ai",
+      Company: "Louis.Ai",
+    };
+
     const ws = XLSX.utils.aoa_to_sheet(aoa);
 
     ws["!cols"] = columns.map((col, idx) => {
-      const maxCell = normalizedRows.reduce((max, row) => Math.max(max, String(row[idx] ?? "").length), col.length);
+      const maxCell = normalizedRows.reduce(
+        (max, row) => Math.max(max, String(row[idx] ?? "").length),
+        col.length
+      );
       return { wch: Math.min(Math.max(maxCell + 2, 12), 40) };
     });
 
-    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    XLSX.utils.book_append_sheet(wb, ws, safeSheetName(title));
 
     const buffer = XLSX.write(wb, {
       type: "buffer",
@@ -87,13 +106,15 @@ export async function POST(req: NextRequest) {
       compression: true,
     }) as Buffer;
 
+    const bytes = new Uint8Array(buffer);
     const filename = safeFilename(title);
 
-    return new Response(buffer, {
+    return new Response(bytes, {
       status: 200,
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Length": String(bytes.byteLength),
         "Cache-Control": "no-store",
       },
     });
