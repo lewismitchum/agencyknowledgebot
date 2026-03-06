@@ -299,7 +299,7 @@ export default function SpreadsheetProposalDetailPage({
         return;
       }
       if (isFetchJsonError(e) && e.status === 400) {
-        const msg = String(e?.message || e?.error || "Missing required fields.");
+        const msg = String((e as any)?.message || (e as any)?.error || "Missing required fields.");
         setSheetError(msg);
         return;
       }
