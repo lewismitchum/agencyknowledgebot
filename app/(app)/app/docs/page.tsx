@@ -9,6 +9,7 @@ import {
   Bot,
   FileText,
   Image,
+  Pencil,
   RefreshCw,
   Sparkles,
   Upload,
@@ -126,6 +127,8 @@ export default function DocsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string>("");
 
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -276,6 +279,46 @@ export default function DocsPage() {
   }, [selectedBotId]);
 
   const count = useMemo(() => docs.length, [docs]);
+
+  function startRename(doc: DocRow) {
+    setRenamingId(doc.id);
+    setRenameDraft(doc.filename);
+    setError(null);
+    setUploadMsg("");
+    setExtractMsg("");
+  }
+
+  function cancelRename() {
+    setRenamingId(null);
+    setRenameDraft("");
+  }
+
+  async function saveRename(doc: DocRow) {
+    const nextTitle = renameDraft.trim();
+    if (!nextTitle) {
+      setError("Document name cannot be empty");
+      return;
+    }
+
+    setError(null);
+
+    try {
+      await fetchJson(`/api/documents/${encodeURIComponent(doc.id)}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: nextTitle }),
+      });
+
+      setDocs((prev) =>
+        prev.map((d) => (d.id === doc.id ? { ...d, filename: nextTitle } : d))
+      );
+      cancelRename();
+    } catch (e: any) {
+      if (handleCommonErrors(e)) return;
+      setError(e?.message ?? "Rename failed");
+    }
+  }
 
   async function onDelete(doc: DocRow) {
     const ok = window.confirm(`Delete "${doc.filename}"?\n\nThis can’t be undone.`);
@@ -719,6 +762,7 @@ export default function DocsPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             {docs.map((doc) => {
               const mimeLabel = labelMime(doc.mime_type);
+              const isEditing = renamingId === doc.id;
 
               return (
                 <div
@@ -732,21 +776,51 @@ export default function DocsPage() {
                           {iconForMime(doc.mime_type)}
                         </span>
 
-                        <div className="min-w-0">
-                          <div className="truncate text-base font-semibold tracking-tight">
-                            {doc.filename}
-                          </div>
-                          <div className="mt-1 flex flex-wrap gap-2">
-                            {mimeLabel ? (
-                              <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
-                                {mimeLabel}
-                              </span>
-                            ) : null}
+                        <div className="min-w-0 flex-1">
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <input
+                                value={renameDraft}
+                                onChange={(e) => setRenameDraft(e.target.value)}
+                                className="h-10 w-full rounded-xl border bg-background px-3 text-sm"
+                                maxLength={200}
+                                autoFocus
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => saveRename(doc)}
+                                  className="rounded-xl border bg-background/70 px-3 py-1.5 text-xs transition hover:bg-muted"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={cancelRename}
+                                  className="rounded-xl border bg-background/70 px-3 py-1.5 text-xs transition hover:bg-muted"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="truncate text-base font-semibold tracking-tight">
+                                {doc.filename}
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-2">
+                                {mimeLabel ? (
+                                  <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
+                                    {mimeLabel}
+                                  </span>
+                                ) : null}
 
-                            <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
-                              {formatBytes(doc.bytes)}
-                            </span>
-                          </div>
+                                <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
+                                  {formatBytes(doc.bytes)}
+                                </span>
+                              </div>
+                            </>
+                          )}
                         </div>
                       </div>
 
@@ -768,10 +842,21 @@ export default function DocsPage() {
                   </div>
 
                   <div className="mt-5 flex flex-wrap gap-2">
+                    {!isEditing ? (
+                      <button
+                        type="button"
+                        onClick={() => startRename(doc)}
+                        className="inline-flex items-center rounded-2xl border bg-background/70 px-4 py-2 text-sm transition hover:-translate-y-[1px] hover:bg-muted"
+                      >
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Rename
+                      </button>
+                    ) : null}
+
                     <button
                       type="button"
                       onClick={() => onExtract(doc)}
-                      disabled={extractingId === doc.id || !selectedBotId}
+                      disabled={extractingId === doc.id || !selectedBotId || isEditing}
                       className="rounded-2xl border bg-background/70 px-4 py-2 text-sm transition hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50"
                     >
                       {extractingId === doc.id ? "Extracting..." : "Extract"}
@@ -780,7 +865,7 @@ export default function DocsPage() {
                     <button
                       type="button"
                       onClick={() => onDelete(doc)}
-                      disabled={deletingId === doc.id}
+                      disabled={deletingId === doc.id || isEditing}
                       className="rounded-2xl border bg-background/70 px-4 py-2 text-sm transition hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50"
                     >
                       {deletingId === doc.id ? "Deleting..." : "Delete"}
