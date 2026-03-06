@@ -1,147 +1,162 @@
 // lib/plans.ts
+export type PlanKey = "free" | "home" | "pro" | "enterprise" | "corporation";
 
-export type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corporation";
+export type FeatureKey =
+  | "schedule"
+  | "extraction"
+  | "notifications"
+  | "multimedia"
+  | "spreadsheets"
+  | "email";
+
+/**
+ * Normalize anything from DB/Stripe/UI into our canonical PlanKey.
+ * Supports legacy names: starter/personal -> home
+ */
+export function normalizePlan(input: unknown): PlanKey {
+  const s = String(input ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (!s) return "free";
+
+  // legacy aliases
+  if (s === "starter") return "home";
+  if (s === "personal") return "home";
+  if (s === "home") return "home";
+
+  if (s === "free") return "free";
+  if (s === "pro") return "pro";
+  if (s === "enterprise") return "enterprise";
+  if (s === "corp") return "corporation";
+  if (s === "corporation") return "corporation";
+
+  // Stripe price nicknames sometimes end up here; be conservative
+  if (s.includes("enterprise")) return "enterprise";
+  if (s.includes("corporation") || s.includes("corp")) return "corporation";
+  if (s.includes("pro")) return "pro";
+  if (s.includes("home") || s.includes("starter") || s.includes("personal")) return "home";
+
+  return "free";
+}
 
 export type PlanLimits = {
-  daily_messages: number | null; // null = unlimited
-  daily_uploads: number | null; // null = unlimited
-  max_users: number | null; // billable members only (exclude owner/admin)
-  max_agency_bots: number | null;
+  // core limits (null => unlimited)
+  daily_messages: number | null;
+  daily_uploads: number | null;
 
-  allow_images: boolean;
-  allow_video: boolean;
+  // seats & bots (null => unlimited)
+  max_users: number | null; // billable seats (excludes owner/admin)
+  max_agency_bots: number | null; // shared bots only (owner_user_id IS NULL)
 
-  // conversation "invisible refresh" threshold (counts messages in convo, user+assistant)
-  summarize_after_messages: number;
+  // features
+  features: Record<FeatureKey, boolean>;
 };
 
-const LIMITS: Record<PlanKey, PlanLimits> = {
+const PLANS: Record<PlanKey, PlanLimits> = {
   free: {
     daily_messages: 20,
     daily_uploads: 5,
-    max_users: 1,
+    max_users: 0, // Free is intended as solo/eval; seat enforcement code counts non-owner/admin only.
     max_agency_bots: 1,
-    allow_images: false,
-    allow_video: false,
-    summarize_after_messages: 20,
+    features: {
+      schedule: false,
+      extraction: false,
+      notifications: true, // notifications page exists for all tiers
+      multimedia: false,
+      spreadsheets: false,
+      email: false,
+    },
   },
-  starter: {
-    daily_messages: 500,
-    daily_uploads: null, // unlimited docs
+
+  home: {
+    // Home tier: everyday life + personal productivity (not “agency” positioned)
+    daily_messages: 100,
+    daily_uploads: null, // unlimited doc uploads
     max_users: 5,
     max_agency_bots: 1,
-    allow_images: false,
-    allow_video: false,
-    summarize_after_messages: 30,
+    features: {
+      schedule: true,
+      extraction: true,
+      notifications: true,
+      multimedia: false, // docs-only (keeps costs predictable)
+      spreadsheets: false,
+      email: false,
+    },
   },
+
   pro: {
-    daily_messages: null,
-    daily_uploads: null,
+    daily_messages: null, // unlimited
+    daily_uploads: null, // unlimited
     max_users: 15,
     max_agency_bots: 3,
-    allow_images: true,
-    allow_video: true,
-    summarize_after_messages: 40,
+    features: {
+      schedule: true,
+      extraction: true,
+      notifications: true,
+      multimedia: true, // docs + images + video
+      spreadsheets: false, // paid feature later; keep corp-only for now
+      email: false,
+    },
   },
+
   enterprise: {
     daily_messages: null,
     daily_uploads: null,
     max_users: 50,
     max_agency_bots: 5,
-    allow_images: true,
-    allow_video: true,
-    summarize_after_messages: 50,
+    features: {
+      schedule: true,
+      extraction: true,
+      notifications: true,
+      multimedia: true,
+      spreadsheets: false,
+      email: false,
+    },
   },
+
   corporation: {
     daily_messages: null,
     daily_uploads: null,
     max_users: 100,
     max_agency_bots: 10,
-    allow_images: true,
-    allow_video: true,
-    summarize_after_messages: 60,
+    features: {
+      schedule: true,
+      extraction: true,
+      notifications: true,
+      multimedia: true,
+      spreadsheets: true, // “Spreadsheet AI” tier
+      email: true, // Gmail-like inbox feature
+    },
   },
 };
 
-export function normalizePlan(plan: unknown): PlanKey {
-  const p = String(plan || "").toLowerCase().trim();
-
-  if (p === "starter") return "starter";
-  if (p === "pro") return "pro";
-  if (p === "enterprise") return "enterprise";
-  if (p === "corporation") return "corporation";
-  if (p === "corp") return "corporation";
-
-  return "free";
-}
-
 export function getPlanLimits(plan: unknown): PlanLimits {
-  return LIMITS[normalizePlan(plan)];
+  return PLANS[normalizePlan(plan)];
 }
-
-export function isPaidPlan(plan: unknown): boolean {
-  return normalizePlan(plan) !== "free";
-}
-
-export function isUnlimited(n: unknown): boolean {
-  return n == null;
-}
-
-export function getSummarizeAfterMessages(plan: unknown): number {
-  return getPlanLimits(plan).summarize_after_messages;
-}
-
-export function getMaxUsers(plan: unknown): number | null {
-  return getPlanLimits(plan).max_users;
-}
-
-export function getMaxAgencyBots(plan: unknown): number | null {
-  return getPlanLimits(plan).max_agency_bots;
-}
-
-export type FeatureKey = "schedule" | "extraction" | "multimedia" | "email" | "spreadsheets";
-
-const FEATURES: Record<FeatureKey, PlanKey[]> = {
-  schedule: ["starter", "pro", "enterprise", "corporation"],
-  extraction: ["starter", "pro", "enterprise", "corporation"],
-  multimedia: ["pro", "enterprise", "corporation"],
-  email: ["corporation"],
-  spreadsheets: ["starter", "pro", "enterprise", "corporation"],
-};
 
 export function hasFeature(plan: unknown, feature: FeatureKey): boolean {
-  return FEATURES[feature].includes(normalizePlan(plan));
+  const p = normalizePlan(plan);
+  return Boolean(PLANS[p]?.features?.[feature]);
 }
 
-export function requireFeature(
-  plan: unknown,
-  feature: FeatureKey
-): { ok: true } | { ok: false; status: 403; body: any } {
+/**
+ * Used by API routes for server-side gating.
+ */
+export function requireFeature(plan: unknown, feature: FeatureKey) {
   const p = normalizePlan(plan);
-  if (FEATURES[feature].includes(p)) return { ok: true };
+  const ok = Boolean(PLANS[p]?.features?.[feature]);
 
-  const pretty =
-    feature === "email"
-      ? "Email inbox is available on Corporation."
-      : feature === "multimedia"
-        ? "Images + video uploads are available on Pro and up."
-        : feature === "schedule" || feature === "extraction"
-          ? "Schedule / extraction is available on Starter and up."
-          : feature === "spreadsheets"
-            ? "Spreadsheets integration is available on Starter and up."
-            : "Upgrade required.";
+  if (ok) return { ok: true as const };
 
   return {
-    ok: false,
+    ok: false as const,
     status: 403,
     body: {
       ok: false,
-      upsell: {
-        code: "upgrade_required",
-        feature,
-        plan: p,
-        message: pretty,
-      },
+      error: "FEATURE_NOT_AVAILABLE",
+      feature,
+      plan: p,
     },
   };
 }

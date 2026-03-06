@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
-type PlanKey = "free" | "starter" | "pro" | "enterprise" | "corporation";
+type PlanKey = "free" | "home" | "pro" | "enterprise" | "corporation";
 
 type MeResponse =
   | {
@@ -36,6 +36,27 @@ type MeResponse =
       };
     }
   | { ok?: false; error?: string; message?: string };
+
+function normalizeUiPlan(p: string | null | undefined): PlanKey {
+  const s = String(p ?? "").trim().toLowerCase();
+  if (!s) return "free";
+  if (s === "starter") return "home";
+  if (s === "personal") return "home";
+  if (s === "home") return "home";
+  if (s === "free") return "free";
+  if (s === "pro") return "pro";
+  if (s === "enterprise") return "enterprise";
+  if (s === "corp") return "corporation";
+  if (s === "corporation") return "corporation";
+  return "free";
+}
+
+function prettyPlan(p: string | null | undefined) {
+  const n = normalizeUiPlan(p);
+  if (n === "home") return "home";
+  if (n === "corporation") return "corporation";
+  return n;
+}
 
 function BillingStatusBanner() {
   const sp = useSearchParams();
@@ -87,7 +108,7 @@ function BillingContent() {
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
 
-  const [currentPlan, setCurrentPlan] = useState<string | null>(null);
+  const [currentPlan, setCurrentPlan] = useState<PlanKey>("free");
   const [periodEnd, setPeriodEnd] = useState<string | null>(null);
   const [hasStripeCustomer, setHasStripeCustomer] = useState(false);
 
@@ -124,13 +145,9 @@ function BillingContent() {
         const uid = String(u?.id ?? "");
         setMeUserId(uid);
 
-        if (a?.plan) {
-          const p = String(a.plan);
-          setCurrentPlan(p);
-          if (["free", "starter", "pro", "enterprise", "corporation"].includes(p)) {
-            setDevPlan(p as PlanKey);
-          }
-        }
+        const planUi = normalizeUiPlan(a?.plan);
+        setCurrentPlan(planUi);
+        setDevPlan(planUi);
 
         if (typeof a?.stripe_current_period_end === "string") setPeriodEnd(a.stripe_current_period_end);
         if (a?.stripe_customer_id) setHasStripeCustomer(true);
@@ -183,7 +200,7 @@ function BillingContent() {
 
       try {
         const data = await loadMeOnce(ac.signal);
-        const plan = String((data as any)?.agency?.plan ?? "").toLowerCase().trim();
+        const plan = normalizeUiPlan((data as any)?.agency?.plan);
         if (plan && plan !== "free") {
           stopped = true;
           return;
@@ -207,10 +224,11 @@ function BillingContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSuccess]);
 
-  async function startCheckout(plan: "starter" | "pro" | "enterprise" | "corporation") {
+  async function startCheckout(plan: "home" | "pro" | "enterprise" | "corporation") {
     try {
       setLoadingPlan(plan);
 
+      // Server should accept legacy "starter" too, but we send canonical "home".
       const data = await fetchJson<any>("/api/billing/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -309,77 +327,78 @@ function BillingContent() {
 
   const plans = [
     {
-      key: "free",
+      key: "free" as const,
       name: "Free",
       price: "$0",
       badge: "Default",
-      bullets: ["1 agency bot", "5 daily uploads (docs only)", "Daily chat limits", "No schedule/to-do/calendar"],
+      bullets: ["1 shared bot", "5 uploads/day (docs only)", "20 chats/day", "No schedule/extraction"],
       cta: { label: "Go to Chat", href: "/app/chat", variant: "secondary" as const },
     },
     {
-      key: "starter",
-      name: "Starter",
-      price: "$79–$99/mo",
-      badge: "Schedule enabled",
+      key: "home" as const,
+      name: "Home",
+      price: "$89/mo",
+      badge: "Everyday planning",
       bullets: [
-        "1 agency bot",
-        "Up to 5 users (owner/admin excluded from seats)",
-        "Higher daily chat limits",
+        "1 shared bot",
+        "Up to 5 members (owner/admin excluded from seats)",
+        "100 chats/day",
         "Unlimited uploads (docs only)",
-        "Schedule/to-do/calendar enabled",
+        "Schedule + to-do + calendar extraction enabled",
       ],
       cta: { label: "Upgrade", variant: "default" as const },
-      onClick: () => startCheckout("starter"),
+      onClick: () => startCheckout("home"),
     },
     {
-      key: "pro",
+      key: "pro" as const,
       name: "Pro",
-      price: "$249–$399/mo",
+      price: "$349/mo",
       badge: "Multimedia",
       bullets: [
-        "3 agency bots",
-        "Up to 15 users (owner/admin excluded from seats)",
-        "Unlimited daily chats",
+        "3 shared bots",
+        "Up to 15 members (owner/admin excluded from seats)",
+        "Unlimited chats",
         "Unlimited uploads (docs + images + video)",
-        "Schedule/to-do/calendar enabled",
+        "Schedule + extraction enabled",
       ],
       cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("pro"),
     },
     {
-      key: "enterprise",
+      key: "enterprise" as const,
       name: "Enterprise",
-      price: "$899–$999/mo",
+      price: "$999/mo",
       badge: "Teams",
       bullets: [
-        "5 agency bots",
-        "Up to 50 users (owner/admin excluded from seats)",
-        "Unlimited daily chats",
+        "5 shared bots",
+        "Up to 50 members (owner/admin excluded from seats)",
+        "Unlimited chats",
         "Uploads (docs + images + video)",
-        "Schedule/to-do/calendar enabled",
+        "Schedule + extraction enabled",
       ],
       cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("enterprise"),
     },
     {
-      key: "corporation",
+      key: "corporation" as const,
       name: "Corporation",
-      price: "$1799–$1999/mo",
-      badge: "Email + AI triage",
+      price: "$1899/mo",
+      badge: "Email + spreadsheets",
       bullets: [
-        "10 agency bots",
-        "Up to 100 users (owner/admin excluded from seats)",
-        "Unlimited daily chats",
+        "10 shared bots",
+        "Up to 100 members (owner/admin excluded from seats)",
+        "Unlimited chats",
         "Uploads (docs + images + video)",
-        "Schedule/to-do/calendar enabled",
+        "Schedule + extraction enabled",
         "Email page enabled (Gmail-like)",
+        "Spreadsheet AI enabled",
       ],
       cta: { label: "Upgrade", variant: "default" as const },
       onClick: () => startCheckout("corporation"),
     },
   ] as const;
 
-  const isPaid = currentPlan && currentPlan !== "free";
+  const isPaid = currentPlan !== "free";
   const trialEligible = !trialUsed && !stripeSubscriptionId;
 
   // ✅ you-only gate (must also be owner)
@@ -392,12 +411,13 @@ function BillingContent() {
           <div>
             <h1 className="text-2xl font-semibold">Billing</h1>
             <p className="text-muted-foreground mt-1">
-              Upgrade your agency plan. Owner/admin seats don’t count toward limits, and upgrades apply to the whole agency.
+              Home is for everyday life (planning + reminders + turning docs into tasks/events). Upgrades apply to your whole
+              workspace.
             </p>
           </div>
 
           <div className="flex items-center gap-2">
-            <Badge variant="secondary">Current: {currentPlan ? currentPlan : "…"}</Badge>
+            <Badge variant="secondary">Current: {prettyPlan(currentPlan)}</Badge>
 
             <Button
               variant="outline"
@@ -436,7 +456,7 @@ function BillingContent() {
           <CardHeader>
             <CardTitle className="text-base">Owner-only tier switcher</CardTitle>
             <CardDescription>
-              This updates <code>agencies.plan</code> for your current agency only (manual override).
+              This updates <code>agencies.plan</code> for your current workspace only (manual override).
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -450,7 +470,7 @@ function BillingContent() {
                 className="rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="free">free</option>
-                <option value="starter">starter</option>
+                <option value="home">home</option>
                 <option value="pro">pro</option>
                 <option value="enterprise">enterprise</option>
                 <option value="corporation">corporation</option>
@@ -469,22 +489,22 @@ function BillingContent() {
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
           <p>
-            Louis.Ai is a multi-tenant agency knowledge system: agency bots/docs are shared across the agency; private bots/docs
+            Louis.Ai is a secure knowledge + planning OS. Your shared bots/docs are available to your workspace; private bots/docs
             are isolated per user.
           </p>
-          <p>Schedule/to-do/calendar extraction is a paid feature. Basic reminders/notifications UI can exist on all tiers.</p>
+          <p>Schedule/to-do/calendar extraction is a paid feature. Notifications can exist on all tiers.</p>
           <p>
             {trialEligible
-              ? "If you upgrade now, your first subscription starts with a 7-day free trial (one-time per agency)."
-              : "Trials are one-time per agency. If you’ve already had a subscription or trial, checkout starts billing immediately."}
+              ? "If you upgrade now, your first subscription starts with a 7-day free trial (one-time per workspace)."
+              : "Trials are one-time per workspace. If you’ve already had a subscription or trial, checkout starts billing immediately."}
           </p>
         </CardContent>
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
         {plans.map((p) => {
-          const isCurrent = currentPlan && currentPlan === p.key;
-          const isPaidCheckout = p.key === "starter" || p.key === "pro" || p.key === "enterprise" || p.key === "corporation";
+          const isCurrent = currentPlan === p.key;
+          const isPaidCheckout = p.key !== "free";
 
           return (
             <Card key={p.key} className={isCurrent ? "ring-1 ring-border" : ""}>
@@ -515,17 +535,17 @@ function BillingContent() {
                 ) : null}
 
                 <div className="pt-2 flex items-center gap-2">
-                  {isPaidCheckout ? (
+                  {p.key === "free" ? (
+                    <Button asChild variant={(p as any).cta.variant}>
+                      <Link href={(p as any).cta.href}>{(p as any).cta.label}</Link>
+                    </Button>
+                  ) : (
                     <Button
                       variant={(p as any).cta.variant}
                       onClick={(p as any).onClick}
                       disabled={isCurrent || loadingPlan === p.key}
                     >
                       {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : (p as any).cta.label}
-                    </Button>
-                  ) : (
-                    <Button asChild variant={(p as any).cta.variant}>
-                      <Link href={(p as any).cta.href}>{(p as any).cta.label}</Link>
                     </Button>
                   )}
 
