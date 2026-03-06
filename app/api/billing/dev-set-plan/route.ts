@@ -11,7 +11,7 @@ type Body = {
   plan?: string;
 };
 
-const ALLOWED: PlanKey[] = ["free", "starter", "pro", "enterprise", "corporation"];
+const ALLOWED: PlanKey[] = ["free", "home", "pro", "enterprise", "corporation"];
 
 function getCtxUserId(ctx: any): string {
   return String(

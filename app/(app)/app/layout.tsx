@@ -188,7 +188,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 Louis will search docs first, and only falls back when the docs can’t support an answer.
               </Step>
               <Step n="3" title="Turn docs into action">
-                Starter+ can extract schedule items and tasks automatically from your documents.
+                Home+ can extract schedule items and tasks automatically from your documents.
               </Step>
             </div>
 
