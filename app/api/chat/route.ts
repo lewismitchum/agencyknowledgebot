@@ -119,14 +119,13 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 }
 
 /**
- * ✅ SUPER-CONSERVATIVE INTERNAL DETECTION
- * Only treat as internal when the user explicitly references "our/my" org/client/process/docs.
- * This avoids false positives like “what are albanese gummies”.
+ * Internal/business question detection (stricter).
+ * Goal: only treat as "internal" when it plausibly depends on the user's org/client/process/docs.
  */
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
-  // common general question starters => never internal
+  // ✅ Expand general starters so ordinary “what are X” questions never become internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -155,7 +154,6 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (generalStarters.some((s) => t.startsWith(s))) return false;
 
-  // ONLY these explicit markers can trigger internal mode
   const explicitOrgMarkers = [
     "our company",
     "our agency",
@@ -180,19 +178,41 @@ function looksInternalBusinessQuestion(message: string) {
     "our messaging",
     "our kpi",
     "our dashboard",
-    "internal",
-    "for our business",
-    "for my business",
-    "in our docs",
-    "in my docs",
+  ];
+  if (explicitOrgMarkers.some((m) => t.includes(m))) return true;
+
+  const internalHints = [
+    "pricing",
+    "proposal",
+    "contract",
+    "invoice",
+    "sow",
+    "statement of work",
+    "msa",
+    "onboarding",
+    "sop",
+    "process",
+    "policy",
+    "playbook",
+    "brand voice",
+    "brand guidelines",
+    "messaging",
+    "deliverable",
+    "scope",
+    "kpi",
+    "dashboard",
+    "workspace settings",
+    "seat limit",
+    "billing",
+    "stripe",
+    "plan",
   ];
 
-  return explicitOrgMarkers.some((m) => t.includes(m));
+  return internalHints.some((h) => t.includes(h));
 }
 
 /**
  * Robust evidence detection (file_search results / citations / annotations)
- * Used ONLY to decide the strict internal fallback.
  */
 function responseHasFileSearchEvidence(resp: any) {
   const seen = new Set<any>();
@@ -374,6 +394,27 @@ async function resolveAttachments(db: Db, args: { agencyId: string; botId: strin
   return { images, videos };
 }
 
+function looksLikeDocAbsenceClaim(text: string) {
+  const t = String(text || "").toLowerCase();
+  if (!t.trim()) return true;
+
+  const badPhrases = [
+    "no information",
+    "not in the documents",
+    "not in the uploaded",
+    "documents you provided",
+    "uploaded files",
+    "provided files",
+    "i don't have specific details on it",
+    "i do not have specific details on it",
+    "based on general knowledge",
+    "if you can provide more context",
+    "would you like me to look it up on the web",
+  ];
+
+  return badPhrases.some((p) => t.includes(p));
+}
+
 export async function GET() {
   return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
@@ -463,29 +504,22 @@ export async function POST(req: NextRequest) {
       const hasVideos = videoTitles.length > 0;
 
       const mediaHint = hasImages
-        ? "The user attached image(s). If image understanding is unavailable, be honest."
+        ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
         : "If the user asks about the contents of an image/video file, be honest about limitations.";
 
-      // Tools policy:
-      // - internal => file_search only (docs-first + strict fallback)
-      // - non-internal => web_search allowed (and file_search allowed too)
-      const tools: any[] = [];
-
-      if (internal) {
-        if (bot.vector_store_id) tools.push({ type: "file_search", vector_store_ids: [bot.vector_store_id] });
-      } else {
-        tools.push({ type: "web_search" });
-        if (bot.vector_store_id) tools.push({ type: "file_search", vector_store_ids: [bot.vector_store_id] });
-      }
+      // ✅ Tools strategy:
+      // - Internal: use file_search (docs-first)
+      // - Non-internal: first attempt WITHOUT any tools (fast + avoids doc-mention bias)
+      const toolsAttempt1 = internal && bot.vector_store_id ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }] : [];
 
       const fallbackInstruction = internal
         ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
 Do not add extra words before or after the fallback.`
-        : `This is NOT an internal/business question.
-Answer normally using general knowledge and (if needed) web_search.
-Do NOT say: "${FALLBACK}"
-Do NOT mention "uploaded files" unless the user explicitly asked about their uploaded docs.`;
+        : `This is NOT an internal/business question. Answer normally using general knowledge and reasoning.
+You MAY use web_search for up-to-date facts.
+Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents.
+Do NOT use this exact sentence in your reply: ${FALLBACK}`;
 
       const inputBlocks: any[] = [
         {
@@ -500,42 +534,70 @@ Do NOT mention "uploaded files" unless the user explicitly asked about their upl
         },
       ];
 
-      const resp = await openai.responses.create({
+      const resp1 = await openai.responses.create({
         model: "gpt-4.1-mini",
-        tool_choice: "auto",
         instructions: `
 You are Louis.Ai.
 
 Behavior:
-- Internal/business: use file_search. Never invent company-specific facts.
-- Non-internal: you may use web_search to be accurate/up-to-date.
+- If the question is internal/business related to the user's organization, use uploaded docs via file_search.
+- If the question is NOT internal, answer normally using general knowledge and reasoning.
+- Never fabricate internal/company-specific details.
 - ${mediaHint}
 - ${fallbackInstruction}
 ${
   hasVideos
-    ? "\nNote: Video understanding is not available yet unless transcript/frame data is provided."
+    ? "\nNote: The user attached video(s). Video understanding is not available yet unless transcript/frame data is provided."
     : ""
 }
 `.trim(),
         input: inputBlocks,
-        tools,
+        tools: toolsAttempt1,
       });
 
-      const modelText =
-        typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
+      const modelText1 =
+        typeof resp1.output_text === "string" && resp1.output_text.trim().length > 0 ? resp1.output_text.trim() : "";
 
-      const hasFileSearchTool = tools.some((t) => t?.type === "file_search");
-      const hasEvidence = hasFileSearchTool ? responseHasFileSearchEvidence(resp) : false;
+      const hasEvidence1 = toolsAttempt1.length > 0 ? responseHasFileSearchEvidence(resp1) : false;
 
-      if (internal && !hasFileSearchTool) {
-        answer = FALLBACK;
-      } else if (internal && hasFileSearchTool && !hasEvidence) {
-        answer = FALLBACK;
-      } else {
-        if (!internal && modelText === FALLBACK) {
-          answer = "Sorry — I couldn’t generate a response.";
+      // ✅ Internal fallback gating stays strict
+      if (internal) {
+        if (toolsAttempt1.length === 0) {
+          answer = FALLBACK;
+        } else if (!hasEvidence1) {
+          answer = FALLBACK;
         } else {
-          answer = modelText || (internal ? FALLBACK : "Sorry — I couldn’t generate a response.");
+          answer = modelText1 || FALLBACK;
+        }
+      } else {
+        // ✅ Non-internal: if attempt1 looks like "doc-absence" / weak / empty, retry with web_search
+        const needsRetry = looksLikeDocAbsenceClaim(modelText1) || modelText1 === FALLBACK;
+
+        if (!needsRetry) {
+          answer = modelText1 || "Sorry — I couldn’t generate a response.";
+        } else {
+          const resp2 = await openai.responses.create({
+            model: "gpt-4.1-mini",
+            instructions: `
+You are Louis.Ai.
+
+Behavior:
+- This is NOT an internal/business question. Answer normally using general knowledge and reasoning.
+- You MAY use web_search for up-to-date facts.
+- Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents.
+- Do NOT use this exact sentence in your reply: ${FALLBACK}
+- Be direct. No questions like "Would you like me to look it up?" — just answer.
+
+${mediaHint}
+`.trim(),
+            input: inputBlocks,
+            tools: [{ type: "web_search_preview" as const }],
+          });
+
+          const modelText2 =
+            typeof resp2.output_text === "string" && resp2.output_text.trim().length > 0 ? resp2.output_text.trim() : "";
+
+          answer = modelText2 && modelText2 !== FALLBACK ? modelText2 : "Sorry — I couldn’t generate a response.";
         }
       }
     }
