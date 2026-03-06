@@ -119,13 +119,14 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 }
 
 /**
- * Internal/business question detection (stricter).
- * Goal: only treat as "internal" when it plausibly depends on the user's org/client/process/docs.
+ * Internal/business question detection (CONSERVATIVE).
+ * Rule: only "internal" if the user is clearly asking about THEIR org/workspace/account/docs.
  */
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
+  if (!t) return false;
 
-  // ✅ Expand general starters so ordinary “what are X” questions never become internal.
+  // Hard "general" starters. These should almost never be treated as internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -154,6 +155,7 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (generalStarters.some((s) => t.startsWith(s))) return false;
 
+  // Explicit org markers => internal.
   const explicitOrgMarkers = [
     "our company",
     "our agency",
@@ -166,7 +168,6 @@ function looksInternalBusinessQuestion(message: string) {
     "our product",
     "our service",
     "our offer",
-    "our pricing",
     "our contract",
     "our invoice",
     "our onboarding",
@@ -178,10 +179,42 @@ function looksInternalBusinessQuestion(message: string) {
     "our messaging",
     "our kpi",
     "our dashboard",
+    "in our workspace",
+    "in my workspace",
+    "in this workspace",
+    "in louis.ai",
+    "in louisai",
   ];
   if (explicitOrgMarkers.some((m) => t.includes(m))) return true;
 
-  const internalHints = [
+  // Account/workspace context words (must be present to treat billing/plan/etc as internal)
+  const accountContext = [
+    "my ",
+    "our ",
+    "this ",
+    "account",
+    "workspace",
+    "dashboard",
+    "admin",
+    "team",
+    "agency",
+    "client",
+    "project",
+    "bot",
+    "document",
+    "upload",
+    "vector store",
+    "vectorstore",
+    "seat",
+    "member",
+    "invite",
+    "subscription",
+    "checkout",
+    "portal",
+  ];
+
+  // Internal nouns that are only internal WITH account context.
+  const internalNouns = [
     "pricing",
     "proposal",
     "contract",
@@ -200,7 +233,6 @@ function looksInternalBusinessQuestion(message: string) {
     "deliverable",
     "scope",
     "kpi",
-    "dashboard",
     "workspace settings",
     "seat limit",
     "billing",
@@ -208,7 +240,14 @@ function looksInternalBusinessQuestion(message: string) {
     "plan",
   ];
 
-  return internalHints.some((h) => t.includes(h));
+  const hasInternalNoun = internalNouns.some((h) => t.includes(h));
+  if (!hasInternalNoun) return false;
+
+  // Require context for internal nouns; otherwise it's probably general ("pricing of Albanese gummies")
+  const hasAccountContext = accountContext.some((c) => t.includes(c));
+  if (!hasAccountContext) return false;
+
+  return true;
 }
 
 /**
@@ -488,8 +527,6 @@ export async function POST(req: NextRequest) {
         ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
         : "If the user asks about the contents of an image/video file, be honest about limitations. Use file_search evidence only.";
 
-      // ✅ Only instruct fallback behavior when internal=true.
-      // ✅ When internal=false, explicitly ban the fallback string.
       const fallbackInstruction = internal
         ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
@@ -541,7 +578,6 @@ ${
       } else if (internal && tools.length > 0 && !hasEvidence) {
         answer = FALLBACK;
       } else {
-        // ✅ Safety: if model still emits fallback on a non-internal question, ignore it.
         if (!internal && modelText === FALLBACK) {
           answer = "Sorry — I couldn’t generate a response.";
         } else {
