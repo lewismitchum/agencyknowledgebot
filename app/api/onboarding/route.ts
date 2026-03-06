@@ -3,15 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireActiveMember } from "@/lib/authz";
-import { normalizePlan, type PlanKey } from "@/lib/plans";
+import { normalizePlan, requireFeature } from "@/lib/plans";
 
 export const runtime = "nodejs";
-
-const SCHEDULE_PLANS: PlanKey[] = ["starter", "pro", "enterprise", "corporation"];
-
-function isScheduleEnabled(plan: PlanKey) {
-  return SCHEDULE_PLANS.includes(plan);
-}
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
@@ -24,23 +19,35 @@ export async function GET(req: NextRequest) {
       | { plan?: string | null }
       | undefined;
 
-    const planKey = normalizePlan(agency?.plan || "free");
+    const planKey = normalizePlan(agency?.plan ?? session.plan ?? "free");
+    const scheduleGate = requireFeature(planKey, "schedule");
 
+    // ✅ bots visible to THIS user:
+    // - agency bots
+    // - their private bots
     const botsRow = (await db.get(
-      `SELECT COUNT(*) AS c FROM bots WHERE agency_id = ?`,
-      session.agencyId
+      `
+      SELECT COUNT(1) AS c
+      FROM bots
+      WHERE agency_id = ?
+        AND (owner_user_id IS NULL OR owner_user_id = ?)
+      `,
+      session.agencyId,
+      session.userId
     )) as { c?: number } | undefined;
 
+    // docs are bot-scoped, but onboarding wants "does this workspace have any docs at all?"
     const docsRow = (await db.get(
-      `SELECT COUNT(*) AS c FROM documents WHERE agency_id = ?`,
+      `SELECT COUNT(1) AS c FROM documents WHERE agency_id = ?`,
       session.agencyId
     )) as { c?: number } | undefined;
 
     return NextResponse.json({
+      ok: true,
       bots_count: Number(botsRow?.c ?? 0),
       documents_count: Number(docsRow?.c ?? 0),
       plan: planKey,
-      schedule_enabled: isScheduleEnabled(planKey),
+      schedule_enabled: Boolean(scheduleGate.ok),
     });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
@@ -53,6 +60,6 @@ export async function GET(req: NextRequest) {
     }
 
     console.error("ONBOARDING_GET_ERROR", err);
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
   }
 }
