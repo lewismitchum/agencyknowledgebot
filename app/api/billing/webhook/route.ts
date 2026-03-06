@@ -152,7 +152,7 @@ async function notifyCorpUpgrade(db: Db, agencyId: string) {
 }
 
 function planFromPriceId(priceId: string | null | undefined): PlanKey {
-  const starter = process.env.STRIPE_PRICE_STARTER || "";
+  const home = process.env.STRIPE_PRICE_home || "";
   const pro = process.env.STRIPE_PRICE_PRO || "";
   const ent = process.env.STRIPE_PRICE_ENTERPRISE || "";
   const corp = process.env.STRIPE_PRICE_CORPORATION || "";
@@ -160,14 +160,14 @@ function planFromPriceId(priceId: string | null | undefined): PlanKey {
   if (priceId && priceId === corp) return "corporation";
   if (priceId && priceId === ent) return "enterprise";
   if (priceId && priceId === pro) return "pro";
-  if (priceId && priceId === starter) return "starter";
+  if (priceId && priceId === home) return "home";
   return "free";
 }
 
 function pickBestPlan(plans: PlanKey[]): PlanKey {
   const rank: Record<PlanKey, number> = {
     free: 0,
-    starter: 1,
+    home: 1,
     pro: 2,
     enterprise: 3,
     corporation: 4,
