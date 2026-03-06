@@ -120,13 +120,12 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 
 /**
  * Internal/business question detection (CONSERVATIVE).
- * Rule: only "internal" if the user is clearly asking about THEIR org/workspace/account/docs.
+ * Only internal if it's clearly about THEIR org/workspace/account/docs.
  */
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
   if (!t) return false;
 
-  // Hard "general" starters. These should almost never be treated as internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -155,7 +154,6 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (generalStarters.some((s) => t.startsWith(s))) return false;
 
-  // Explicit org markers => internal.
   const explicitOrgMarkers = [
     "our company",
     "our agency",
@@ -187,7 +185,6 @@ function looksInternalBusinessQuestion(message: string) {
   ];
   if (explicitOrgMarkers.some((m) => t.includes(m))) return true;
 
-  // Account/workspace context words (must be present to treat billing/plan/etc as internal)
   const accountContext = [
     "my ",
     "our ",
@@ -213,7 +210,6 @@ function looksInternalBusinessQuestion(message: string) {
     "portal",
   ];
 
-  // Internal nouns that are only internal WITH account context.
   const internalNouns = [
     "pricing",
     "proposal",
@@ -243,7 +239,6 @@ function looksInternalBusinessQuestion(message: string) {
   const hasInternalNoun = internalNouns.some((h) => t.includes(h));
   if (!hasInternalNoun) return false;
 
-  // Require context for internal nouns; otherwise it's probably general ("pricing of Albanese gummies")
   const hasAccountContext = accountContext.some((c) => t.includes(c));
   if (!hasAccountContext) return false;
 
@@ -509,8 +504,6 @@ export async function POST(req: NextRequest) {
     await insertMessage(db, convo.id, "user", message + attachNote);
 
     const recent = await loadRecentMessages(db, convo.id, 20);
-    const tools = bot.vector_store_id ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }] : [];
-
     const openaiInputText = buildMemoryInput({ priorSummary: convo.summary, messages: recent });
 
     let answer: string;
@@ -525,14 +518,25 @@ export async function POST(req: NextRequest) {
 
       const mediaHint = hasImages
         ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
-        : "If the user asks about the contents of an image/video file, be honest about limitations. Use file_search evidence only.";
+        : "If the user asks about the contents of an image/video file, be honest about limitations. Use docs via file_search, and for general knowledge you may use web search.";
+
+      // Tools:
+      // - Internal: file_search only (docs-first, no web).
+      // - Non-internal: web_search + optional file_search.
+      const fileSearchTool = bot.vector_store_id
+        ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }]
+        : [];
+
+      const tools = internal ? fileSearchTool : [...fileSearchTool, { type: "web_search_preview" as const }];
 
       const fallbackInstruction = internal
         ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
 Do not add extra words before or after the fallback.`
-        : `This is NOT an internal/business question. Answer normally using general knowledge.
-Do NOT use this exact sentence in your reply: ${FALLBACK}`;
+        : `This is NOT an internal/business question.
+You may use web search to answer with public sources.
+Do NOT use this exact sentence in your reply: ${FALLBACK}
+If you used web search, include a short "Sources:" section with 2–5 links.`;
 
       const inputBlocks: any[] = [
         {
@@ -554,7 +558,7 @@ You are Louis.Ai.
 
 Behavior:
 - Docs-first: for internal/business questions, prioritize uploaded docs via file_search.
-- General questions (non-internal): answer normally using general knowledge/reasoning.
+- General questions (non-internal): answer normally using general knowledge + web search.
 - Never fabricate internal/company-specific details.
 - ${mediaHint}
 - ${fallbackInstruction}
@@ -571,11 +575,12 @@ ${
       const modelText =
         typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
-      const hasEvidence = tools.length > 0 ? responseHasFileSearchEvidence(resp) : false;
+      // Internal-only enforcement of fallback when docs have no evidence
+      const hasFileEvidence = fileSearchTool.length > 0 ? responseHasFileSearchEvidence(resp) : false;
 
-      if (internal && tools.length === 0) {
+      if (internal && fileSearchTool.length === 0) {
         answer = FALLBACK;
-      } else if (internal && tools.length > 0 && !hasEvidence) {
+      } else if (internal && fileSearchTool.length > 0 && !hasFileEvidence) {
         answer = FALLBACK;
       } else {
         if (!internal && modelText === FALLBACK) {
