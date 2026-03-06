@@ -29,7 +29,8 @@ function getStripe() {
 }
 
 function priceIdForPlan(plan: PlanKey): string | null {
-  if (plan === "starter") return process.env.STRIPE_PRICE_STARTER || null;
+  // Plan keys are: free | home | pro | enterprise | corporation
+  if (plan === "home") return process.env.STRIPE_PRICE_HOME || null;
   if (plan === "pro") return process.env.STRIPE_PRICE_PRO || null;
   if (plan === "enterprise") return process.env.STRIPE_PRICE_ENTERPRISE || null;
   if (plan === "corporation") return process.env.STRIPE_PRICE_CORPORATION || null;
@@ -59,7 +60,10 @@ export async function POST(req: NextRequest) {
 
     const priceId = priceIdForPlan(desired);
     if (!priceId) {
-      return NextResponse.json({ ok: false, error: "MISSING_PRICE_ID", plan: desired }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "MISSING_PRICE_ID", plan: desired },
+        { status: 500 }
+      );
     }
 
     const agency = (await db.get(
@@ -128,6 +132,9 @@ export async function POST(req: NextRequest) {
     if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
 
     console.error("BILLING_CHECKOUT_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }
