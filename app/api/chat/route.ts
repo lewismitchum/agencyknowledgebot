@@ -17,8 +17,6 @@ type ChatBody = {
   bot_id?: string;
   message?: string;
 
-  // Optional: client may send doc IDs or OpenAI file IDs.
-  // We’ll accept either without breaking old clients.
   attachments?: string[];
   attachment_ids?: string[];
   document_ids?: string[];
@@ -127,6 +125,7 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
+  // ✅ Expand general starters so ordinary “what are X” questions never become internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -146,8 +145,12 @@ function looksInternalBusinessQuestion(message: string) {
     "solve ",
     "why ",
     "what is ",
+    "what are ",
     "who is ",
     "where is ",
+    "tell me about ",
+    "what's ",
+    "whats ",
   ];
   if (generalStarters.some((s) => t.startsWith(s))) return false;
 
@@ -363,7 +366,6 @@ async function resolveAttachments(db: Db, args: { agencyId: string; botId: strin
   const images: Array<{ openai_file_id: string; title: string }> = [];
   const videos: string[] = [];
 
-  // Accept either documents.id OR documents.openai_file_id
   for (const id of unique) {
     const row = (await db.get(
       `SELECT id, title, mime_type, openai_file_id
@@ -403,7 +405,6 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureUsageDailySchema(db);
 
-    // ✅ Travel-proof timezone: header -> users.time_zone -> agencies.timezone -> America/Chicago
     const tz = await getEffectiveTimezone(db, {
       agencyId: ctx.agencyId,
       userId: ctx.userId,
@@ -422,7 +423,6 @@ export async function POST(req: NextRequest) {
 
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
 
-    // ✅ per-user daily messages
     const gate = await enforceDailyMessages(db, ctx.agencyId, ctx.userId, dateKey, plan);
     if (!gate.ok) return Response.json(gate.body, { status: gate.status });
 
@@ -439,7 +439,6 @@ export async function POST(req: NextRequest) {
 
     if (!bot?.id) return Response.json({ error: "Bot not found" }, { status: 404 });
 
-    // Attachments (optional)
     const rawAttach =
       (Array.isArray(body?.attachments) ? body!.attachments : null) ??
       (Array.isArray(body?.attachment_ids) ? body!.attachment_ids : null) ??
@@ -459,7 +458,6 @@ export async function POST(req: NextRequest) {
       botId: bot_id,
     });
 
-    // Store user message (include small attachment note for continuity)
     const attachNote =
       imageFiles.length || videoTitles.length
         ? `\n\n[Attachments]\n${
@@ -471,7 +469,6 @@ export async function POST(req: NextRequest) {
 
     await insertMessage(db, convo.id, "user", message + attachNote);
 
-    // Build input for model (summary + last 20)
     const recent = await loadRecentMessages(db, convo.id, 20);
     const tools = bot.vector_store_id ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }] : [];
 
@@ -490,6 +487,15 @@ export async function POST(req: NextRequest) {
       const mediaHint = hasImages
         ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
         : "If the user asks about the contents of an image/video file, be honest about limitations. Use file_search evidence only.";
+
+      // ✅ Only instruct fallback behavior when internal=true.
+      // ✅ When internal=false, explicitly ban the fallback string.
+      const fallbackInstruction = internal
+        ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
+${FALLBACK}
+Do not add extra words before or after the fallback.`
+        : `This is NOT an internal/business question. Answer normally using general knowledge.
+Do NOT use this exact sentence in your reply: ${FALLBACK}`;
 
       const inputBlocks: any[] = [
         {
@@ -514,9 +520,7 @@ Behavior:
 - General questions (non-internal): answer normally using general knowledge/reasoning.
 - Never fabricate internal/company-specific details.
 - ${mediaHint}
-- If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
-${FALLBACK}
-Do not add extra words before or after the fallback.
+- ${fallbackInstruction}
 ${
   hasVideos
     ? "\nNote: The user attached video(s). Video understanding is not available yet unless transcript/frame data is provided."
@@ -537,17 +541,20 @@ ${
       } else if (internal && tools.length > 0 && !hasEvidence) {
         answer = FALLBACK;
       } else {
-        answer = modelText || (internal ? FALLBACK : "Sorry — I couldn’t generate a response.");
+        // ✅ Safety: if model still emits fallback on a non-internal question, ignore it.
+        if (!internal && modelText === FALLBACK) {
+          answer = "Sorry — I couldn’t generate a response.";
+        } else {
+          answer = modelText || (internal ? FALLBACK : "Sorry — I couldn’t generate a response.");
+        }
       }
     }
 
     await insertMessage(db, convo.id, "assistant", answer);
 
-    // ✅ per-user usage increment
     await incrementUserMessages(db, ctx.agencyId, ctx.userId, dateKey, 1);
     const usageAfter = await getUserUsageRow(db, ctx.agencyId, ctx.userId, dateKey);
 
-    // ✅ Always increment message_count in DB (don’t use stale convo.message_count)
     await db.run(
       `UPDATE conversations
        SET message_count = COALESCE(message_count, 0) + 2,
@@ -557,7 +564,6 @@ ${
       convo.id
     );
 
-    // ===== Auto memory refresh (DB-authoritative) =====
     const planKey = normalizePlan(plan);
     const threshold = summarizeThresholdForPlan(planKey);
 
