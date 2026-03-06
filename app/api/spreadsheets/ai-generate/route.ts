@@ -15,6 +15,17 @@ type AiGenerateBody = {
   max_rows?: number;
 };
 
+type OutputColumn = {
+  key: string;
+  label: string;
+  type: string;
+};
+
+type OutputSource = {
+  title: string;
+  url: string;
+};
+
 function clampString(s: string, max: number) {
   const t = String(s ?? "");
   return t.length > max ? t.slice(0, max) : t;
@@ -41,6 +52,12 @@ function extractJsonFromText(text: string): any | null {
     if (inner) return inner;
   }
 
+  const arrayMatch = t.match(/\[[\s\S]*\]/);
+  if (arrayMatch?.[0]) {
+    const inner = safeJsonParse(arrayMatch[0]);
+    if (inner) return inner;
+  }
+
   const start = t.indexOf("{");
   const end = t.lastIndexOf("}");
   if (start >= 0 && end > start) {
@@ -49,6 +66,15 @@ function extractJsonFromText(text: string): any | null {
   }
 
   return null;
+}
+
+function normalizeColumnKey(input: string) {
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
 }
 
 function toCsv(columns: string[], rows: string[][]) {
@@ -69,6 +95,141 @@ function makeId(prefix: string) {
       ? (globalThis.crypto as any).randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}_${uuid}`;
+}
+
+function normalizeColumns(columnsRaw: any[], requestedCols: string[]) {
+  const requested = requestedCols
+    .map((c) => normalizeColumnKey(c))
+    .filter(Boolean)
+    .slice(0, 20);
+
+  if (requested.length) {
+    return requested.map((key) => ({
+      key,
+      label: key,
+      type: "text",
+    })) as OutputColumn[];
+  }
+
+  const normalized = (Array.isArray(columnsRaw) ? columnsRaw : [])
+    .map((c: any) => {
+      if (typeof c === "string") {
+        const key = normalizeColumnKey(c);
+        if (!key) return null;
+        return { key, label: String(c).trim() || key, type: "text" };
+      }
+
+      const rawKey = String(c?.key ?? c?.label ?? "").trim();
+      const key = normalizeColumnKey(rawKey);
+      if (!key) return null;
+
+      const label = String(c?.label ?? rawKey ?? key).trim() || key;
+      const type = String(c?.type ?? "text").trim() || "text";
+      return { key, label, type };
+    })
+    .filter(Boolean) as OutputColumn[];
+
+  const deduped: OutputColumn[] = [];
+  const seen = new Set<string>();
+
+  for (const col of normalized) {
+    if (seen.has(col.key)) continue;
+    seen.add(col.key);
+    deduped.push(col);
+    if (deduped.length >= 20) break;
+  }
+
+  return deduped;
+}
+
+function extractRowsCandidate(parsed: any): any[] {
+  if (Array.isArray(parsed?.rows)) return parsed.rows;
+  if (Array.isArray(parsed?.data)) return parsed.data;
+  if (Array.isArray(parsed?.items)) return parsed.items;
+  if (Array.isArray(parsed?.table?.rows)) return parsed.table.rows;
+  if (Array.isArray(parsed)) return parsed;
+  return [];
+}
+
+function rowsToObjects(rowsRaw: any[], outputColumns: OutputColumn[], maxRows: number) {
+  const colKeys = outputColumns.map((c) => c.key);
+
+  return (Array.isArray(rowsRaw) ? rowsRaw : [])
+    .slice(0, maxRows)
+    .map((row: any) => {
+      if (Array.isArray(row)) {
+        const obj: Record<string, string> = {};
+        for (let i = 0; i < colKeys.length; i++) {
+          obj[colKeys[i]] = row?.[i] == null ? "" : String(row[i]);
+        }
+        return obj;
+      }
+
+      if (row && typeof row === "object") {
+        const normalizedRow: Record<string, string> = {};
+        for (const key of colKeys) {
+          if (row[key] != null) {
+            normalizedRow[key] = String(row[key]);
+            continue;
+          }
+
+          const matchingEntry = Object.entries(row).find(([rawKey]) => normalizeColumnKey(rawKey) === key);
+          normalizedRow[key] = matchingEntry?.[1] == null ? "" : String(matchingEntry[1]);
+        }
+        return normalizedRow;
+      }
+
+      return null;
+    })
+    .filter(Boolean) as Array<Record<string, string>>;
+}
+
+function extractWebSources(resp: any): OutputSource[] {
+  const out: OutputSource[] = [];
+  const seen = new Set<string>();
+
+  function pushSource(title: any, url: any) {
+    const cleanUrl = String(url ?? "").trim();
+    if (!cleanUrl) return;
+    if (seen.has(cleanUrl)) return;
+    seen.add(cleanUrl);
+    out.push({
+      title: clampString(String(title ?? cleanUrl).trim() || cleanUrl, 300),
+      url: clampString(cleanUrl, 2000),
+    });
+  }
+
+  function walk(node: any) {
+    if (!node) return;
+
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+
+    if (typeof node !== "object") return;
+
+    if (node.type === "url_citation") {
+      pushSource(node.title, node.url);
+    }
+
+    if (node.url && (node.title || node.url)) {
+      pushSource(node.title, node.url);
+    }
+
+    if (Array.isArray(node.sources)) {
+      for (const s of node.sources) {
+        pushSource(s?.title, s?.url);
+      }
+    }
+
+    for (const value of Object.values(node)) {
+      if (value && typeof value === "object") walk(value);
+    }
+  }
+
+  walk(resp);
+  return out.slice(0, 50);
 }
 
 export async function OPTIONS() {
@@ -98,37 +259,42 @@ export async function POST(req: NextRequest) {
     const maxRows = Number.isFinite(maxRowsRaw) ? Math.max(1, Math.min(200, Math.floor(maxRowsRaw))) : 100;
 
     const requestedCols = Array.isArray(body?.columns)
-      ? body.columns.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 20)
+      ? body.columns.map((s) => normalizeColumnKey(String(s || ""))).filter(Boolean).slice(0, 20)
       : [];
 
     const system = `
-You are Louis.Ai. Generate a useful starter spreadsheet from the user's prompt.
-Return STRICT JSON ONLY.
+You are Louis.Ai. Use WEB SEARCH to build a spreadsheet from real online sources.
+Return STRICT JSON ONLY. No markdown. No commentary outside JSON.
 
 Return exactly this shape:
 {
+  "insufficient_evidence": boolean,
   "title": string,
   "columns": [{"key": string, "label": string, "type": "text"|"number"|"date"|"currency"|"boolean"}],
   "rows": [ { "<column.key>": <value>, ... } ],
-  "notes": string
+  "notes": string,
+  "sources": [{"title": string, "url": string}]
 }
 
 Rules:
-- No markdown
-- No commentary outside JSON
+- You MUST use web search before answering.
+- Do NOT invent rows, sample rows, placeholder rows, or examples.
+- If the web does not support the requested spreadsheet clearly enough, set insufficient_evidence=true and return empty rows.
 - columns.length must be 1..20
-- rows.length must be 1..${maxRows}
+- rows.length must be 0..${maxRows}
 - Use snake_case keys
 - Keep cells concise
+- Include only rows supported by web evidence
+- sources must contain the URLs actually used
 - If the user supplied required columns, use them in that exact order as keys
 `.trim();
 
     const requiredColsLine = requestedCols.length
       ? `Required columns (use these exact keys in this order): ${requestedCols.join(", ")}`
-      : "Choose sensible columns based on the prompt.";
+      : "Choose sensible columns based on the prompt and the available web evidence.";
 
     const userInput = `
-Create a starter spreadsheet.
+Build a spreadsheet from web sources.
 
 User request:
 ${prompt}
@@ -144,6 +310,8 @@ ${requiredColsLine}
           { role: "system", content: system },
           { role: "user", content: userInput },
         ],
+        tools: [{ type: "web_search" }],
+        include: ["web_search_call.action.sources"],
       });
     } catch (e: any) {
       const msg = String(e?.message ?? e);
@@ -171,46 +339,47 @@ ${requiredColsLine}
     }
 
     const rawColumns = Array.isArray(parsed?.columns) ? parsed.columns : [];
-    const rawRows = Array.isArray(parsed?.rows) ? parsed.rows : [];
-
-    const normalizedColumns = (requestedCols.length
-      ? requestedCols.map((key) => ({
-          key,
-          label: key,
-          type: "text",
-        }))
-      : rawColumns
-          .map((c: any) => {
-            const key = String(c?.key ?? "").trim();
-            const label = String(c?.label ?? key).trim();
-            const type = String(c?.type ?? "text").trim() || "text";
-            if (!key) return null;
-            return { key, label, type };
-          })
-          .filter(Boolean)
-          .slice(0, 20)) as Array<{ key: string; label: string; type: string }>;
+    const normalizedColumns = normalizeColumns(rawColumns, requestedCols);
 
     if (normalizedColumns.length === 0) {
       return Response.json({ ok: false, error: "NO_COLUMNS" }, { status: 500 });
     }
 
+    const rawRows = extractRowsCandidate(parsed);
+    const rowsObj = rowsToObjects(rawRows, normalizedColumns, maxRows);
+
+    const modelSources = Array.isArray(parsed?.sources) ? parsed.sources : [];
+    const toolSources = extractWebSources(resp);
+
+    const mergedSources: OutputSource[] = [];
+    const seen = new Set<string>();
+
+    for (const source of [...modelSources, ...toolSources]) {
+      const title = clampString(String((source as any)?.title ?? "").trim(), 300);
+      const url = clampString(String((source as any)?.url ?? "").trim(), 2000);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      mergedSources.push({ title: title || url, url });
+      if (mergedSources.length >= 50) break;
+    }
+
+    const insufficient = Boolean(parsed?.insufficient_evidence) || mergedSources.length === 0;
+
+    const title = clampString(parsed?.title ?? "Web Spreadsheet", 120).trim() || "Web Spreadsheet";
+    const notes = clampString(
+      parsed?.notes ??
+        (insufficient
+          ? "Not enough reliable web evidence was found to populate rows."
+          : `Built from web sources. Sources used: ${mergedSources.length}.`),
+      1200
+    );
+
     const colKeys = normalizedColumns.map((c) => c.key);
     const colLabels = normalizedColumns.map((c) => c.label || c.key);
 
-    const rowsObj = rawRows
-      .map((r: any) => (r && typeof r === "object" ? r : null))
-      .filter(Boolean)
-      .slice(0, maxRows) as Array<Record<string, any>>;
-
-    if (rowsObj.length === 0) {
-      return Response.json({ ok: false, error: "NO_ROWS" }, { status: 500 });
-    }
-
-    const rowsArr = rowsObj.map((r) => colKeys.map((k) => (r?.[k] == null ? "" : String(r[k]))));
+    const finalRowsObj = insufficient ? [] : rowsObj;
+    const rowsArr = finalRowsObj.map((r) => colKeys.map((k) => (r?.[k] == null ? "" : String(r[k]))));
     const csv = toCsv(colLabels, rowsArr);
-
-    const title = clampString(parsed?.title ?? "AI Spreadsheet Draft", 120).trim() || "AI Spreadsheet Draft";
-    const notes = clampString(parsed?.notes ?? "", 1200);
 
     const proposalId = makeId("saigen");
 
@@ -228,9 +397,11 @@ ${requiredColsLine}
       JSON.stringify({
         title,
         columns: normalizedColumns,
-        rows: rowsObj,
+        rows: finalRowsObj,
         notes,
-        source: "ai_generate",
+        sources: mergedSources,
+        insufficient_evidence: insufficient,
+        source: "web_generate",
       })
     );
 
@@ -240,8 +411,10 @@ ${requiredColsLine}
       proposal_id: proposalId,
       title,
       notes,
+      insufficient_evidence: insufficient,
       columns: normalizedColumns,
-      rows: rowsObj,
+      rows: finalRowsObj,
+      sources: mergedSources,
       table: {
         title,
         columns: colLabels,
