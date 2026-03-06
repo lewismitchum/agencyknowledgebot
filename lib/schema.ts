@@ -44,14 +44,6 @@ async function addColumnIfMissing(db: Db, table: string, col: string, sqlTypeAnd
   await db.exec(`ALTER TABLE ${qIdent(table)} ADD COLUMN ${qIdent(col)} ${sqlTypeAndDefault};`);
 }
 
-async function createIndexSafe(db: Db, sql: string) {
-  try {
-    await db.exec(sql);
-  } catch {
-    // Drift-safe: indexes should never block startup
-  }
-}
-
 /**
  * usage_daily has been a drift landmine.
  * If canonical columns are missing, rebuild safely.
@@ -134,14 +126,8 @@ async function ensureUsageDaily(db: Db) {
 
   if (missingCanonical) {
     await rebuildUsageDailyIfNeeded(db);
+    return;
   }
-
-  // ✅ Indexes must be created AFTER drift repair, and never block boot.
-  await createIndexSafe(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_user_date ON usage_daily(agency_id, user_id, date);`
-  );
-  await createIndexSafe(db, `CREATE INDEX IF NOT EXISTS idx_usage_daily_agency_date ON usage_daily(agency_id, date);`);
 }
 
 /**
@@ -368,7 +354,7 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- ✅ Canonical per-user daily usage
+    -- ✅ Canonical per-user daily usage (tz-correct "date" keys)
     CREATE TABLE IF NOT EXISTS usage_daily (
       agency_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -461,6 +447,7 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT
     );
 
+    -- Spreadsheets (proposal + audit trail)
     CREATE TABLE IF NOT EXISTS spreadsheet_proposals (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -487,6 +474,7 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Email drafts (docs-backed)
     CREATE TABLE IF NOT EXISTS email_drafts (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -499,12 +487,13 @@ async function ensureCoreTables(db: Db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- ✅ Email OAuth connections (corp)
     CREATE TABLE IF NOT EXISTS email_accounts (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      email TEXT,
+      provider TEXT NOT NULL, -- 'google'
+      email TEXT, -- mailbox address
       scope TEXT,
       access_token TEXT,
       refresh_token TEXT,
@@ -514,13 +503,14 @@ async function ensureCoreTables(db: Db) {
       UNIQUE(agency_id, user_id, provider)
     );
 
+    -- Helpful indexes
     CREATE INDEX IF NOT EXISTS idx_users_agency ON users(agency_id);
     CREATE INDEX IF NOT EXISTS idx_bots_agency ON bots(agency_id);
     CREATE INDEX IF NOT EXISTS idx_docs_agency_bot ON documents(agency_id, bot_id);
     CREATE INDEX IF NOT EXISTS idx_convos_agency_bot ON conversations(agency_id, bot_id);
     CREATE INDEX IF NOT EXISTS idx_msgs_convo ON conversation_messages(conversation_id, created_at);
 
-    -- (usage_daily indexes are created AFTER drift repair in ensureUsageDaily)
+    -- NOTE: usage_daily indexes are created drift-safe in lib/usage.ts (do not create them here)
 
     CREATE INDEX IF NOT EXISTS idx_events_agency_bot ON schedule_events(agency_id, bot_id, start_at);
     CREATE INDEX IF NOT EXISTS idx_tasks_agency_bot ON schedule_tasks(agency_id, bot_id, status, due_at);
@@ -541,7 +531,8 @@ async function ensureCoreTables(db: Db) {
   // Agency timezone
   await addColumnIfMissing(db, "agencies", "timezone", "TEXT");
 
-  // ✅ User timezone (IANA) — canonical column name: time_zone
+  // ✅ User timezone (IANA)
+  // Canonical column name: time_zone
   await addColumnIfMissing(db, "users", "time_zone", "TEXT");
 
   // Users onboarding drift
