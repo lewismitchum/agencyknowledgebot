@@ -119,13 +119,13 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 }
 
 /**
- * Internal/business question detection (CONSERVATIVE).
- * Only internal if it's clearly about THEIR org/workspace/account/docs.
+ * Internal/business question detection (stricter).
+ * Goal: only treat as "internal" when it plausibly depends on the user's org/client/process/docs.
  */
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
-  if (!t) return false;
 
+  // Expand general starters so ordinary “what are X” questions never become internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -166,6 +166,7 @@ function looksInternalBusinessQuestion(message: string) {
     "our product",
     "our service",
     "our offer",
+    "our pricing",
     "our contract",
     "our invoice",
     "our onboarding",
@@ -177,40 +178,10 @@ function looksInternalBusinessQuestion(message: string) {
     "our messaging",
     "our kpi",
     "our dashboard",
-    "in our workspace",
-    "in my workspace",
-    "in this workspace",
-    "in louis.ai",
-    "in louisai",
   ];
   if (explicitOrgMarkers.some((m) => t.includes(m))) return true;
 
-  const accountContext = [
-    "my ",
-    "our ",
-    "this ",
-    "account",
-    "workspace",
-    "dashboard",
-    "admin",
-    "team",
-    "agency",
-    "client",
-    "project",
-    "bot",
-    "document",
-    "upload",
-    "vector store",
-    "vectorstore",
-    "seat",
-    "member",
-    "invite",
-    "subscription",
-    "checkout",
-    "portal",
-  ];
-
-  const internalNouns = [
+  const internalHints = [
     "pricing",
     "proposal",
     "contract",
@@ -229,6 +200,7 @@ function looksInternalBusinessQuestion(message: string) {
     "deliverable",
     "scope",
     "kpi",
+    "dashboard",
     "workspace settings",
     "seat limit",
     "billing",
@@ -236,17 +208,12 @@ function looksInternalBusinessQuestion(message: string) {
     "plan",
   ];
 
-  const hasInternalNoun = internalNouns.some((h) => t.includes(h));
-  if (!hasInternalNoun) return false;
-
-  const hasAccountContext = accountContext.some((c) => t.includes(c));
-  if (!hasAccountContext) return false;
-
-  return true;
+  return internalHints.some((h) => t.includes(h));
 }
 
 /**
  * Robust evidence detection (file_search results / citations / annotations)
+ * Used ONLY to decide the strict internal fallback.
  */
 function responseHasFileSearchEvidence(resp: any) {
   const seen = new Set<any>();
@@ -518,25 +485,26 @@ export async function POST(req: NextRequest) {
 
       const mediaHint = hasImages
         ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
-        : "If the user asks about the contents of an image/video file, be honest about limitations. Use docs via file_search, and for general knowledge you may use web search.";
+        : "If the user asks about the contents of an image/video file, be honest about limitations.";
 
       // Tools:
-      // - Internal: file_search only (docs-first, no web).
-      // - Non-internal: web_search + optional file_search.
-      const fileSearchTool = bot.vector_store_id
-        ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }]
-        : [];
-
-      const tools = internal ? fileSearchTool : [...fileSearchTool, { type: "web_search_preview" as const }];
+      // - Internal/business => docs-only (file_search). If no evidence => strict fallback.
+      // - Non-internal => allow public web_search (and also file_search if available).
+      const tools: any[] = [];
+      if (internal) {
+        if (bot.vector_store_id) tools.push({ type: "file_search", vector_store_ids: [bot.vector_store_id] });
+      } else {
+        tools.push({ type: "web_search" });
+        if (bot.vector_store_id) tools.push({ type: "file_search", vector_store_ids: [bot.vector_store_id] });
+      }
 
       const fallbackInstruction = internal
         ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
 ${FALLBACK}
 Do not add extra words before or after the fallback.`
-        : `This is NOT an internal/business question.
-You may use web search to answer with public sources.
-Do NOT use this exact sentence in your reply: ${FALLBACK}
-If you used web search, include a short "Sources:" section with 2–5 links.`;
+        : `This is NOT an internal/business question. Answer normally using general knowledge and (if needed) web_search.
+Do NOT say: "${FALLBACK}"
+Do NOT mention "uploaded files" unless the user asked about them.`;
 
       const inputBlocks: any[] = [
         {
@@ -553,13 +521,13 @@ If you used web search, include a short "Sources:" section with 2–5 links.`;
 
       const resp = await openai.responses.create({
         model: "gpt-4.1-mini",
+        tool_choice: "auto",
         instructions: `
 You are Louis.Ai.
 
 Behavior:
-- Docs-first: for internal/business questions, prioritize uploaded docs via file_search.
-- General questions (non-internal): answer normally using general knowledge + web search.
-- Never fabricate internal/company-specific details.
+- Internal/business questions: be docs-first using file_search. Never fabricate company-specific details.
+- Non-internal questions: answer normally, and you MAY use web_search to be accurate/up-to-date.
 - ${mediaHint}
 - ${fallbackInstruction}
 ${
@@ -575,14 +543,16 @@ ${
       const modelText =
         typeof resp.output_text === "string" && resp.output_text.trim().length > 0 ? resp.output_text.trim() : "";
 
-      // Internal-only enforcement of fallback when docs have no evidence
-      const hasFileEvidence = fileSearchTool.length > 0 ? responseHasFileSearchEvidence(resp) : false;
+      // Strict fallback logic (internal only)
+      const hasFileSearchTool = tools.some((t) => t?.type === "file_search");
+      const hasEvidence = hasFileSearchTool ? responseHasFileSearchEvidence(resp) : false;
 
-      if (internal && fileSearchTool.length === 0) {
+      if (internal && !hasFileSearchTool) {
         answer = FALLBACK;
-      } else if (internal && fileSearchTool.length > 0 && !hasFileEvidence) {
+      } else if (internal && hasFileSearchTool && !hasEvidence) {
         answer = FALLBACK;
       } else {
+        // Extra guard: never allow the exact fallback sentence on non-internal questions
         if (!internal && modelText === FALLBACK) {
           answer = "Sorry — I couldn’t generate a response.";
         } else {
