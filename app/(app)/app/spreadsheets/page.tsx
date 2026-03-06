@@ -70,6 +70,53 @@ function toRowArrays(columns: GenColumn[], rows: Array<Record<string, any>>): st
   return (rows || []).map((r) => keys.map((k) => (r?.[k] === null || r?.[k] === undefined ? "" : String(r[k]))));
 }
 
+function normalizeTableRows(input: any): string[][] {
+  if (!Array.isArray(input)) return [];
+  return input.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : []));
+}
+
+function extractGeneratedTable(j: any, fallbackTitle: string): GeneratedTable | null {
+  const tableCols = Array.isArray(j?.table?.columns)
+    ? j.table.columns.map((c: any) => String(c ?? "").trim()).filter(Boolean)
+    : [];
+
+  const tableRows = normalizeTableRows(j?.table?.rows);
+
+  if (tableCols.length > 0) {
+    return {
+      title:
+        typeof j?.table?.title === "string" && j.table.title.trim()
+          ? j.table.title
+          : typeof j?.title === "string" && j.title.trim()
+            ? j.title
+            : fallbackTitle,
+      columns: tableCols,
+      rows: tableRows,
+      notes:
+        typeof j?.table?.notes === "string"
+          ? j.table.notes
+          : typeof j?.notes === "string"
+            ? j.notes
+            : "",
+    };
+  }
+
+  const colsObj = Array.isArray(j?.columns) ? (j.columns as GenColumn[]) : [];
+  const rowsObj = Array.isArray(j?.rows) ? (j.rows as Array<Record<string, any>>) : [];
+
+  if (colsObj.length === 0) return null;
+
+  const displayCols = colsObj.map((c) => String(c?.label || c?.key || "").trim()).filter(Boolean);
+  const rowArrays = toRowArrays(colsObj, rowsObj);
+
+  return {
+    title: typeof j?.title === "string" && j.title.trim() ? j.title : fallbackTitle,
+    columns: displayCols.length ? displayCols : colsObj.map((c) => String(c.key)),
+    rows: rowArrays,
+    notes: typeof j?.notes === "string" ? j.notes : "",
+  };
+}
+
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
@@ -377,24 +424,14 @@ export default function SpreadsheetsPage() {
         return;
       }
 
-      const colsObj = Array.isArray(j?.columns) ? (j.columns as GenColumn[]) : null;
-      const rowsObj = Array.isArray(j?.rows) ? (j.rows as Array<Record<string, any>>) : null;
+      const table = extractGeneratedTable(j, "Generated Spreadsheet");
 
-      if (!colsObj || !rowsObj || colsObj.length === 0) {
+      if (!table || table.columns.length === 0) {
         setGenFallback("I don’t have that information in the docs yet.");
         return;
       }
 
-      const displayCols = colsObj.map((c) => String(c?.label || c?.key || "").trim()).filter(Boolean);
-      const rowArrays = toRowArrays(colsObj, rowsObj);
-
-      setGenTable({
-        title: typeof j?.title === "string" && j.title.trim() ? j.title : "Generated Spreadsheet",
-        columns: displayCols.length ? displayCols : colsObj.map((c) => String(c.key)),
-        rows: rowArrays,
-        notes: typeof j?.notes === "string" ? j.notes : "",
-      });
-
+      setGenTable(table);
       setGenCsv(typeof j?.csv === "string" ? j.csv : "");
       setGenProposalId(typeof j?.proposal_id === "string" ? j.proposal_id : null);
     } catch (e: any) {
@@ -536,24 +573,14 @@ export default function SpreadsheetsPage() {
         body: JSON.stringify(payload),
       });
 
-      const colsObj = Array.isArray(j?.columns) ? (j.columns as GenColumn[]) : null;
-      const rowsObj = Array.isArray(j?.rows) ? (j.rows as Array<Record<string, any>>) : null;
+      const table = extractGeneratedTable(j, "AI Spreadsheet Draft");
 
-      if (!colsObj || !rowsObj || colsObj.length === 0 || rowsObj.length === 0) {
+      if (!table || table.columns.length === 0) {
         setAiError("Failed to generate AI spreadsheet");
         return;
       }
 
-      const displayCols = colsObj.map((c) => String(c?.label || c?.key || "").trim()).filter(Boolean);
-      const rowArrays = toRowArrays(colsObj, rowsObj);
-
-      setAiTable({
-        title: typeof j?.title === "string" && j.title.trim() ? j.title : "AI Spreadsheet Draft",
-        columns: displayCols.length ? displayCols : colsObj.map((c) => String(c.key)),
-        rows: rowArrays,
-        notes: typeof j?.notes === "string" ? j.notes : "",
-      });
-
+      setAiTable(table);
       setAiCsv(typeof j?.csv === "string" ? j.csv : "");
       setAiProposalId(typeof j?.proposal_id === "string" ? j.proposal_id : null);
     } catch (e: any) {

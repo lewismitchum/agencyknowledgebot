@@ -18,6 +18,12 @@ type GenerateBody = {
   max_rows?: number;
 };
 
+type OutputColumn = {
+  key: string;
+  label: string;
+  type: string;
+};
+
 function clampString(s: string, max: number) {
   const t = String(s ?? "");
   return t.length > max ? t.slice(0, max) : t;
@@ -41,6 +47,12 @@ function extractJsonFromText(text: string): any | null {
   const m = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (m?.[1]) {
     const inner = safeJsonParse(m[1].trim());
+    if (inner) return inner;
+  }
+
+  const arrayMatch = t.match(/\[[\s\S]*\]/);
+  if (arrayMatch?.[0]) {
+    const inner = safeJsonParse(arrayMatch[0]);
     if (inner) return inner;
   }
 
@@ -108,6 +120,105 @@ async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
   return userBot?.id ?? null;
 }
 
+function normalizeColumnKey(input: string) {
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function normalizeColumns(columnsRaw: any[], requestedCols: string[]) {
+  const requested = requestedCols
+    .map((c) => normalizeColumnKey(c))
+    .filter(Boolean)
+    .slice(0, 30);
+
+  if (requested.length) {
+    return requested.map((key) => ({
+      key,
+      label: key,
+      type: "text",
+    })) as OutputColumn[];
+  }
+
+  const normalized = (Array.isArray(columnsRaw) ? columnsRaw : [])
+    .map((c: any) => {
+      if (typeof c === "string") {
+        const key = normalizeColumnKey(c);
+        if (!key) return null;
+        return { key, label: String(c).trim() || key, type: "text" };
+      }
+
+      const rawKey = String(c?.key ?? c?.label ?? "").trim();
+      const key = normalizeColumnKey(rawKey);
+      if (!key) return null;
+
+      const label = String(c?.label ?? rawKey ?? key).trim() || key;
+      const type = String(c?.type ?? "text").trim() || "text";
+      return { key, label, type };
+    })
+    .filter(Boolean) as OutputColumn[];
+
+  const deduped: OutputColumn[] = [];
+  const seen = new Set<string>();
+
+  for (const col of normalized) {
+    if (seen.has(col.key)) continue;
+    seen.add(col.key);
+    deduped.push(col);
+    if (deduped.length >= 30) break;
+  }
+
+  return deduped;
+}
+
+function extractRowsCandidate(parsed: any): any[] {
+  if (Array.isArray(parsed?.rows)) return parsed.rows;
+  if (Array.isArray(parsed?.data)) return parsed.data;
+  if (Array.isArray(parsed?.items)) return parsed.items;
+  if (Array.isArray(parsed?.table?.rows)) return parsed.table.rows;
+  if (Array.isArray(parsed)) return parsed;
+  return [];
+}
+
+function rowsToObjects(rowsRaw: any[], outputColumns: OutputColumn[], maxRows: number) {
+  const colKeys = outputColumns.map((c) => c.key);
+
+  const rows = (Array.isArray(rowsRaw) ? rowsRaw : []).slice(0, maxRows);
+
+  return rows
+    .map((row: any) => {
+      if (Array.isArray(row)) {
+        const obj: Record<string, string> = {};
+        for (let i = 0; i < colKeys.length; i++) {
+          obj[colKeys[i]] = row?.[i] == null ? "" : String(row[i]);
+        }
+        return obj;
+      }
+
+      if (row && typeof row === "object") {
+        const normalizedRow: Record<string, string> = {};
+
+        for (const key of colKeys) {
+          if (row[key] != null) {
+            normalizedRow[key] = String(row[key]);
+            continue;
+          }
+
+          const matchingEntry = Object.entries(row).find(([rawKey]) => normalizeColumnKey(rawKey) === key);
+          normalizedRow[key] = matchingEntry?.[1] == null ? "" : String(matchingEntry[1]);
+        }
+
+        return normalizedRow;
+      }
+
+      return null;
+    })
+    .filter(Boolean) as Array<Record<string, string>>;
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -133,7 +244,7 @@ export async function POST(req: NextRequest) {
     const maxRows = Number.isFinite(maxRowsRaw) ? Math.max(1, Math.min(500, Math.floor(maxRowsRaw))) : 200;
 
     const requestedCols = Array.isArray(body?.columns)
-      ? body.columns.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 40)
+      ? body.columns.map((s) => normalizeColumnKey(String(s || ""))).filter(Boolean).slice(0, 40)
       : [];
 
     if (!userPrompt) {
@@ -191,11 +302,13 @@ Rules:
 - rows.length must be 0..${maxRows}
 - Keys must be snake_case, stable
 - Do NOT invent facts. If docs don't support values, set insufficient_evidence=true and return empty rows.
+- Every row must include values for the requested/generated columns.
 - If the user provided required columns, you MUST use them as keys in that order.
+- Return multiple rows whenever the docs support multiple records. Do not return only headers unless there is truly no evidence.
 `.trim();
 
     const requiredColsLine = requestedCols.length
-      ? `\nRequired columns (use these keys in this order): ${requestedCols.join(", ")}\n`
+      ? `\nRequired columns (use these exact keys in this order): ${requestedCols.join(", ")}\n`
       : "\n";
 
     const prompt = `
@@ -273,22 +386,9 @@ ${requiredColsLine}
     const notes = clampString((parsed as any)?.notes ?? "", 1200);
 
     const columnsRaw = Array.isArray((parsed as any)?.columns) ? (parsed as any).columns : [];
-    const rowsRaw = Array.isArray((parsed as any)?.rows) ? (parsed as any).rows : [];
+    const outputColumns = normalizeColumns(columnsRaw, requestedCols);
 
-    const columnsNorm = columnsRaw
-      .map((c: any) => {
-        const key = String(c?.key ?? "").trim();
-        const label = String(c?.label ?? "").trim();
-        const type = String(c?.type ?? "text").trim();
-        if (!key) return null;
-        return { key, label: label || key, type: type || "text" };
-      })
-      .filter(Boolean)
-      .slice(0, 30) as Array<{ key: string; label: string; type: string }>;
-
-    const colKeys = requestedCols.length ? requestedCols.slice(0, 30) : columnsNorm.map((c) => c.key);
-
-    if (colKeys.length === 0) {
+    if (outputColumns.length === 0) {
       return Response.json(
         {
           ok: true,
@@ -302,27 +402,11 @@ ${requiredColsLine}
       );
     }
 
-    const labelByKey = new Map<string, string>();
-    const typeByKey = new Map<string, string>();
-
-    for (const c of columnsNorm) {
-      labelByKey.set(c.key, c.label || c.key);
-      typeByKey.set(c.key, c.type || "text");
-    }
-
-    const outputColumns = colKeys.map((key) => ({
-      key,
-      label: labelByKey.get(key) || key,
-      type: typeByKey.get(key) || "text",
-    }));
+    const rowsRaw = extractRowsCandidate(parsed);
+    const rowsObj = rowsToObjects(rowsRaw, outputColumns, maxRows);
 
     const colLabels = outputColumns.map((c) => c.label);
-
-    const rowsObj = rowsRaw
-      .map((r: any) => (r && typeof r === "object" ? r : null))
-      .filter(Boolean)
-      .slice(0, maxRows) as Array<Record<string, any>>;
-
+    const colKeys = outputColumns.map((c) => c.key);
     const rowsArr: string[][] = rowsObj.map((r) => colKeys.map((k) => (r?.[k] == null ? "" : String(r[k]))));
     const csv = toCsv(colLabels, rowsArr);
 
