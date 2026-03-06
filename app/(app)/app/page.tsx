@@ -150,7 +150,7 @@ export default function DashboardPage() {
             </div>
 
             <div className="rounded-2xl border bg-background/40 p-4">
-              <div className="text-sm font-medium">3) Extract tasks + events (Starter+)</div>
+              <div className="text-sm font-medium">3) Extract tasks + events (home+)</div>
               <div className="mt-1 text-xs text-muted-foreground">Turn messy docs into a clean schedule in seconds.</div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Link href="/app/schedule" className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">
@@ -268,7 +268,7 @@ export default function DashboardPage() {
               </div>
 
               <div className="rounded-2xl border bg-background/40 p-4">
-                <div className="text-sm font-medium">3) Extract tasks + events (Starter+)</div>
+                <div className="text-sm font-medium">3) Extract tasks + events (home+)</div>
                 <div className="mt-1 text-xs text-muted-foreground">Turn messy documents into a clean schedule in seconds.</div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Link href="/app/schedule" className="rounded-xl border px-3 py-2 text-sm hover:bg-accent">

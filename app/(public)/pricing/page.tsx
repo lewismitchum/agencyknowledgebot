@@ -17,7 +17,7 @@ export default function PricingPage() {
           </p>
           <p className="mt-3 text-sm text-muted-foreground">
             <span className="font-medium text-foreground">Paid feature note:</span>{" "}
-            schedule/to-do/calendar extraction is available on Starter+ (server-side
+            schedule/to-do/calendar extraction is available on home+ (server-side
             enforced).
           </p>
         </div>
@@ -41,7 +41,7 @@ export default function PricingPage() {
           />
 
           <PlanCard
-            name="Starter"
+            name="home"
             price="$79–$99"
             cadence="/mo"
             highlight="Schedule + extraction"

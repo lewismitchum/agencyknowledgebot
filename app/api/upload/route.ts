@@ -26,7 +26,7 @@ function nowIso() {
 function maxBytesForPlan(plan: string): number {
   const p = normalizePlan(plan);
   if (p === "free") return 25 * 1024 * 1024; // 25MB
-  if (p === "starter") return 25 * 1024 * 1024; // 25MB
+  if (p === "home") return 25 * 1024 * 1024; // 25MB
   if (p === "pro") return 100 * 1024 * 1024; // 100MB
   if (p === "enterprise") return 250 * 1024 * 1024; // 250MB
   return 500 * 1024 * 1024; // corporation
@@ -209,7 +209,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      if ((planKey === "free" || planKey === "starter") && kind === "other") {
+      if ((planKey === "free" || planKey === "home") && kind === "other") {
         return Response.json(
           { ok: false, error: "MIME_NOT_ALLOWED", message: `This file type is not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
           { status: 415 }

@@ -40,7 +40,7 @@ type MeResponse =
 function normalizeUiPlan(p: string | null | undefined): PlanKey {
   const s = String(p ?? "").trim().toLowerCase();
   if (!s) return "free";
-  if (s === "starter") return "home";
+  if (s === "home") return "home";
   if (s === "personal") return "home";
   if (s === "home") return "home";
   if (s === "free") return "free";
@@ -228,7 +228,7 @@ function BillingContent() {
     try {
       setLoadingPlan(plan);
 
-      // Server should accept legacy "starter" too, but we send canonical "home".
+      // Server should accept legacy "home" too, but we send canonical "home".
       const data = await fetchJson<any>("/api/billing/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },

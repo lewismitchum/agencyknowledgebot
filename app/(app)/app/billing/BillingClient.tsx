@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
-type PlanKey = "free" | "starter" | "pro" | "enterprise";
+type PlanKey = "free" | "home" | "pro" | "enterprise";
 
 const PLANS: {
   key: PlanKey;
@@ -29,8 +29,8 @@ const PLANS: {
     cta: "Current plan",
   },
   {
-    key: "starter",
-    name: "Starter",
+    key: "home",
+    name: "home",
     price: "$—/mo",
     subtitle: "Higher limits • schedule enabled",
     badge: "Most popular",
@@ -57,7 +57,7 @@ const PLANS: {
 
 function normalizePlan(plan: any): PlanKey {
   const p = String(plan || "").toLowerCase().trim();
-  if (p === "starter" || p === "pro" || p === "enterprise") return p;
+  if (p === "home" || p === "pro" || p === "enterprise") return p;
   return "free";
 }
 

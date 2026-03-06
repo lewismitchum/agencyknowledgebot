@@ -11,7 +11,7 @@ export type FeatureKey =
 
 /**
  * Normalize anything from DB/Stripe/UI into our canonical PlanKey.
- * Supports legacy names: starter/personal -> home
+ * Supports legacy names: home/personal -> home
  */
 export function normalizePlan(input: unknown): PlanKey {
   const s = String(input ?? "")
@@ -21,7 +21,7 @@ export function normalizePlan(input: unknown): PlanKey {
   if (!s) return "free";
 
   // legacy aliases
-  if (s === "starter") return "home";
+  if (s === "home") return "home";
   if (s === "personal") return "home";
   if (s === "home") return "home";
 
@@ -35,7 +35,7 @@ export function normalizePlan(input: unknown): PlanKey {
   if (s.includes("enterprise")) return "enterprise";
   if (s.includes("corporation") || s.includes("corp")) return "corporation";
   if (s.includes("pro")) return "pro";
-  if (s.includes("home") || s.includes("starter") || s.includes("personal")) return "home";
+  if (s.includes("home") || s.includes("home") || s.includes("personal")) return "home";
 
   return "free";
 }

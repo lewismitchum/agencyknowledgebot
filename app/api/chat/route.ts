@@ -26,7 +26,7 @@ type ChatBody = {
 function summarizeThresholdForPlan(plan: string | null) {
   const p = String(plan ?? "free").toLowerCase();
   if (p === "free") return 20;
-  if (p === "starter") return 30;
+  if (p === "home") return 30;
   if (p === "pro") return 40;
   if (p === "enterprise") return 50;
   if (p === "corporation") return 60;
@@ -125,7 +125,7 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
-  // ✅ Expand general starters so ordinary “what are X” questions never become internal.
+  // ✅ Expand general homes so ordinary “what are X” questions never become internal.
   const generalStarters = [
     "what time",
     "what day",

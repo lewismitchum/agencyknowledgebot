@@ -2,12 +2,12 @@
 
 import { normalizePlan } from "@/lib/plans";
 
-export type PlanId = "free" | "starter" | "pro" | "team" | "enterprise";
+export type PlanId = "free" | "home" | "pro" | "team" | "enterprise";
 
 /**
  * Single source of truth for "paid feature" gating.
  * - Free: docs/chat only
- * - Paid (starter+): unlock schedule/calendar/to-do extraction
+ * - Paid (home+): unlock schedule/calendar/to-do extraction
  */
 export function isPaidPlan(plan: string | null | undefined): boolean {
   const p = normalizePlan(plan) as PlanId;
