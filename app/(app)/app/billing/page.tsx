@@ -291,8 +291,7 @@ function BillingContent() {
     const ac = new AbortController();
     loadMeOnce(ac.signal).catch(() => {});
     return () => ac.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activePlanKeySet]);
 
   useEffect(() => {
     if (!isSuccess) return;
@@ -330,8 +329,7 @@ function BillingContent() {
       stopped = true;
       ac.abort();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSuccess]);
+  }, [isSuccess, activePlanKeySet]);
 
   async function startCheckout(plan: "home" | "pro" | "enterprise" | "corporation") {
     try {
@@ -600,6 +598,17 @@ function BillingContent() {
             >
               {portalLoading ? "Opening..." : "Manage subscription"}
             </Button>
+
+            {isPaid && hasStripeCustomer ? (
+              <Button
+                variant="destructive"
+                onClick={openPortal}
+                disabled={portalLoading}
+                className="h-11 rounded-2xl"
+              >
+                {portalLoading ? "Opening..." : "Cancel subscription"}
+              </Button>
+            ) : null}
 
             <Button asChild variant="outline" className="h-11 rounded-2xl">
               <Link href="/pricing">
