@@ -1,8 +1,8 @@
-// app/(app)/app/extractions/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { FileSearch, Pencil, RefreshCw, Trash2 } from "lucide-react";
 
 type ExtractionRunRow = {
@@ -32,12 +32,18 @@ async function readJsonSafe(r: Response) {
 }
 
 export default function ExtractionsPage() {
+  const searchParams = useSearchParams();
+  const deepLinkedExtractionId = String(searchParams.get("id") || "").trim();
+
   const [runs, setRuns] = useState<ExtractionRunRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<string>("");
+
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const didScrollToExtractionRef = useRef(false);
 
   const count = useMemo(() => runs.length, [runs]);
 
@@ -190,6 +196,23 @@ export default function ExtractionsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!deepLinkedExtractionId) return;
+    if (loading) return;
+    if (didScrollToExtractionRef.current) return;
+
+    const target = runs.find((r) => r.id === deepLinkedExtractionId);
+    if (!target) return;
+
+    const el = rowRefs.current[deepLinkedExtractionId];
+    if (!el) return;
+
+    didScrollToExtractionRef.current = true;
+    window.setTimeout(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+  }, [deepLinkedExtractionId, runs, loading]);
+
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-8">
       <section className="relative overflow-hidden rounded-[32px] border bg-gradient-to-br from-background via-background to-muted/40 p-6 shadow-sm md:p-8">
@@ -208,8 +231,16 @@ export default function ExtractionsPage() {
               Review extraction runs, rename them for clarity, and remove old history when needed.
             </p>
 
-            <div className="mt-5 rounded-full border bg-background/70 px-3 py-1 text-xs text-muted-foreground inline-flex">
-              {loading ? "Loading…" : `${count} run${count === 1 ? "" : "s"}`}
+            <div className="mt-5 flex flex-wrap gap-2">
+              <div className="rounded-full border bg-background/70 px-3 py-1 text-xs text-muted-foreground inline-flex">
+                {loading ? "Loading…" : `${count} run${count === 1 ? "" : "s"}`}
+              </div>
+
+              {deepLinkedExtractionId ? (
+                <div className="rounded-full border bg-primary/10 px-3 py-1 text-xs text-primary inline-flex">
+                  Deep link active
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -269,9 +300,19 @@ export default function ExtractionsPage() {
                 runs.map((r) => {
                   const isEditing = renamingId === r.id;
                   const displayName = String(r.display_title || r.title || "Extraction");
+                  const isTargetExtraction = !!deepLinkedExtractionId && r.id === deepLinkedExtractionId;
 
                   return (
-                    <tr key={r.id} className="border-b last:border-b-0">
+                    <tr
+                      key={r.id}
+                      ref={(el) => {
+                        rowRefs.current[r.id] = el;
+                      }}
+                      className={[
+                        "border-b last:border-b-0",
+                        isTargetExtraction ? "bg-primary/5" : "",
+                      ].join(" ")}
+                    >
                       <td className="px-4 py-3 align-top">
                         {isEditing ? (
                           <div className="space-y-2">
@@ -301,14 +342,45 @@ export default function ExtractionsPage() {
                           </div>
                         ) : (
                           <>
-                            <div className="font-medium">{displayName}</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="font-medium">{displayName}</div>
+                              {isTargetExtraction ? (
+                                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-medium text-primary">
+                                  Linked item
+                                </span>
+                              ) : null}
+                            </div>
                             <div className="text-xs text-muted-foreground">{r.id}</div>
                           </>
                         )}
                       </td>
 
-                      <td className="px-4 py-3 align-top text-muted-foreground">{r.document_id || "—"}</td>
-                      <td className="px-4 py-3 align-top text-muted-foreground">{r.bot_id || "—"}</td>
+                      <td className="px-4 py-3 align-top text-muted-foreground">
+                        {r.document_id ? (
+                          <Link
+                            href={`/app/docs?bot_id=${encodeURIComponent(r.bot_id)}&doc_id=${encodeURIComponent(r.document_id)}`}
+                            className="underline underline-offset-2"
+                          >
+                            {r.document_id}
+                          </Link>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
+                      <td className="px-4 py-3 align-top text-muted-foreground">
+                        {r.bot_id ? (
+                          <Link
+                            href={`/app/docs?bot_id=${encodeURIComponent(r.bot_id)}`}
+                            className="underline underline-offset-2"
+                          >
+                            {r.bot_id}
+                          </Link>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
                       <td className="px-4 py-3 align-top text-muted-foreground">{formatDate(r.created_at)}</td>
 
                       <td className="px-4 py-3 text-right align-top">

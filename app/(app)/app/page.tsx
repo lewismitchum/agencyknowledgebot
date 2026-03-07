@@ -1,4 +1,3 @@
-// app/(app)/app/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -6,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bell,
   Bot,
+  Brain,
   CalendarDays,
   CheckCircle2,
   ChevronRight,
@@ -515,6 +515,37 @@ export default function DashboardPage() {
         />
       </div>
 
+      <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/60 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              <Brain className="h-3.5 w-3.5" />
+              Agency Brain
+            </div>
+            <div className="mt-3 text-lg font-medium tracking-tight">Open the shared intelligence layer for your agency.</div>
+            <div className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Use Agency Brain as the central place for shared knowledge, private context, documents, schedule activity,
+              and inbox-driven workflows.
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/app/brain"
+              className="inline-flex items-center justify-center rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
+            >
+              Open Agency Brain
+            </Link>
+            <Link
+              href="/app/docs"
+              className="inline-flex items-center justify-center rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+            >
+              Add knowledge
+            </Link>
+          </div>
+        </div>
+      </div>
+
       {showOnboarding ? (
         <div className="rounded-[28px] border bg-card/75 p-6 shadow-sm backdrop-blur">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -607,6 +638,12 @@ export default function DashboardPage() {
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <Link
+            href="/app/brain"
+            className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+          >
+            Brain
+          </Link>
+          <Link
             href="/app/usage"
             className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
           >
@@ -654,6 +691,12 @@ export default function DashboardPage() {
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <ActionLink
+                href="/app/brain"
+                icon={<Brain className="h-4 w-4" />}
+                title="Open Agency Brain"
+                desc="Go to the shared intelligence layer for your whole agency."
+              />
+              <ActionLink
                 href="/app/docs"
                 icon={<FileText className="h-4 w-4" />}
                 title="Upload / Manage Docs"
@@ -699,6 +742,28 @@ export default function DashboardPage() {
             </div>
 
             <div className="mt-4 space-y-3">
+              <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
+                <div className="flex items-start gap-3">
+                  <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
+                    <Brain className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium">Use Agency Brain as your command center</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Centralize docs, bots, schedule activity, and email workflows in one shared workspace view.
+                    </div>
+                    <div className="mt-3">
+                      <Link
+                        href="/app/brain"
+                        className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+                      >
+                        Open Agency Brain
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {!progress.uploaded_first_doc ? (
                 <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
                   <div className="flex items-start gap-3">

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { UpgradeGate } from "@/components/upgrade-gate";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 import {
@@ -119,6 +120,10 @@ function TopStat({
 const BOT_STORAGE_KEY = "louis.docs.selectedBotId";
 
 export default function DocsPage() {
+  const searchParams = useSearchParams();
+  const deepLinkedBotId = String(searchParams.get("bot_id") || "").trim();
+  const deepLinkedDocId = String(searchParams.get("doc_id") || "").trim();
+
   const [bots, setBots] = useState<BotRow[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<string>("");
 
@@ -142,6 +147,10 @@ export default function DocsPage() {
   const [uploadsUsed, setUploadsUsed] = useState<number>(0);
   const [uploadsLimit, setUploadsLimit] = useState<number | null>(null);
   const [uploadsRemaining, setUploadsRemaining] = useState<number | null>(null);
+
+  const docRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const didApplyQueryBotRef = useRef(false);
+  const didScrollToDocRef = useRef(false);
 
   const planKey = String(plan ?? "").toLowerCase();
   const isProPlus = planKey === "pro" || planKey === "enterprise" || planKey === "corporation";
@@ -209,7 +218,8 @@ export default function DocsPage() {
         (nextBots[0]?.id ?? "");
 
       const def = nextBots.find((b) => b.owner_user_id == null)?.id ?? null;
-      const chosen = def ?? initial;
+      const queryBot = deepLinkedBotId && nextBots.some((b) => b.id === deepLinkedBotId) ? deepLinkedBotId : null;
+      const chosen = queryBot ?? def ?? initial;
 
       setSelectedBotId((prev) => prev || chosen);
     } catch (e: any) {
@@ -265,7 +275,18 @@ export default function DocsPage() {
   useEffect(() => {
     loadBots();
     refreshMe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!bots.length) return;
+    if (didApplyQueryBotRef.current) return;
+    if (!deepLinkedBotId) return;
+    if (!bots.some((b) => b.id === deepLinkedBotId)) return;
+
+    didApplyQueryBotRef.current = true;
+    setSelectedBotId(deepLinkedBotId);
+  }, [bots, deepLinkedBotId]);
 
   useEffect(() => {
     if (!selectedBotId) return;
@@ -274,9 +295,27 @@ export default function DocsPage() {
       window.localStorage.setItem(BOT_STORAGE_KEY, selectedBotId);
     } catch {}
 
+    didScrollToDocRef.current = false;
     loadDocs(selectedBotId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBotId]);
+
+  useEffect(() => {
+    if (!deepLinkedDocId) return;
+    if (loading) return;
+    if (didScrollToDocRef.current) return;
+
+    const target = docs.find((d) => d.id === deepLinkedDocId);
+    if (!target) return;
+
+    const el = docRefs.current[deepLinkedDocId];
+    if (!el) return;
+
+    didScrollToDocRef.current = true;
+    window.setTimeout(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+  }, [deepLinkedDocId, docs, loading]);
 
   const count = useMemo(() => docs.length, [docs]);
 
@@ -571,6 +610,12 @@ export default function DocsPage() {
                   Vector store missing
                 </span>
               ) : null}
+
+              {deepLinkedDocId ? (
+                <span className="rounded-full border bg-primary/10 px-3 py-1 text-xs text-primary">
+                  Deep link active
+                </span>
+              ) : null}
             </div>
           </div>
 
@@ -763,11 +808,18 @@ export default function DocsPage() {
             {docs.map((doc) => {
               const mimeLabel = labelMime(doc.mime_type);
               const isEditing = renamingId === doc.id;
+              const isTargetDoc = !!deepLinkedDocId && doc.id === deepLinkedDocId;
 
               return (
                 <div
                   key={doc.id}
-                  className="rounded-[28px] border bg-card/80 p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md"
+                  ref={(el) => {
+                    docRefs.current[doc.id] = el;
+                  }}
+                  className={[
+                    "rounded-[28px] border bg-card/80 p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md",
+                    isTargetDoc ? "border-primary ring-2 ring-primary/20" : "",
+                  ].join(" ")}
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
@@ -805,9 +857,17 @@ export default function DocsPage() {
                             </div>
                           ) : (
                             <>
-                              <div className="truncate text-base font-semibold tracking-tight">
-                                {doc.filename}
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="truncate text-base font-semibold tracking-tight">
+                                  {doc.filename}
+                                </div>
+                                {isTargetDoc ? (
+                                  <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-medium text-primary">
+                                    Linked item
+                                  </span>
+                                ) : null}
                               </div>
+
                               <div className="mt-1 flex flex-wrap gap-2">
                                 {mimeLabel ? (
                                   <span className="rounded-full border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">

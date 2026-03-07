@@ -20,6 +20,7 @@ import {
   Rocket,
   Mail,
   Sheet as SheetIcon,
+  Brain,
 } from "lucide-react";
 import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
@@ -147,19 +148,16 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
 
   const show = starts("/app");
 
-  // Make sure the active tab is visible by auto-scrolling it into view.
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
     const activeEl = el.querySelector('[data-active="true"]') as HTMLElement | null;
     if (!activeEl) return;
 
-    // Try to center the active tab
     const left = activeEl.offsetLeft - el.clientWidth / 2 + activeEl.clientWidth / 2;
     el.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
   }, [pathname]);
 
-  // Prevent content being hidden behind the bottom nav on mobile.
   useEffect(() => {
     if (!show) return;
 
@@ -195,7 +193,6 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
       ].join(" ")}
     >
       <div className="mx-auto w-full max-w-6xl px-2 py-2">
-        {/* ✅ Clearly scrollable + snap */}
         <div
           ref={scrollerRef}
           className={[
@@ -204,7 +201,7 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
             "[-webkit-overflow-scrolling:touch]",
             "snap-x snap-mandatory",
             "scrollbar-none",
-            "pr-4", // gives a tiny hint there's more to scroll
+            "pr-4",
           ].join(" ")}
           style={{ touchAction: "pan-x" }}
         >
@@ -216,6 +213,17 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                   icon={<LayoutDashboard className="h-5 w-5" />}
                   active={isActive("/app")}
                   onGo={() => router.push("/app")}
+                />
+              </div>
+            </div>
+
+            <div className="snap-start">
+              <div data-active={starts("/app/brain") ? "true" : "false"}>
+                <MobileTabButton
+                  label="Brain"
+                  icon={<Brain className="h-5 w-5" />}
+                  active={starts("/app/brain")}
+                  onGo={() => router.push("/app/brain")}
                 />
               </div>
             </div>
@@ -392,12 +400,10 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
               </Sheet>
             </div>
 
-            {/* tiny end padding */}
             <div className="w-2 shrink-0" />
           </div>
         </div>
 
-        {/* ✅ subtle gradient hint that it scrolls */}
         <div className="pointer-events-none absolute bottom-0 right-0 h-[72px] w-10 bg-gradient-to-l from-background/90 to-transparent" />
       </div>
     </div>
@@ -411,7 +417,6 @@ export default function Navbar() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const isAuthed = Boolean(me && (me as any)?.user?.email);
 
-  // --- Docs-in-nav state ---
   const botFromUrl = String(searchParams.get("bot_id") || "").trim();
   const [bots, setBots] = useState<BotRow[]>([]);
   const [docs, setDocs] = useState<DocRow[]>([]);
@@ -425,16 +430,13 @@ export default function Navbar() {
 
   const docsPanelRef = useRef<HTMLDivElement | null>(null);
 
-  // --- Notifications badge ---
   const [notifUnread, setNotifUnread] = useState(0);
 
-  // Keep active bot in sync with URL param
   useEffect(() => {
     if (botFromUrl && botFromUrl !== activeBotId) setActiveBotId(botFromUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botFromUrl]);
 
-  // Close docs panel on outside click / route change
   useEffect(() => {
     function onDown(e: MouseEvent) {
       if (!docsOpen) return;
@@ -450,7 +452,6 @@ export default function Navbar() {
     setDocsOpen(false);
   }, [pathname]);
 
-  // Session
   useEffect(() => {
     (async () => {
       try {
@@ -466,7 +467,6 @@ export default function Navbar() {
     })();
   }, []);
 
-  // Load bots (for docs panel)
   useEffect(() => {
     if (!isAuthed) return;
 
@@ -483,7 +483,6 @@ export default function Navbar() {
 
         setBots(list);
 
-        // If we don't have an active bot yet, prefer agency bot, else first.
         if (!activeBotId) {
           const agencyBot = list.find((b) => b.owner_user_id == null);
           const fallback = agencyBot?.id || list[0]?.id || "";
@@ -509,7 +508,6 @@ export default function Navbar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  // Load docs for active bot
   useEffect(() => {
     if (!isAuthed) return;
     if (!activeBotId) {
@@ -548,7 +546,6 @@ export default function Navbar() {
     };
   }, [isAuthed, activeBotId]);
 
-  // Load unread notifications count (poll every 60s)
   useEffect(() => {
     if (!isAuthed) {
       setNotifUnread(0);
@@ -561,7 +558,6 @@ export default function Navbar() {
       try {
         const j: any = await fetchJson("/api/notifications/list?limit=50", { cache: "no-store" });
 
-        // if upsell, treat as 0
         if (j?.upsell?.code) {
           if (!cancelled) setNotifUnread(0);
           return;
@@ -572,7 +568,7 @@ export default function Navbar() {
 
         if (!cancelled) setNotifUnread(Number(unread) || 0);
       } catch (e: any) {
-        // silent (don't flicker)
+        // silent
       }
     }
 
@@ -616,6 +612,7 @@ export default function Navbar() {
 
           <nav className="hidden items-center gap-2 md:flex">
             <NavLink href="/app">Dashboard</NavLink>
+            <NavLink href="/app/brain">Agency Brain</NavLink>
             <NavLink href="/app/chat">Chat</NavLink>
 
             <div className="relative" ref={docsPanelRef}>
