@@ -22,10 +22,6 @@ export type PlanDefinition = {
   limits: PlanLimits;
 };
 
-/**
- * Normalize anything from DB/Stripe/UI into our canonical PlanKey.
- * Supports legacy names.
- */
 export function normalizePlan(input: unknown): PlanKey {
   const s = String(input ?? "").trim().toLowerCase();
 
@@ -174,6 +170,14 @@ export function getActivePlanKeys(): PlanKey[] {
   return getActivePlanDefinitions().map((p) => p.key);
 }
 
+export function isPlanPurchasable(plan: unknown): boolean {
+  const p = normalizePlan(plan);
+  return p !== "free" && Boolean(PLAN_DEFS[p]?.active);
+}
+
+// back-compat for old import typo/casing
+export const IsPlanPurchasable = isPlanPurchasable;
+
 export function getPurchasablePlanDefinitions(): PlanDefinition[] {
   return getActivePlanDefinitions().filter((p) => p.key !== "free");
 }
@@ -190,9 +194,6 @@ export function setPlanActiveForCode(plan: PlanKey, active: boolean) {
   };
 }
 
-/**
- * Used by API routes for server-side gating.
- */
 export function requireFeature(plan: unknown, feature: FeatureKey) {
   const p = normalizePlan(plan);
   const ok = Boolean(PLAN_DEFS[p]?.limits?.features?.[feature]);
