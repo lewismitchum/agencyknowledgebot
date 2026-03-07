@@ -36,6 +36,13 @@ const COMMON_TZ = [
   "Australia/Sydney",
 ];
 
+const TOUR_KEYS = [
+  "louisai_onboarding_started",
+  "louisai_onboarding_completed",
+  "louisai_onboarding_dismissed",
+  "louisai_onboarding_index",
+];
+
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState("");
@@ -114,6 +121,16 @@ export default function SettingsPage() {
     window.location.href = "/login";
   }
 
+  function restartOnboarding() {
+    try {
+      for (const key of TOUR_KEYS) {
+        window.localStorage.removeItem(key);
+      }
+    } catch {}
+
+    window.location.href = "/app";
+  }
+
   const isOwner = String(role || "").toLowerCase() === "owner";
   const isPending = String(status || "").toLowerCase() === "pending";
 
@@ -161,7 +178,7 @@ export default function SettingsPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
-          <p className="mt-2 text-muted-foreground">Account, security, and workspace preferences.</p>
+          <p className="mt-2 text-muted-foreground">Account, security, workspace preferences, and onboarding controls.</p>
         </div>
         <div className="flex gap-2">
           <Link href="/app" className="rounded-xl border px-4 py-2 text-sm hover:bg-accent">
@@ -185,7 +202,6 @@ export default function SettingsPage() {
         </div>
       ) : null}
 
-      {/* Workspace */}
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Workspace</CardTitle>
@@ -277,7 +293,30 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Account */}
+      <Card className="rounded-3xl">
+        <CardHeader>
+          <CardTitle className="text-xl tracking-tight">Onboarding</CardTitle>
+          <CardDescription>Replay the guided tour and walkthrough whenever you want.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-2xl bg-muted p-4">
+            <div className="text-sm font-medium">Restart guided onboarding</div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              This resets the guided tour progress and sends you back to the dashboard so the onboarding flow starts again.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button className="rounded-full" onClick={restartOnboarding}>
+              Restart onboarding
+            </Button>
+            <Button asChild variant="outline" className="rounded-full">
+              <Link href="/app">Go to dashboard</Link>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card className="rounded-3xl">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Account</CardTitle>

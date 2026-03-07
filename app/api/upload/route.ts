@@ -49,6 +49,21 @@ function classifyMime(mime: string): "doc" | "image" | "video" | "other" {
   return "other";
 }
 
+async function ensureOnboardingColumns(db: Db) {
+  const columns = (await db.all(`PRAGMA table_info(users)`)) as Array<{ name?: string }>;
+
+  const hasUploadedFirstDoc = columns.some((c) => c?.name === "uploaded_first_doc");
+
+  if (!hasUploadedFirstDoc) {
+    await db.run(`ALTER TABLE users ADD COLUMN uploaded_first_doc INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
+async function markUploadedFirstDoc(db: Db, userId: string) {
+  await ensureOnboardingColumns(db);
+  await db.run(`UPDATE users SET uploaded_first_doc = 1 WHERE id = ?`, userId);
+}
+
 async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
   const agencyBot = (await db.get(
     `SELECT id
@@ -116,8 +131,9 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
     await ensureUsageDailySchema(db);
+    await ensureOnboardingColumns(db);
 
-    // ✅ Travel-proof: header -> users.time_zone -> agencies.timezone -> America/Chicago
+    // Travel-proof: header -> users.time_zone -> agencies.timezone -> America/Chicago
     const tz = await getEffectiveTimezone(db, {
       agencyId: ctx.agencyId,
       userId: ctx.userId,
@@ -160,7 +176,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ✅ Per-user daily upload limit gate
+    // Per-user daily upload limit gate
     const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, ctx.userId, dateKey, planKey, files.length);
     if (!uploadsGate.ok) {
       return Response.json({ ...uploadsGate.body, timezone: tz }, { status: uploadsGate.status });
@@ -286,7 +302,9 @@ export async function POST(req: NextRequest) {
       uploaded.push({ document_id: row?.id ?? "", filename: file.name, openai_file_id: uploadedFile.id });
     }
 
-    // ✅ Canonical per-user upload usage
+    await markUploadedFirstDoc(db, ctx.userId);
+
+    // Canonical per-user upload usage
     await incrementUserUploads(db, ctx.agencyId, ctx.userId, dateKey, files.length);
     const usageRow = await getUserUsageRow(db, ctx.agencyId, ctx.userId, dateKey);
 

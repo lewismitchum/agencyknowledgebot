@@ -1,197 +1,253 @@
-// app/api/email/threads/route.ts
+// app/api/email/threads/[threadId]/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { google } from "googleapis";
-import { getDb } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { decrypt, encrypt } from "@/lib/crypto";
+import { getValidGmailClient } from "@/lib/email-google";
+import { getDb, type Db } from "@/lib/db";
+import { ensureSchema } from "@/lib/schema";
+import { getAgencyPlan } from "@/lib/enforcement";
+import { normalizePlan, requireFeature } from "@/lib/plans";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-function extractHeader(
-  headers: Array<{ name?: string | null; value?: string | null }> | undefined,
-  key: string,
-) {
-  if (!headers) return "";
-  const hit = headers.find((h) => (h.name || "").toLowerCase() === key.toLowerCase());
+function extractHeader(headers: any[] | undefined, key: string) {
+  const hit = headers?.find((h) => String(h?.name || "").toLowerCase() === key.toLowerCase());
   return String(hit?.value || "").trim();
 }
 
-function safeStr(x: any) {
-  return String(x ?? "").trim();
+function safeString(v: any) {
+  return String(v ?? "").trim();
 }
 
-function safeInt(x: any, fallback: number) {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.floor(n);
-}
+function decodeBodyData(data?: string | null) {
+  const raw = safeString(data);
+  if (!raw) return "";
 
-function looksEncryptedToken(s: string) {
-  // our format: ivB64.tagB64.dataB64
-  const parts = String(s || "").split(".");
-  return parts.length === 3 && parts.every((p) => p && p.length >= 8);
-}
-
-async function maybePersistRefreshedTokens(db: any, userId: string, agencyId: string, oauth2Client: any) {
-  const cred = oauth2Client.credentials || {};
-  const accessToken = cred.access_token ? String(cred.access_token) : null;
-  const expiryDate = typeof cred.expiry_date === "number" ? cred.expiry_date : null;
-
-  if (!accessToken && !expiryDate) return;
-
-  const accessToStore = accessToken ? encrypt(accessToken) : null;
-
-  await db.run(
-    `UPDATE email_accounts
-     SET access_token = COALESCE(?, access_token),
-         expiry_date = COALESCE(?, expiry_date),
-         updated_at = ?
-     WHERE user_id = ? AND agency_id = ?`,
-    [accessToStore, expiryDate, Date.now(), userId, agencyId],
-  );
-}
-
-export async function GET(req: NextRequest) {
   try {
+    return Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function collectTextFromParts(parts: any[] | undefined): string {
+  if (!Array.isArray(parts) || !parts.length) return "";
+
+  for (const part of parts) {
+    const mime = safeString(part?.mimeType).toLowerCase();
+
+    if (mime === "text/plain") {
+      const text = decodeBodyData(part?.body?.data);
+      if (text) return text;
+    }
+  }
+
+  for (const part of parts) {
+    const text = collectTextFromParts(part?.parts);
+    if (text) return text;
+  }
+
+  for (const part of parts) {
+    const mime = safeString(part?.mimeType).toLowerCase();
+
+    if (mime === "text/html") {
+      const html = decodeBodyData(part?.body?.data);
+      if (html) {
+        return html
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<br\s*\/?>/gi, "\n")
+          .replace(/<\/p>/gi, "\n\n")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/gi, " ")
+          .replace(/&amp;/gi, "&")
+          .replace(/&lt;/gi, "<")
+          .replace(/&gt;/gi, ">")
+          .replace(/\r/g, "")
+          .replace(/\n{3,}/g, "\n\n")
+          .replace(/[ \t]{2,}/g, " ")
+          .trim();
+      }
+    }
+  }
+
+  return "";
+}
+
+function getMessageBody(payload: any) {
+  const direct = decodeBodyData(payload?.body?.data);
+  if (direct) return direct;
+
+  const fromParts = collectTextFromParts(payload?.parts);
+  if (fromParts) return fromParts;
+
+  return "";
+}
+
+function sanitizeError(err: any) {
+  const message = String(err?.message || "");
+  const name = String(err?.name || "");
+  const code = (err?.code ?? err?.response?.data?.error?.status ?? err?.response?.status ?? undefined) as any;
+
+  const googleReason =
+    err?.response?.data?.error?.errors?.[0]?.reason ??
+    err?.response?.data?.error?.status ??
+    err?.errors?.[0]?.reason ??
+    undefined;
+
+  const status = (err?.response?.status ?? undefined) as any;
+
+  return {
+    name: name || undefined,
+    message: message || undefined,
+    code: code || undefined,
+    status: status || undefined,
+    googleReason: googleReason || undefined,
+  };
+}
+
+export async function GET(
+  req: NextRequest,
+  ctx: { params: Promise<{ threadId: string }> }
+) {
+  let where = "start";
+
+  try {
+    where = "requireActiveMember";
     const session = await requireActiveMember(req);
 
-    // Corp only
-    if (session.plan !== "corporation") {
-      return NextResponse.json({ error: "Upgrade required." }, { status: 403 });
+    where = "plan_gate";
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
+    const rawPlan = await getAgencyPlan(db, session.agencyId, session.plan);
+    const planKey = normalizePlan(rawPlan);
+
+    const gate = requireFeature(planKey, "email");
+    if (!gate.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Email inbox is available on Corporation.",
+          code: "upgrade_required",
+          plan: planKey,
+        },
+        { status: 403 }
+      );
     }
 
-    // Rate limit reads
+    where = "rate_limit";
     await enforceRateLimit({
       userId: session.userId,
       agencyId: session.agencyId,
-      key: "email_read",
-      perMinute: 30,
-      perHour: 500,
+      key: "email_thread_read",
+      perMinute: 60,
+      perHour: 2000,
     });
 
-    const db = await getDb();
+    const params = await ctx.params;
+    const threadId = safeString(params?.threadId);
 
-    // drift-safe (in case)
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS email_accounts (
-        id TEXT PRIMARY KEY,
-        agency_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        email TEXT,
-        access_token TEXT,
-        refresh_token TEXT,
-        expiry_date INTEGER,
-        scope TEXT,
-        token_type TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+    if (!threadId) {
+      return NextResponse.json({ ok: false, error: "MISSING_THREAD_ID" }, { status: 400 });
+    }
+
+    where = "gmail_auth_refresh";
+    const gmailRes = await getValidGmailClient({
+      agencyId: session.agencyId,
+      userId: session.userId,
+    });
+
+    if (!gmailRes.ok) {
+      const code =
+        gmailRes.error === "NOT_CONNECTED"
+          ? "not_connected"
+          : gmailRes.error === "MISSING_TOKENS" || gmailRes.error === "MISSING_REFRESH_TOKEN"
+            ? "missing_tokens"
+            : gmailRes.error === "MISSING_GOOGLE_OAUTH_ENV"
+              ? "missing_google_env"
+              : "gmail_auth_error";
+
+      const status = gmailRes.error === "NOT_CONNECTED" || gmailRes.error === "MISSING_TOKENS" ? 409 : 500;
+
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            gmailRes.error === "NOT_CONNECTED"
+              ? "Not connected. Click Connect Gmail."
+              : gmailRes.error === "MISSING_TOKENS" || gmailRes.error === "MISSING_REFRESH_TOKEN"
+                ? "Gmail tokens missing. Reconnect Gmail."
+                : "Gmail auth error.",
+          code,
+          where,
+        },
+        { status }
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user
-        ON email_accounts(agency_id, user_id);
-    `);
-
-    const account = await db.get(
-      `SELECT access_token, refresh_token, expiry_date
-       FROM email_accounts
-       WHERE user_id = ? AND agency_id = ?`,
-      [session.userId, session.agencyId],
-    );
-
-    if (!account) {
-      return NextResponse.json({ error: "No Gmail account connected" }, { status: 400 });
     }
 
-    // ✅ decrypt tokens (plaintext still works because decrypt() falls back)
-    const accessToken = decrypt(String(account.access_token || "")) || "";
-    const refreshToken = decrypt(String(account.refresh_token || "")) || "";
+    const gmail = gmailRes.gmail;
 
-    if (!accessToken && !refreshToken) {
-      return NextResponse.json({ error: "Gmail tokens missing. Reconnect Gmail." }, { status: 400 });
-    }
-
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI,
-    );
-
-    oauth2Client.setCredentials({
-      access_token: accessToken || undefined,
-      refresh_token: refreshToken || undefined,
-      expiry_date: account.expiry_date ?? undefined,
-    });
-
-    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-
-    const url = new URL(req.url);
-    const maxResults = Math.min(50, Math.max(1, safeInt(url.searchParams.get("max") || "30", 30)));
-    const pageToken = safeStr(url.searchParams.get("pageToken"));
-    const q = safeStr(url.searchParams.get("q"));
-
-    const listRes = await gmail.users.threads.list({
+    where = "gmail_get_thread";
+    const tr = await gmail.users.threads.get({
       userId: "me",
-      maxResults,
-      pageToken: pageToken || undefined,
-      q: q || undefined,
-      includeSpamTrash: false,
+      id: threadId,
+      format: "full",
     });
 
-    const threadRefs = listRes.data.threads || [];
-    const out: Array<{ id: string; subject: string; snippet: string; from: string; date: string }> = [];
+    const messagesRaw = Array.isArray(tr.data.messages) ? tr.data.messages : [];
 
-    for (const t of threadRefs) {
-      const id = safeStr(t.id);
-      if (!id) continue;
+    const messages = messagesRaw.map((m: any) => {
+      const payload = m?.payload || {};
+      const headers = payload?.headers || [];
 
-      try {
-        const tr = await gmail.users.threads.get({
-          userId: "me",
-          id,
-          format: "metadata",
-          metadataHeaders: ["From", "Date", "Subject"],
-        });
+      const from = extractHeader(headers, "From");
+      const to = extractHeader(headers, "To");
+      const date = extractHeader(headers, "Date");
+      const subject = extractHeader(headers, "Subject");
+      const snippet = safeString(m?.snippet || "");
+      const body = getMessageBody(payload);
 
-        const messages = tr.data.messages || [];
-        const last = messages[messages.length - 1];
-        const headers = last?.payload?.headers || [];
-        const subject = extractHeader(headers, "Subject");
-        const from = extractHeader(headers, "From");
-        const date = extractHeader(headers, "Date");
-        const snippet = safeStr(last?.snippet || tr.data.snippet || "");
+      return {
+        id: safeString(m?.id),
+        from,
+        to,
+        date,
+        subject,
+        snippet,
+        body: body || snippet,
+      };
+    });
 
-        out.push({ id, subject, snippet, from, date });
-      } catch {
-        // ignore per-thread failures
-      }
-    }
+    const cleaned = messages.filter((m) => m.id);
+    const threadSubject =
+      cleaned[cleaned.length - 1]?.subject || cleaned[0]?.subject || "";
 
-    // ✅ persist refreshed access token encrypted
-    await maybePersistRefreshedTokens(db, session.userId, session.agencyId, oauth2Client);
-
-    // ✅ one-time migration helper: if refresh_token is still plaintext, encrypt it in-place
-    // (Google won't re-issue refresh tokens often, so do it here lazily once)
-    const storedRefresh = String(account.refresh_token || "");
-    if (storedRefresh && !looksEncryptedToken(storedRefresh)) {
-      await db.run(
-        `UPDATE email_accounts
-         SET refresh_token = ?, updated_at = ?
-         WHERE user_id = ? AND agency_id = ?`,
-        [encrypt(storedRefresh), Date.now(), session.userId, session.agencyId],
-      );
-    }
+    await db.run(`UPDATE users SET connected_gmail = 1 WHERE id = ?`, session.userId).catch(() => {});
 
     return NextResponse.json({
-      threads: out,
-      nextPageToken: listRes.data.nextPageToken || null,
+      ok: true,
+      thread: {
+        id: threadId,
+        subject: threadSubject,
+        messages: cleaned,
+      },
+      email: gmailRes.email ?? null,
     });
   } catch (err: any) {
     const msg = String(err?.message || "");
     if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
-      return NextResponse.json({ error: msg }, { status: 429 });
+      return NextResponse.json(
+        { ok: false, error: msg, code: "rate_limited", where: "rate_limit" },
+        { status: 429 }
+      );
     }
-    console.error("Email threads error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+
+    console.error("EMAIL_THREAD_DETAIL_ERROR", err);
+    return NextResponse.json(
+      { ok: false, error: "Internal server error", code: "internal", where, details: sanitizeError(err) },
+      { status: 500 }
+    );
   }
 }

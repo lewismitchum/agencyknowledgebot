@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ModeToggle } from "@/components/mode-toggle";
+import OnboardingTour from "@/components/onboarding-tour";
 import { hasFeature } from "@/lib/plans";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 
@@ -35,15 +36,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const [gate, setGate] = useState<GateState>("checking");
   const [me, setMe] = useState<MeResponse | null>(null);
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardingBusy, setOnboardingBusy] = useState(false);
 
   const plan = String(me?.agency?.plan ?? "free");
 
   const canSeeEmail = hasFeature(plan, "email");
   const canSeeSheets = hasFeature(plan, "spreadsheets");
-
-  const mobileScrollRef = useRef<HTMLDivElement | null>(null);
 
   const gateBypass = useMemo(() => {
     if (!pathname) return false;
@@ -73,8 +70,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
 
         setMe(j);
-        const completed = Number(j?.user?.has_completed_onboarding ?? 0) === 1;
-        setShowOnboarding(!completed);
         setGate("ok");
       } catch (e: any) {
         if (cancelled) return;
@@ -107,39 +102,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     };
   }, [gateBypass]);
 
-  async function completeOnboarding(mode: "upload" | "skip") {
-    if (onboardingBusy) return;
-    setOnboardingBusy(true);
-
-    try {
-      await fetchJson("/api/onboarding/complete", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode }),
-      }).catch(() => {});
-
-      setShowOnboarding(false);
-
-      if (mode === "upload") {
-        window.location.href = "/app/docs";
-      }
-    } finally {
-      setOnboardingBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    const el = mobileScrollRef.current;
-    if (!el) return;
-
-    const activeEl = el.querySelector('[data-active="true"]') as HTMLElement | null;
-    if (!activeEl) return;
-
-    const left = activeEl.offsetLeft - el.clientWidth / 2 + activeEl.clientWidth / 2;
-    el.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
-  }, [pathname]);
-
   if (gate !== "ok") {
     return (
       <div className="min-h-screen bg-background">
@@ -157,34 +119,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background">
-      {showOnboarding ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur">
-          <div className="w-full max-w-xl rounded-3xl border bg-card p-6 shadow-xl">
-            <div className="text-xl font-semibold tracking-tight">Welcome to Louis.Ai</div>
-            <div className="mt-2 text-sm text-muted-foreground">
-              Your workspace is ready. Start by giving Louis one important internal document.
-            </div>
-
-            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button
-                onClick={() => completeOnboarding("skip")}
-                disabled={onboardingBusy}
-                className="rounded-full border border-white/10 bg-background/60 px-4 py-2 text-sm shadow-sm transition hover:-translate-y-0.5 hover:bg-accent"
-              >
-                Skip for now
-              </button>
-
-              <button
-                onClick={() => completeOnboarding("upload")}
-                disabled={onboardingBusy}
-                className="rounded-full border border-white/10 bg-foreground px-4 py-2 text-sm font-medium text-background shadow-sm transition hover:-translate-y-0.5 hover:opacity-90"
-              >
-                Upload first document
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <OnboardingTour canSeeEmail={canSeeEmail} canSeeSheets={canSeeSheets} />
 
       <div className="mx-auto flex max-w-7xl">
         <aside className="hidden min-h-screen w-72 border-r border-white/10 bg-background/40 p-6 backdrop-blur md:block">

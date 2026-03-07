@@ -1,7 +1,7 @@
 // app/(app)/app/schedule/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { UpgradeGate } from "@/components/upgrade-gate";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 import {
@@ -289,6 +289,8 @@ export default function SchedulePage() {
   const [err, setErr] = useState("");
   const [gated, setGated] = useState(false);
 
+  const didMarkScheduleRef = useRef(false);
+
   const tzLabel = useMemo(() => tz || "America/Chicago", [tz]);
 
   const botNameById = useMemo(() => {
@@ -309,6 +311,29 @@ export default function SchedulePage() {
       }
     }
     return false;
+  }
+
+  async function markOpenedSchedule() {
+    if (didMarkScheduleRef.current) return;
+    didMarkScheduleRef.current = true;
+
+    try {
+      await fetchJson<{ ok?: boolean }>("/api/onboarding", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json", ...tzHeaders() },
+        body: JSON.stringify({ action: "opened_schedule" }),
+      });
+    } catch (e: any) {
+      if (isFetchJsonError(e) && e.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      if (isFetchJsonError(e) && e.status === 403) {
+        return;
+      }
+      console.error(e);
+    }
   }
 
   async function loadBots() {
@@ -449,6 +474,7 @@ export default function SchedulePage() {
   }
 
   useEffect(() => {
+    markOpenedSchedule();
     loadPrefs();
     loadBots();
     loadAgencyTimezone();
@@ -753,7 +779,7 @@ export default function SchedulePage() {
         <TopStat
           icon={<Clock3 className="h-5 w-5" />}
           label="Focus day"
-          value={view === "month" ? dayKey.slice(5) : dayKey.slice(5)}
+          value={dayKey.slice(5)}
           hint={headerLabel}
         />
       </div>

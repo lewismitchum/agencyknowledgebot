@@ -50,6 +50,21 @@ function looksLikeTimeQuestion(s: string) {
   return t === "what time is it" || t.includes("current time") || t.includes("time is it");
 }
 
+async function ensureOnboardingColumns(db: Db) {
+  const columns = (await db.all(`PRAGMA table_info(users)`)) as Array<{ name?: string }>;
+
+  const hasSentFirstChat = columns.some((c) => c?.name === "sent_first_chat");
+
+  if (!hasSentFirstChat) {
+    await db.run(`ALTER TABLE users ADD COLUMN sent_first_chat INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
+async function markSentFirstChat(db: Db, userId: string) {
+  await ensureOnboardingColumns(db);
+  await db.run(`UPDATE users SET sent_first_chat = 1 WHERE id = ?`, userId);
+}
+
 async function getOrCreateConversation(db: Db, args: { agencyId: string; userId: string; botId: string }) {
   const existing = (await db.get(
     `SELECT id, summary, message_count
@@ -125,7 +140,7 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
-  // ✅ Expand general homes so ordinary “what are X” questions never become internal.
+  // Expand general homes so ordinary “what are X” questions never become internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -425,6 +440,7 @@ export async function POST(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
     await ensureUsageDailySchema(db);
+    await ensureOnboardingColumns(db);
 
     const tz = await getEffectiveTimezone(db, {
       agencyId: ctx.agencyId,
@@ -507,7 +523,7 @@ export async function POST(req: NextRequest) {
         ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
         : "If the user asks about the contents of an image/video file, be honest about limitations.";
 
-      // ✅ Tools strategy:
+      // Tools strategy:
       // - Internal: use file_search (docs-first)
       // - Non-internal: first attempt WITHOUT any tools (fast + avoids doc-mention bias)
       const toolsAttempt1 = internal && bot.vector_store_id ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }] : [];
@@ -560,7 +576,7 @@ ${
 
       const hasEvidence1 = toolsAttempt1.length > 0 ? responseHasFileSearchEvidence(resp1) : false;
 
-      // ✅ Internal fallback gating stays strict
+      // Internal fallback gating stays strict
       if (internal) {
         if (toolsAttempt1.length === 0) {
           answer = FALLBACK;
@@ -570,7 +586,7 @@ ${
           answer = modelText1 || FALLBACK;
         }
       } else {
-        // ✅ Non-internal: if attempt1 looks like "doc-absence" / weak / empty, retry with web_search
+        // Non-internal: if attempt1 looks like "doc-absence" / weak / empty, retry with web_search
         const needsRetry = looksLikeDocAbsenceClaim(modelText1) || modelText1 === FALLBACK;
 
         if (!needsRetry) {
@@ -603,6 +619,7 @@ ${mediaHint}
     }
 
     await insertMessage(db, convo.id, "assistant", answer);
+    await markSentFirstChat(db, ctx.userId);
 
     await incrementUserMessages(db, ctx.agencyId, ctx.userId, dateKey, 1);
     const usageAfter = await getUserUsageRow(db, ctx.agencyId, ctx.userId, dateKey);

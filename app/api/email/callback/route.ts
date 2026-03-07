@@ -31,6 +31,15 @@ async function ensureEmailAuthColumns(db: Db) {
   await db.run(`ALTER TABLE users ADD COLUMN gmail_connected_at TEXT`).catch(() => {});
 }
 
+async function ensureOnboardingColumns(db: Db) {
+  const columns = (await db.all(`PRAGMA table_info(users)`)) as Array<{ name?: string }>;
+  const hasConnectedGmail = columns.some((c) => c?.name === "connected_gmail");
+
+  if (!hasConnectedGmail) {
+    await db.run(`ALTER TABLE users ADD COLUMN connected_gmail INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
 async function ensureEmailAccountsTable(db: Db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS email_accounts (
@@ -66,6 +75,7 @@ export async function GET(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
     await ensureEmailAuthColumns(db);
+    await ensureOnboardingColumns(db);
     await ensureEmailAccountsTable(db);
 
     // Server-side feature gate
@@ -132,7 +142,7 @@ export async function GET(req: NextRequest) {
        WHERE agency_id = ? AND user_id = ?
        LIMIT 1`,
       session.agencyId,
-      session.userId,
+      session.userId
     )) as { id?: string; refresh_token?: string } | undefined;
 
     const accountId = existing?.id ? String(existing.id) : crypto.randomUUID();
@@ -170,16 +180,18 @@ export async function GET(req: NextRequest) {
       typeof tokens.scope === "string" ? tokens.scope : null,
       typeof tokens.token_type === "string" ? tokens.token_type : null,
       now,
-      now,
+      now
     );
 
     await db.run(
       `UPDATE users
-       SET gmail_connected = 1, gmail_connected_at = ?
+       SET gmail_connected = 1,
+           gmail_connected_at = ?,
+           connected_gmail = 1
        WHERE id = ? AND agency_id = ?`,
       new Date().toISOString(),
       session.userId,
-      session.agencyId,
+      session.agencyId
     );
 
     const res = NextResponse.redirect(safeUrl("/app/email?connected=1"));

@@ -56,6 +56,21 @@ function getRowsAffected(info: any): number {
   return Number.isFinite(num) ? num : 0;
 }
 
+async function ensureOnboardingColumns(db: Db) {
+  const columns = (await db.all(`PRAGMA table_info(users)`)) as Array<{ name?: string }>;
+
+  const hasCreatedFirstBot = columns.some((c) => c?.name === "created_first_bot");
+
+  if (!hasCreatedFirstBot) {
+    await db.run(`ALTER TABLE users ADD COLUMN created_first_bot INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
+async function markCreatedFirstBot(db: Db, userId: string) {
+  await ensureOnboardingColumns(db);
+  await db.run(`UPDATE users SET created_first_bot = 1 WHERE id = ?`, userId);
+}
+
 async function ensureDefaultAgencyBot(db: Db, agencyId: string) {
   // Idempotent:
   // - If no agency bot exists, create one + vector store.
@@ -107,7 +122,7 @@ export async function GET(req: NextRequest) {
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    // ✅ Never return empty bots / never reintroduce NULL vector_store_id landmine
+    // Never return empty bots / never reintroduce NULL vector_store_id landmine
     await ensureDefaultAgencyBot(db, ctx.agencyId);
 
     const bots = (await db.all(
@@ -164,6 +179,7 @@ export async function POST(req: NextRequest) {
 
     const db: Db = await getDb();
     await ensureSchema(db);
+    await ensureOnboardingColumns(db);
 
     const plan = await getAgencyPlan(db, ctx.agencyId, (ctx as any)?.plan ?? null);
     const limits = getPlanLimits(plan);
@@ -179,9 +195,7 @@ export async function POST(req: NextRequest) {
       const id = crypto.randomUUID();
 
       if (scope === "agency" && maxAgencyBots != null) {
-        // ✅ Atomic cap enforcement in ONE statement (no BEGIN/COMMIT).
-        // This avoids libsql transaction issues ("cannot commit - no transaction is active")
-        // while remaining race-safe.
+        // Atomic cap enforcement in ONE statement
         const info = await db.run(
           `INSERT INTO bots (id, agency_id, name, owner_user_id, vector_store_id, created_at)
            SELECT ?, ?, ?, ?, ?, ?
@@ -202,7 +216,6 @@ export async function POST(req: NextRequest) {
 
         const affected = getRowsAffected(info);
         if (affected === 0) {
-          // cap hit — clean up VS
           try {
             await openai.vectorStores.delete(vs.id);
           } catch {}
@@ -218,6 +231,8 @@ export async function POST(req: NextRequest) {
             { status: 403 }
           );
         }
+
+        await markCreatedFirstBot(db, ctx.userId);
 
         return NextResponse.json({
           ok: true,
@@ -243,6 +258,8 @@ export async function POST(req: NextRequest) {
         new Date().toISOString()
       );
 
+      await markCreatedFirstBot(db, ctx.userId);
+
       return NextResponse.json({
         ok: true,
         bot: {
@@ -254,7 +271,6 @@ export async function POST(req: NextRequest) {
         },
       });
     } catch (e) {
-      // Best-effort cleanup if DB op fails after VS created
       try {
         await openai.vectorStores.delete(vs.id);
       } catch {}

@@ -17,6 +17,10 @@ import {
   ChevronRight,
   Wand2,
   PanelLeft,
+  CheckCircle2,
+  Unplug,
+  AlertCircle,
+  ListTodo,
 } from "lucide-react";
 
 type Upsell = { code?: string; message?: string };
@@ -64,6 +68,15 @@ type AiChatMsg = {
   role: "user" | "assistant";
   text: string;
   at: number;
+};
+
+type InboxSummary = {
+  summary: string;
+  urgent: string[];
+  follow_ups: string[];
+  priorities: string[];
+  threads_analyzed?: number;
+  email?: string | null;
 };
 
 function isFetchJsonError(e: any): e is FetchJsonError {
@@ -216,6 +229,37 @@ function MessageBubble({ msg }: { msg: GmailMessageRow }) {
   );
 }
 
+function SummarySection({
+  title,
+  items,
+  icon,
+}: {
+  title: string;
+  items: string[];
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border bg-background/45 p-4">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <span className="text-muted-foreground">{icon}</span>
+        {title}
+      </div>
+
+      {items.length ? (
+        <div className="mt-3 space-y-2">
+          {items.map((item, i) => (
+            <div key={`${title}-${i}`} className="rounded-xl border bg-background/70 px-3 py-2 text-sm text-foreground">
+              {item}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3 text-sm text-muted-foreground">Nothing flagged.</div>
+      )}
+    </div>
+  );
+}
+
 export default function EmailPage() {
   const [loading, setLoading] = useState(true);
   const [gated, setGated] = useState(false);
@@ -287,6 +331,10 @@ export default function EmailPage() {
   const [openingDraft, setOpeningDraft] = useState(false);
   const [openDraftError, setOpenDraftError] = useState("");
 
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState("");
+  const [summaryData, setSummaryData] = useState<InboxSummary | null>(null);
+
   const canDraft = useMemo(() => {
     return botId.trim().length > 0 && prompt.trim().length > 0 && !drafting;
   }, [botId, prompt, drafting]);
@@ -300,6 +348,10 @@ export default function EmailPage() {
     const bodyOk = composeBody.trim().length > 0;
     return toOk && bodyOk && composeConfirm && !composeSending;
   }, [composeTo, composeBody, composeConfirm, composeSending]);
+
+  const canSummarizeInbox = useMemo(() => {
+    return gmailConnected && botId.trim().length > 0 && !summaryLoading;
+  }, [gmailConnected, botId, summaryLoading]);
 
   const activeThread = threads.find((t) => t.id === selectedThreadId) || null;
   const activeBotName = botId ? bots.find((b) => b.id === botId)?.name || "Selected" : "None";
@@ -540,6 +592,57 @@ export default function EmailPage() {
       }
     } finally {
       setThreadsLoading(false);
+    }
+  }
+
+  async function summarizeInbox() {
+    if (!canSummarizeInbox) return;
+
+    setSummaryLoading(true);
+    setSummaryError("");
+
+    try {
+      const j = await fetchJson<any>("/api/email/inbox-summary", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bot_id: botId }),
+      });
+
+      setSummaryData({
+        summary: String(j?.summary || "").trim(),
+        urgent: Array.isArray(j?.urgent) ? j.urgent.map((x: any) => String(x)).filter(Boolean) : [],
+        follow_ups: Array.isArray(j?.follow_ups) ? j.follow_ups.map((x: any) => String(x)).filter(Boolean) : [],
+        priorities: Array.isArray(j?.priorities) ? j.priorities.map((x: any) => String(x)).filter(Boolean) : [],
+        threads_analyzed: Number(j?.threads_analyzed ?? 0),
+        email: j?.email ? String(j.email) : null,
+      });
+    } catch (e: any) {
+      const st = getFetchJsonStatus(e);
+
+      if (isFetchJsonError(e)) {
+        if (st === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (st === 403) {
+          setSummaryError("Upgrade required to summarize inbox.");
+          return;
+        }
+        if (st === 409) {
+          if (isNotConnectedError(e)) {
+            setSummaryError("Gmail is not connected. Click Connect Gmail.");
+            setGmailConnected(false);
+            return;
+          }
+          setSummaryError("This bot is missing a vector store. Repair it in Bots first.");
+          return;
+        }
+      }
+
+      setSummaryError(e?.message ?? "Failed to summarize inbox");
+    } finally {
+      setSummaryLoading(false);
     }
   }
 
@@ -1019,15 +1122,32 @@ export default function EmailPage() {
             </div>
 
             <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
-              Gmail-style inbox with docs-backed drafting.
+              One inbox for Gmail + AI drafting.
             </h1>
 
             <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
-              Read threads, generate AI replies using your workspace docs, and send polished emails from one place.
+              Read threads, generate docs-backed replies, and send polished emails from one clean workspace.
             </p>
+
+            <div className="mt-5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span
+                className={cx(
+                  "rounded-full border px-3 py-1 backdrop-blur",
+                  gmailConnected ? "bg-background/60" : "border-amber-300 bg-amber-50 text-amber-900"
+                )}
+              >
+                {gmailConnected ? "Gmail connected" : "Gmail disconnected"}
+              </span>
+              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">
+                Plan: {plan ?? "unknown"}
+              </span>
+              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">
+                Bot: {botId ? shortText(activeBotName, 20) : "Select bot"}
+              </span>
+            </div>
           </div>
 
-          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[320px]">
+          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[340px]">
             {!gmailConnected ? (
               <button
                 type="button"
@@ -1049,15 +1169,37 @@ export default function EmailPage() {
               </button>
             )}
 
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("compose");
+                  setMobilePanel("detail");
+                }}
+                className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+              >
+                Compose
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("docs-draft");
+                  setMobilePanel("detail");
+                }}
+                className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+              >
+                Draft from docs
+              </button>
+            </div>
+
             <button
               type="button"
-              onClick={() => {
-                setTab("compose");
-                setMobilePanel("detail");
-              }}
-              className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
+              onClick={() => summarizeInbox().catch(() => {})}
+              disabled={!canSummarizeInbox}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent disabled:opacity-60"
             >
-              Compose new email
+              <Sparkles className="h-4 w-4" />
+              {summaryLoading ? "Summarizing inbox…" : "Summarize inbox"}
             </button>
           </div>
         </div>
@@ -1065,7 +1207,7 @@ export default function EmailPage() {
 
       <div className="grid gap-4 md:grid-cols-4">
         <TopStat
-          icon={<Mail className="h-5 w-5" />}
+          icon={gmailConnected ? <CheckCircle2 className="h-5 w-5" /> : <Unplug className="h-5 w-5" />}
           label="Connection"
           value={gmailConnected ? "On" : "Off"}
           hint={gmailConnected ? "Gmail connected" : "Connect to unlock inbox"}
@@ -1094,25 +1236,82 @@ export default function EmailPage() {
         <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">{connectHint}</div>
       ) : null}
 
-      {!gmailConnected ? (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="text-sm text-amber-900">
-              <div className="font-semibold">Gmail not connected</div>
-              <div className="mt-1 text-xs">Connect Gmail to load inbox threads and send replies from Louis.Ai.</div>
+      {summaryError ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-700">{summaryError}</div>
+      ) : null}
+
+      {summaryData ? (
+        <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full border bg-background/60 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                <Sparkles className="h-3.5 w-3.5" />
+                Inbox summary
+              </div>
+              <div className="mt-3 text-lg font-medium tracking-tight">AI overview of your recent inbox</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                {summaryData.email ? `Mailbox: ${summaryData.email}` : "Recent mailbox activity"}
+                {typeof summaryData.threads_analyzed === "number" ? ` · ${summaryData.threads_analyzed} threads analyzed` : ""}
+              </div>
             </div>
+
             <button
               type="button"
-              onClick={goConnectGmail}
-              className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+              onClick={() => setSummaryData(null)}
+              className="rounded-xl border bg-background/60 px-3 py-2 text-sm transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
             >
-              Connect Gmail
+              Clear summary
             </button>
+          </div>
+
+          <div className="mt-5 rounded-2xl border bg-background/45 p-4">
+            <div className="text-sm font-medium">Quick summary</div>
+            <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">
+              {summaryData.summary || "No summary returned."}
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            <SummarySection title="Urgent" items={summaryData.urgent} icon={<AlertCircle className="h-4 w-4" />} />
+            <SummarySection title="Follow-ups" items={summaryData.follow_ups} icon={<Mail className="h-4 w-4" />} />
+            <SummarySection title="Priorities" items={summaryData.priorities} icon={<ListTodo className="h-4 w-4" />} />
           </div>
         </div>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-[260px_380px_1fr]">
+      {!gmailConnected ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="text-sm text-amber-900">
+              <div className="font-semibold">Connect Gmail to unlock the inbox</div>
+              <div className="mt-1 text-xs">
+                Once connected, you can load threads, draft AI replies, send email, and summarize your inbox.
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={goConnectGmail}
+                className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+              >
+                Connect Gmail
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("docs-draft");
+                  setMobilePanel("detail");
+                }}
+                className="rounded-full border border-amber-300 bg-white px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100"
+              >
+                Draft from docs
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-[250px_360px_1fr]">
         <aside
           className={cx(
             "rounded-[28px] border bg-card/75 p-4 shadow-sm backdrop-blur",
@@ -1120,7 +1319,10 @@ export default function EmailPage() {
           )}
         >
           <div className="flex items-center justify-between gap-2">
-            <div className="text-base font-semibold">Email</div>
+            <div>
+              <div className="text-base font-semibold">Workspace tools</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">Inbox, drafts, compose, AI</div>
+            </div>
             <div className="text-[11px] font-mono text-muted-foreground">{plan ?? "unknown"}</div>
           </div>
 
@@ -1208,7 +1410,11 @@ export default function EmailPage() {
               >
                 Connect Gmail
               </button>
-            ) : null}
+            ) : (
+              <div className="rounded-2xl border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+                Connected inbox ready
+              </div>
+            )}
 
             <button
               type="button"
@@ -1220,6 +1426,16 @@ export default function EmailPage() {
             >
               <RefreshCw className="h-4 w-4" />
               Refresh
+            </button>
+
+            <button
+              type="button"
+              onClick={() => summarizeInbox().catch(() => {})}
+              disabled={!canSummarizeInbox}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border px-3 py-2 text-sm hover:bg-muted disabled:opacity-60"
+            >
+              <Sparkles className="h-4 w-4" />
+              {summaryLoading ? "Summarizing…" : "Summarize inbox"}
             </button>
           </div>
         </aside>
@@ -1242,7 +1458,7 @@ export default function EmailPage() {
                     >
                       <PanelLeft className="h-4 w-4" />
                     </button>
-                    <div className="text-sm font-semibold">{tab === "drafts" ? "Drafts" : "Threads"}</div>
+                    <div className="text-sm font-semibold">{tab === "drafts" ? "Saved drafts" : "Inbox list"}</div>
                   </div>
 
                   <button
@@ -1268,7 +1484,7 @@ export default function EmailPage() {
                           refreshThreads(next).catch(() => {});
                         }
                       }}
-                      placeholder="Search mail"
+                      placeholder="Search inbox"
                       className="h-11 w-full rounded-full border bg-background px-10 pr-24 text-sm outline-none"
                       disabled={!gmailConnected}
                     />
@@ -1292,24 +1508,63 @@ export default function EmailPage() {
             <div className="h-[760px] overflow-auto p-3">
               {tab === "inbox" ? (
                 !gmailConnected ? (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                    <div className="font-semibold">Connect Gmail to load inbox.</div>
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={goConnectGmail}
-                        className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
-                      >
-                        Connect Gmail
-                      </button>
+                  <div className="flex h-full items-center justify-center p-4">
+                    <div className="max-w-sm text-center">
+                      <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/70 text-muted-foreground shadow-sm">
+                        <Mail className="h-6 w-6" />
+                      </div>
+                      <div className="mt-4 text-sm font-medium text-foreground">Connect Gmail to view threads</div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        Your inbox appears here once Gmail is connected.
+                      </div>
+                      <div className="mt-4">
+                        <button
+                          type="button"
+                          onClick={goConnectGmail}
+                          className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+                        >
+                          Connect Gmail
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : threadsLoading ? (
-                  <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+                  <div className="p-4 text-sm text-muted-foreground">Loading inbox…</div>
                 ) : threadsError ? (
                   <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{threadsError}</div>
                 ) : threads.length === 0 ? (
-                  <div className="p-4 text-sm text-muted-foreground">No threads found.</div>
+                  <div className="flex h-full items-center justify-center p-4">
+                    <div className="max-w-sm text-center">
+                      <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/70 text-muted-foreground shadow-sm">
+                        <Inbox className="h-6 w-6" />
+                      </div>
+                      <div className="mt-4 text-sm font-medium text-foreground">
+                        {qApplied ? "No threads match that search" : "Your inbox is empty"}
+                      </div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        {qApplied
+                          ? "Try a different search or refresh your inbox."
+                          : "New Gmail threads will appear here when available."}
+                      </div>
+                      <div className="mt-4 flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => refreshThreads().catch(() => {})}
+                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => summarizeInbox().catch(() => {})}
+                          disabled={!canSummarizeInbox}
+                          className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95 disabled:opacity-60"
+                        >
+                          {summaryLoading ? "Summarizing…" : "Summarize inbox"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     {threads.slice(0, 80).map((t) => (
@@ -1326,11 +1581,33 @@ export default function EmailPage() {
                   </div>
                 )
               ) : draftsLoading ? (
-                <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+                <div className="p-4 text-sm text-muted-foreground">Loading drafts…</div>
               ) : draftsError ? (
                 <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{draftsError}</div>
               ) : drafts.length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">No drafts yet.</div>
+                <div className="flex h-full items-center justify-center p-4">
+                  <div className="max-w-sm text-center">
+                    <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/70 text-muted-foreground shadow-sm">
+                      <FileText className="h-6 w-6" />
+                    </div>
+                    <div className="mt-4 text-sm font-medium text-foreground">No saved drafts yet</div>
+                    <div className="mt-2 text-sm text-muted-foreground">
+                      Use “Draft from docs” to create a saved draft from your workspace knowledge.
+                    </div>
+                    <div className="mt-4">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTab("docs-draft");
+                          setMobilePanel("detail");
+                        }}
+                        className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+                      >
+                        Draft from docs
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {openDraftError ? (
@@ -1373,7 +1650,7 @@ export default function EmailPage() {
 
                   <div>
                     <div className="text-xl font-semibold tracking-tight">Compose</div>
-                    <div className="mt-1 text-sm text-muted-foreground">Send a new email.</div>
+                    <div className="mt-1 text-sm text-muted-foreground">Write and send a new email.</div>
                   </div>
                 </div>
 
@@ -1712,8 +1989,16 @@ export default function EmailPage() {
                   </div>
                 </div>
               ) : (
-                <div className="mt-6 flex min-h-[320px] items-center justify-center rounded-2xl border bg-background/50 p-6 text-sm text-muted-foreground">
-                  Select a draft from the left to preview it here.
+                <div className="flex h-full items-center justify-center">
+                  <div className="max-w-sm text-center">
+                    <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/70 text-muted-foreground shadow-sm">
+                      <FileText className="h-6 w-6" />
+                    </div>
+                    <div className="mt-4 text-sm font-medium text-foreground">Select a saved draft</div>
+                    <div className="mt-2 text-sm text-muted-foreground">
+                      Draft content appears here after you open one from the left.
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -1749,22 +2034,38 @@ export default function EmailPage() {
                     >
                       Open AI
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => summarizeInbox().catch(() => {})}
+                      disabled={!canSummarizeInbox}
+                      className="rounded-full border px-4 py-2 text-sm hover:bg-muted disabled:opacity-60"
+                    >
+                      {summaryLoading ? "Summarizing…" : "Summarize inbox"}
+                    </button>
                   </div>
                 </div>
               </div>
 
               <div className="flex-1 overflow-auto px-6 py-6">
                 {!gmailConnected ? (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                    Gmail not connected.
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={goConnectGmail}
-                        className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
-                      >
-                        Connect Gmail
-                      </button>
+                  <div className="flex h-full items-center justify-center">
+                    <div className="max-w-md text-center">
+                      <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/70 text-muted-foreground shadow-sm">
+                        <Mail className="h-6 w-6" />
+                      </div>
+                      <div className="mt-4 text-sm font-medium text-foreground">Connect Gmail first</div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        Inbox threads and reply sending appear here once Gmail is connected.
+                      </div>
+                      <div className="mt-4">
+                        <button
+                          type="button"
+                          onClick={goConnectGmail}
+                          className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+                        >
+                          Connect Gmail
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : threadLoading ? (
@@ -1780,6 +2081,22 @@ export default function EmailPage() {
                       <div className="mt-4 text-sm font-medium text-foreground">Select a thread</div>
                       <div className="mt-2 text-sm text-muted-foreground">
                         Open a thread from the left to read messages and draft a reply.
+                      </div>
+                      <div className="mt-4 flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setTab("compose")}
+                          className="rounded-full border px-4 py-2 text-sm hover:bg-muted"
+                        >
+                          Compose
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTab("docs-draft")}
+                          className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-95"
+                        >
+                          Draft from docs
+                        </button>
                       </div>
                     </div>
                   </div>

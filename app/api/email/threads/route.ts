@@ -48,7 +48,7 @@ function sanitizeError(err: any) {
 }
 
 export async function GET(req: NextRequest) {
-  let where: string = "start";
+  let where = "start";
 
   try {
     where = "requireActiveMember";
@@ -64,8 +64,13 @@ export async function GET(req: NextRequest) {
     const gate = requireFeature(planKey, "email");
     if (!gate.ok) {
       return NextResponse.json(
-        { ok: false, error: "Email inbox is available on Corporation.", code: "upgrade_required", plan: planKey },
-        { status: 403 },
+        {
+          ok: false,
+          error: "Email inbox is available on Corporation.",
+          code: "upgrade_required",
+          plan: planKey,
+        },
+        { status: 403 }
       );
     }
 
@@ -81,9 +86,13 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const max = Math.min(50, Math.max(1, safeInt(url.searchParams.get("max"), 30)));
     const q = safeString(url.searchParams.get("q") || "");
+    const pageToken = safeString(url.searchParams.get("pageToken") || "");
 
     where = "gmail_auth_refresh";
-    const gmailRes = await getValidGmailClient({ agencyId: session.agencyId, userId: session.userId });
+    const gmailRes = await getValidGmailClient({
+      agencyId: session.agencyId,
+      userId: session.userId,
+    });
 
     if (!gmailRes.ok) {
       const code =
@@ -109,7 +118,7 @@ export async function GET(req: NextRequest) {
           code,
           where,
         },
-        { status },
+        { status }
       );
     }
 
@@ -119,7 +128,9 @@ export async function GET(req: NextRequest) {
     const listRes = await gmail.users.threads.list({
       userId: "me",
       maxResults: max,
+      pageToken: pageToken || undefined,
       q: q || undefined,
+      includeSpamTrash: false,
     });
 
     const threadIds = (listRes.data.threads || [])
@@ -146,29 +157,47 @@ export async function GET(req: NextRequest) {
           const date = extractHeader(headers, "Date");
           const snippet = safeString(tr.data.snippet || last?.snippet || "");
 
-          return { id, subject, from, date, snippet };
+          return {
+            id,
+            subject,
+            from,
+            date,
+            snippet,
+          };
         } catch {
-          return { id, subject: "", from: "", date: "", snippet: "" };
+          return {
+            id,
+            subject: "",
+            from: "",
+            date: "",
+            snippet: "",
+          };
         }
-      }),
+      })
     );
+
+    await db.run(`UPDATE users SET connected_gmail = 1 WHERE id = ?`, session.userId).catch(() => {});
 
     return NextResponse.json({
       ok: true,
       plan: planKey,
       email: gmailRes.email ?? null,
       threads: threads.filter((t) => t.id),
+      nextPageToken: listRes.data.nextPageToken || null,
     });
   } catch (err: any) {
     const msg = String(err?.message || "");
     if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
-      return NextResponse.json({ ok: false, error: msg, code: "rate_limited", where: "rate_limit" }, { status: 429 });
+      return NextResponse.json(
+        { ok: false, error: msg, code: "rate_limited", where: "rate_limit" },
+        { status: 429 }
+      );
     }
 
-    console.error("Email threads error:", err);
+    console.error("EMAIL_THREADS_ERROR", err);
     return NextResponse.json(
       { ok: false, error: "Internal server error", code: "internal", where, details: sanitizeError(err) },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }
