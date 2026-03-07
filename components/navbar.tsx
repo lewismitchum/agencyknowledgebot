@@ -434,8 +434,7 @@ export default function Navbar() {
 
   useEffect(() => {
     if (botFromUrl && botFromUrl !== activeBotId) setActiveBotId(botFromUrl);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [botFromUrl]);
+  }, [botFromUrl, activeBotId]);
 
   useEffect(() => {
     function onDown(e: MouseEvent) {
@@ -505,8 +504,7 @@ export default function Navbar() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed]);
+  }, [isAuthed, activeBotId]);
 
   useEffect(() => {
     if (!isAuthed) return;
@@ -567,7 +565,7 @@ export default function Navbar() {
         const unread = list.filter((n: any) => !n?.read_at).length;
 
         if (!cancelled) setNotifUnread(Number(unread) || 0);
-      } catch (e: any) {
+      } catch {
         // silent
       }
     }
