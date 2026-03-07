@@ -1,10 +1,9 @@
-// app/api/billing/checkout/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireOwner } from "@/lib/authz";
-import { normalizePlan, type PlanKey } from "@/lib/plans";
+import { normalizePlan, type PlanKey, isPlanPurchasable } from "@/lib/plans";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +28,6 @@ function getStripe() {
 }
 
 function priceIdForPlan(plan: PlanKey): string | null {
-  // Plan keys are: free | home | pro | enterprise | corporation
   if (plan === "home") return process.env.STRIPE_PRICE_HOME || null;
   if (plan === "pro") return process.env.STRIPE_PRICE_PRO || null;
   if (plan === "enterprise") return process.env.STRIPE_PRICE_ENTERPRISE || null;
@@ -56,6 +54,18 @@ export async function POST(req: NextRequest) {
 
     if (desired === "free") {
       return NextResponse.json({ ok: false, error: "INVALID_PLAN" }, { status: 400 });
+    }
+
+    if (!isPlanPurchasable(desired)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "PLAN_UNAVAILABLE",
+          message: "This plan is currently visible but not available for purchase.",
+          plan: desired,
+        },
+        { status: 400 }
+      );
     }
 
     const priceId = priceIdForPlan(desired);
@@ -85,10 +95,6 @@ export async function POST(req: NextRequest) {
     const origin = getOrigin(req);
     const stripe = getStripe();
 
-    // ✅ Trial rules (server-side):
-    // - 7-day trial ONLY if:
-    //   - agencies.trial_used != 1 AND
-    //   - agencies.stripe_subscription_id is empty
     const trialEligible =
       Number(agency?.trial_used ?? 0) !== 1 && !String(agency?.stripe_subscription_id ?? "").trim();
 

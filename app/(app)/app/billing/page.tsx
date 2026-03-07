@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
-import { getActivePlanKeys } from "@/lib/plans";
+import { getActivePlanKeys, getPurchasablePlanKeys } from "@/lib/plans";
 
 type PlanKey = "free" | "home" | "pro" | "enterprise" | "corporation";
 
@@ -225,7 +225,9 @@ function BillingContent() {
   const allowedUserId = (process.env.NEXT_PUBLIC_TIER_SWITCHER_USER_ID || "").trim();
 
   const activePlanKeys = useMemo(() => getActivePlanKeys(), []);
+  const purchasablePlanKeys = useMemo(() => getPurchasablePlanKeys(), []);
   const activePlanKeySet = useMemo(() => new Set(activePlanKeys), [activePlanKeys]);
+  const purchasablePlanKeySet = useMemo(() => new Set(purchasablePlanKeys), [purchasablePlanKeys]);
 
   async function loadMeOnce(signal?: AbortSignal) {
     try {
@@ -245,7 +247,7 @@ function BillingContent() {
 
         const planUi = normalizeUiPlan(a?.plan);
         setCurrentPlan(planUi);
-        if (activePlanKeySet.has(planUi)) {
+        if (purchasablePlanKeySet.has(planUi) || planUi === "free") {
           setDevPlan(planUi);
         }
 
@@ -660,7 +662,7 @@ function BillingContent() {
                 disabled={devSaving}
                 className="rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               >
-                {activePlanKeys.map((planKey) => (
+                {purchasablePlanKeys.map((planKey) => (
                   <option key={planKey} value={planKey}>
                     {planKey}
                   </option>
@@ -740,6 +742,7 @@ function BillingContent() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
         {visiblePlans.map((p) => {
           const isCurrent = currentPlan === p.key;
+          const isPurchasable = purchasablePlanKeySet.has(p.key);
           const isPaidCheckout = p.key !== "free";
           const highlighted = p.key === "home";
 
@@ -774,9 +777,15 @@ function BillingContent() {
                   </div>
                 </div>
 
-                {isPaidCheckout && trialEligible && !isCurrent ? (
+                {isPaidCheckout && trialEligible && !isCurrent && isPurchasable ? (
                   <Badge variant="outline" className="w-fit rounded-full">
                     Includes 7-day free trial
+                  </Badge>
+                ) : null}
+
+                {isPaidCheckout && !isPurchasable ? (
+                  <Badge variant="outline" className="w-fit rounded-full">
+                    Currently unavailable
                   </Badge>
                 ) : null}
               </CardHeader>
@@ -795,7 +804,7 @@ function BillingContent() {
                     <Button asChild variant={p.cta.variant} className="rounded-2xl">
                       <Link href={p.cta.href}>{p.cta.label}</Link>
                     </Button>
-                  ) : (
+                  ) : isPurchasable ? (
                     <Button
                       variant={p.cta.variant}
                       onClick={p.onClick}
@@ -803,6 +812,10 @@ function BillingContent() {
                       className="rounded-2xl"
                     >
                       {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : p.cta.label}
+                    </Button>
+                  ) : (
+                    <Button variant="outline" disabled className="rounded-2xl">
+                      Unavailable
                     </Button>
                   )}
 
