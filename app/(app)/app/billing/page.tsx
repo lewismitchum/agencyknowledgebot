@@ -1,4 +1,3 @@
-// app/(app)/app/billing/page.tsx
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -19,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
+import { getActivePlanKeys } from "@/lib/plans";
 
 type PlanKey = "free" | "home" | "pro" | "enterprise" | "corporation";
 
@@ -224,6 +224,9 @@ function BillingContent() {
 
   const allowedUserId = (process.env.NEXT_PUBLIC_TIER_SWITCHER_USER_ID || "").trim();
 
+  const activePlanKeys = useMemo(() => getActivePlanKeys(), []);
+  const activePlanKeySet = useMemo(() => new Set(activePlanKeys), [activePlanKeys]);
+
   async function loadMeOnce(signal?: AbortSignal) {
     try {
       const data = await fetchJson<MeResponse>("/api/me", {
@@ -242,7 +245,9 @@ function BillingContent() {
 
         const planUi = normalizeUiPlan(a?.plan);
         setCurrentPlan(planUi);
-        setDevPlan(planUi);
+        if (activePlanKeySet.has(planUi)) {
+          setDevPlan(planUi);
+        }
 
         if (typeof a?.stripe_current_period_end === "string") {
           setPeriodEnd(a.stripe_current_period_end);
@@ -435,8 +440,7 @@ function BillingContent() {
       icon: <ShieldCheck className="h-5 w-5" />,
       bullets: ["1 shared bot", "5 uploads/day (docs only)", "20 chats/day", "No schedule or extraction"],
       cta: { label: "Go to Chat", href: "/app/chat", variant: "secondary" as const },
-      accent:
-        "border-border bg-card/75",
+      accent: "border-border bg-card/75",
     },
     {
       key: "home" as const,
@@ -511,6 +515,11 @@ function BillingContent() {
     },
   ] as const;
 
+  const visiblePlans = useMemo(
+    () => plans.filter((p) => activePlanKeySet.has(p.key)),
+    [activePlanKeySet]
+  );
+
   const isPaid = currentPlan !== "free";
   const trialEligible = !trialUsed && !stripeSubscriptionId;
   const showDevSwitcher = !!allowedUserId && !!meUserId && allowedUserId === meUserId && isOwner;
@@ -551,8 +560,8 @@ function BillingContent() {
                       ? `${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"} left`
                       : "Ended"
                     : trialEligible
-                    ? "Available"
-                    : "Already used"
+                      ? "Available"
+                      : "Already used"
                 }
               />
               <PlanHighlight
@@ -651,11 +660,11 @@ function BillingContent() {
                 disabled={devSaving}
                 className="rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               >
-                <option value="free">free</option>
-                <option value="home">home</option>
-                <option value="pro">pro</option>
-                <option value="enterprise">enterprise</option>
-                <option value="corporation">corporation</option>
+                {activePlanKeys.map((planKey) => (
+                  <option key={planKey} value={planKey}>
+                    {planKey}
+                  </option>
+                ))}
               </select>
 
               <Badge variant="secondary" className="rounded-full">
@@ -729,7 +738,7 @@ function BillingContent() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
-        {plans.map((p) => {
+        {visiblePlans.map((p) => {
           const isCurrent = currentPlan === p.key;
           const isPaidCheckout = p.key !== "free";
           const highlighted = p.key === "home";

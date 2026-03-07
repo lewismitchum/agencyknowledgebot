@@ -1,17 +1,14 @@
-// app/api/billing/dev-set-plan/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireOwner } from "@/lib/authz";
-import { normalizePlan, type PlanKey } from "@/lib/plans";
+import { normalizePlan, type PlanKey, getActivePlanKeys } from "@/lib/plans";
 
 export const runtime = "nodejs";
 
 type Body = {
   plan?: string;
 };
-
-const ALLOWED: PlanKey[] = ["free", "home", "pro", "enterprise", "corporation"];
 
 function getCtxUserId(ctx: any): string {
   return String(
@@ -38,8 +35,6 @@ function isProdVercel() {
 }
 
 function allowInProdBypass(): boolean {
-  // Explicit, opt-in bypass for production only (still locked to allowed user).
-  // Set this in Vercel ONLY if you want dev-set-plan on production.
   return String(process.env.ALLOW_DEV_SET_PLAN_IN_PROD || "").trim() === "1";
 }
 
@@ -48,8 +43,6 @@ function notFound() {
 }
 
 export async function POST(req: NextRequest) {
-  // 🔒 Default: dev-only route must not exist in real production.
-  // But allow an explicit bypass env var if you want it.
   if (isProdVercel() && !allowInProdBypass()) {
     return notFound();
   }
@@ -60,7 +53,6 @@ export async function POST(req: NextRequest) {
     const ctxUserId = getCtxUserId(ctx);
     const allowedUserId = getAllowedUserId();
 
-    // 🔒 You-only lock (stealth)
     if (!allowedUserId || !ctxUserId || ctxUserId !== allowedUserId) {
       return notFound();
     }
@@ -71,9 +63,10 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as Body;
     const desired = normalizePlan(body?.plan);
 
-    if (!ALLOWED.includes(desired)) {
+    const allowedPlans = getActivePlanKeys();
+    if (!allowedPlans.includes(desired)) {
       return NextResponse.json(
-        { ok: false, error: "INVALID_PLAN", allowed: ALLOWED },
+        { ok: false, error: "INVALID_PLAN", allowed: allowedPlans },
         { status: 400 }
       );
     }
@@ -84,6 +77,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       agency_id: ctx.agencyId,
       plan: desired,
+      allowed: allowedPlans,
       debug: {
         vercel_env: process.env.VERCEL_ENV ?? null,
         node_env: process.env.NODE_ENV ?? null,
@@ -95,8 +89,13 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 
-    if (code === "UNAUTHENTICATED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (code === "FORBIDDEN_NOT_OWNER") return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    if (code === "UNAUTHENTICATED") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (code === "FORBIDDEN_NOT_OWNER") {
+      return NextResponse.json({ error: "Owner only" }, { status: 403 });
+    }
 
     console.error("DEV_SET_PLAN_ERROR", err);
     return NextResponse.json(
