@@ -3,7 +3,7 @@ import Stripe from "stripe";
 import { getDb, type Db } from "@/lib/db";
 import { ensureSchema } from "@/lib/schema";
 import { requireOwner } from "@/lib/authz";
-import { normalizePlan, type PlanKey, isPlanPurchasable } from "@/lib/plans";
+import { normalizePlan, type PlanKey, IsPlanPurchasable, isPlanPurchasable } from "@/lib/plans";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
