@@ -1,4 +1,3 @@
-// app/(app)/app/settings/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -43,6 +42,9 @@ const TOUR_KEYS = [
   "louisai_onboarding_index",
 ];
 
+const DELETE_ACCOUNT_CONFIRM = "DELETE MY ACCOUNT";
+const DELETE_WORKSPACE_CONFIRM = "DELETE WORKSPACE";
+
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState("");
@@ -59,6 +61,15 @@ export default function SettingsPage() {
   const [timezone, setTimezone] = useState<string>("America/Chicago");
   const [tzLoading, setTzLoading] = useState(false);
   const [tzError, setTzError] = useState("");
+
+  const [accountDeletePhrase, setAccountDeletePhrase] = useState("");
+  const [workspaceDeletePhrase, setWorkspaceDeletePhrase] = useState("");
+
+  const [accountDeleteLoading, setAccountDeleteLoading] = useState(false);
+  const [workspaceDeleteLoading, setWorkspaceDeleteLoading] = useState(false);
+
+  const [accountDeleteError, setAccountDeleteError] = useState("");
+  const [workspaceDeleteError, setWorkspaceDeleteError] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -150,6 +161,12 @@ export default function SettingsPage() {
     }
   }, [timezone]);
 
+  const canDeleteAccount = accountDeletePhrase.trim() === DELETE_ACCOUNT_CONFIRM;
+  const canDeleteWorkspace =
+    isOwner &&
+    (workspaceDeletePhrase.trim() === DELETE_WORKSPACE_CONFIRM ||
+      workspaceDeletePhrase.trim() === String(agencyName || "").trim());
+
   async function saveTimezone() {
     if (!isOwner) return;
     setTzLoading(true);
@@ -170,6 +187,76 @@ export default function SettingsPage() {
       setTzError(e?.message || "Failed to save timezone");
     } finally {
       setTzLoading(false);
+    }
+  }
+
+  async function deleteAccount() {
+    if (!canDeleteAccount || accountDeleteLoading) return;
+
+    setAccountDeleteLoading(true);
+    setAccountDeleteError("");
+
+    try {
+      const r = await fetch("/api/account/delete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ confirm: accountDeletePhrase.trim() }),
+      });
+
+      const j = await r.json().catch(() => ({}));
+
+      if (!r.ok || !j?.ok) {
+        throw new Error(j?.message || j?.error || "Failed to delete account");
+      }
+
+      try {
+        for (const key of TOUR_KEYS) {
+          window.localStorage.removeItem(key);
+        }
+      } catch {}
+
+      await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
+      window.location.href = "/login";
+    } catch (e: any) {
+      setAccountDeleteError(e?.message || "Failed to delete account");
+    } finally {
+      setAccountDeleteLoading(false);
+    }
+  }
+
+  async function deleteWorkspace() {
+    if (!canDeleteWorkspace || workspaceDeleteLoading || !isOwner) return;
+
+    setWorkspaceDeleteLoading(true);
+    setWorkspaceDeleteError("");
+
+    try {
+      const r = await fetch("/api/workspace/delete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ confirm: workspaceDeletePhrase.trim() }),
+      });
+
+      const j = await r.json().catch(() => ({}));
+
+      if (!r.ok || !j?.ok) {
+        throw new Error(j?.message || j?.error || "Failed to delete workspace");
+      }
+
+      try {
+        for (const key of TOUR_KEYS) {
+          window.localStorage.removeItem(key);
+        }
+      } catch {}
+
+      await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
+      window.location.href = "/login";
+    } catch (e: any) {
+      setWorkspaceDeleteError(e?.message || "Failed to delete workspace");
+    } finally {
+      setWorkspaceDeleteLoading(false);
     }
   }
 
@@ -350,15 +437,85 @@ export default function SettingsPage() {
       <Card className="rounded-3xl border-destructive/30">
         <CardHeader>
           <CardTitle className="text-xl tracking-tight">Danger zone</CardTitle>
-          <CardDescription>These actions are not enabled yet.</CardDescription>
+          <CardDescription>Permanent destructive actions for your account and workspace.</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="text-sm text-muted-foreground">
-            Delete workspace, remove documents, and other destructive actions will live here.
+
+        <CardContent className="space-y-6">
+          <div className="rounded-2xl border border-destructive/20 p-4">
+            <div className="text-sm font-medium">Delete personal account</div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              This deletes your personal account, private bots, and private documents. You will be logged out immediately.
+            </p>
+
+            <div className="mt-4 space-y-2">
+              <div className="text-xs text-muted-foreground">
+                Type <span className="font-mono font-medium">{DELETE_ACCOUNT_CONFIRM}</span> to confirm.
+              </div>
+              <input
+                value={accountDeletePhrase}
+                onChange={(e) => setAccountDeletePhrase(e.target.value)}
+                placeholder={DELETE_ACCOUNT_CONFIRM}
+                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                disabled={accountDeleteLoading}
+              />
+              {accountDeleteError ? <div className="text-sm text-red-600">{accountDeleteError}</div> : null}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button
+                variant="destructive"
+                className="rounded-xl"
+                disabled={!canDeleteAccount || accountDeleteLoading}
+                onClick={deleteAccount}
+              >
+                {accountDeleteLoading ? "Deleting account…" : "Delete my account"}
+              </Button>
+            </div>
           </div>
-          <Button variant="destructive" className="rounded-xl" disabled>
-            Delete workspace (soon)
-          </Button>
+
+          <Separator />
+
+          <div className="rounded-2xl border border-destructive/20 p-4">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-sm font-medium">Delete workspace</div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Owner only. This permanently deletes the entire workspace, including users, bots, docs, schedule data, extractions, and related records.
+                </p>
+              </div>
+
+              <Badge variant={isOwner ? "secondary" : "outline"} className="rounded-full">
+                {isOwner ? "Owner enabled" : "Owner only"}
+              </Badge>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <div className="text-xs text-muted-foreground">
+                Type <span className="font-mono font-medium">{DELETE_WORKSPACE_CONFIRM}</span> or the workspace name{" "}
+                <span className="font-mono font-medium">{agencyName || "—"}</span>.
+              </div>
+              <input
+                value={workspaceDeletePhrase}
+                onChange={(e) => setWorkspaceDeletePhrase(e.target.value)}
+                placeholder={agencyName || DELETE_WORKSPACE_CONFIRM}
+                className="w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                disabled={!isOwner || workspaceDeleteLoading}
+              />
+              {workspaceDeleteError ? <div className="text-sm text-red-600">{workspaceDeleteError}</div> : null}
+              {!isOwner ? <div className="text-xs text-muted-foreground">Only the workspace owner can do this.</div> : null}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button
+                variant="destructive"
+                className="rounded-xl"
+                disabled={!canDeleteWorkspace || workspaceDeleteLoading}
+                onClick={deleteWorkspace}
+              >
+                {workspaceDeleteLoading ? "Deleting workspace…" : "Delete workspace"}
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
