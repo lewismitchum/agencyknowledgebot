@@ -1,4 +1,3 @@
-// app/(app)/app/schedule/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -695,7 +694,7 @@ export default function SchedulePage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 md:px-6">
       <div className="relative overflow-hidden rounded-[28px] border bg-card/80 p-6 shadow-sm backdrop-blur md:p-7">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.12),transparent_50%)]" />
 
@@ -757,7 +756,7 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <TopStat
           icon={<CalendarDays className="h-5 w-5" />}
           label="Events"
@@ -786,62 +785,50 @@ export default function SchedulePage() {
 
       {err ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{err}</div> : null}
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur md:col-span-2">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="text-lg font-medium tracking-tight">{headerLabel}</div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="min-w-0">
+              <div className="truncate text-lg font-medium tracking-tight">{headerLabel}</div>
               <div className="mt-1 text-xs text-muted-foreground">Filter, search, and switch views instantly.</div>
             </div>
 
-            <div className="flex flex-col gap-2 md:flex-row md:items-center">
-              <select
-                value={botId}
-                onChange={(e) => setBotId(e.target.value)}
-                className="w-full rounded-2xl border bg-background/70 px-3 py-2 text-sm outline-none backdrop-blur focus:ring-2 focus:ring-ring md:w-64"
-              >
-                <option value={ALL_BOTS_ID}>All bots</option>
-                {bots.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-col gap-2 xl:items-end">
+              <div className="flex w-full flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center xl:justify-end">
+                <select
+                  value={botId}
+                  onChange={(e) => setBotId(e.target.value)}
+                  className="w-full rounded-2xl border bg-background/70 px-3 py-2 text-sm outline-none backdrop-blur focus:ring-2 focus:ring-ring lg:w-64"
+                >
+                  <option value={ALL_BOTS_ID}>All bots</option>
+                  {bots.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
 
-              <div className="flex rounded-2xl border bg-background/60 p-1 backdrop-blur">
-                {(["day", "week", "month"] as const).map((v) => (
-                  <button
-                    key={v}
-                    onClick={() => {
-                      setView(v);
-                      savePrefs({ ...prefs, default_view: v });
-                    }}
-                    className={[
-                      "rounded-xl px-3 py-2 text-sm transition-colors",
-                      view === v ? "bg-accent text-foreground shadow-sm" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                    ].join(" ")}
-                    type="button"
-                  >
-                    {v.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 rounded-2xl border bg-background/45 p-3">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center">
-              <div className="flex flex-wrap items-center gap-2">
-                <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
-                <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
-                <Toggle
-                  label="Show done"
-                  checked={prefs.show_done_tasks}
-                  onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })}
-                />
+                <div className="flex w-full rounded-2xl border bg-background/60 p-1 backdrop-blur lg:w-auto">
+                  {(["day", "week", "month"] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => {
+                        setView(v);
+                        savePrefs({ ...prefs, default_view: v });
+                      }}
+                      className={[
+                        "flex-1 rounded-xl px-3 py-2 text-sm transition-colors lg:flex-none",
+                        view === v ? "bg-accent text-foreground shadow-sm" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                      ].join(" ")}
+                      type="button"
+                    >
+                      {v.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="md:ml-auto flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="flex w-full flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center xl:justify-end">
                 <div className="flex items-center gap-2">
                   <Filter className="h-4 w-4 text-muted-foreground" />
                   <span className="text-xs text-muted-foreground">Week starts</span>
@@ -855,13 +842,23 @@ export default function SchedulePage() {
                   </select>
                 </div>
 
-                <div className="relative">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Toggle label="Events" checked={prefs.show_events} onChange={(v) => savePrefs({ ...prefs, show_events: v })} />
+                  <Toggle label="Tasks" checked={prefs.show_tasks} onChange={(v) => savePrefs({ ...prefs, show_tasks: v })} />
+                  <Toggle
+                    label="Show done"
+                    checked={prefs.show_done_tasks}
+                    onChange={(v) => savePrefs({ ...prefs, show_done_tasks: v })}
+                  />
+                </div>
+
+                <div className="relative w-full lg:w-72">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder="Search events and tasks…"
-                    className="w-full rounded-2xl border bg-background px-10 py-2 text-sm outline-none focus:ring-2 focus:ring-ring md:w-72"
+                    className="w-full rounded-2xl border bg-background px-10 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
                   />
                 </div>
 
@@ -876,7 +873,7 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="mt-6">
+          <div className="mt-6 min-w-0">
             {loading ? (
               <div className="rounded-2xl border bg-background/45 p-6 text-sm text-muted-foreground">Loading…</div>
             ) : view === "day" ? (
@@ -923,7 +920,7 @@ export default function SchedulePage() {
         <div className="space-y-4">
           <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm font-medium">Daily to-do</div>
                 <div className="mt-1 text-xs text-muted-foreground">{formatReadableDateKey(dayKey, tz)}</div>
               </div>
@@ -955,7 +952,7 @@ export default function SchedulePage() {
                             type="button"
                           >
                             <div className="min-w-0">
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <div className="font-medium">{t.title}</div>
                                 {t.bot_id ? (
                                   <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -1003,7 +1000,7 @@ export default function SchedulePage() {
                             type="button"
                           >
                             <div className="min-w-0">
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <div className="font-medium">{t.title}</div>
                                 {t.bot_id ? (
                                   <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -1038,7 +1035,7 @@ export default function SchedulePage() {
 
           <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm font-medium">Quick add</div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   Manual add is fine. Auto extraction becomes paid-only later.
@@ -1124,7 +1121,7 @@ function DayView({
               <div key={e.id} className="rounded-2xl border bg-background/45 p-3 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <div className="font-medium">{e.title}</div>
                       <BotBadge botId={e.bot_id} botNameById={botNameById} />
                     </div>
@@ -1165,7 +1162,7 @@ function DayView({
                     type="button"
                   >
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <div className="font-medium">{t.title}</div>
                         <BotBadge botId={t.bot_id} botNameById={botNameById} />
                       </div>
@@ -1216,7 +1213,7 @@ function WeekView({
   botNameById: Map<string, string>;
 }) {
   return (
-    <div className="grid gap-3 md:grid-cols-2">
+    <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
       {weekDays.map((k) => {
         const ev = eventsByDay.get(k) || [];
         const tk = tasksByDay.get(k) || [];
@@ -1231,7 +1228,7 @@ function WeekView({
                   <div key={e.id} className="rounded-xl border bg-background/70 p-2">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <div className="truncate text-sm font-medium">{e.title}</div>
                           <BotBadge botId={e.bot_id} botNameById={botNameById} />
                         </div>
@@ -1268,7 +1265,7 @@ function WeekView({
                         title="Toggle task"
                         type="button"
                       >
-                        <span className="inline-flex items-center gap-2">
+                        <span className="inline-flex flex-wrap items-center gap-2">
                           {t.title}
                           <BotBadge botId={t.bot_id} botNameById={botNameById} />
                         </span>
@@ -1321,11 +1318,11 @@ function MonthView({
   const labels = weekdayLabels(weekStartsOn);
   const weeks = Math.ceil(monthDays.length / 7);
 
-  const todayKey = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayKey = useMemo(() => dayKeyInTz(new Date(), browserTz()), []);
 
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-7 gap-2 text-xs text-muted-foreground">
+    <div className="space-y-3 overflow-x-auto">
+      <div className="grid min-w-[840px] grid-cols-7 gap-2 text-xs text-muted-foreground">
         {labels.map((x) => (
           <div key={x} className="px-1">
             {x}
@@ -1333,12 +1330,12 @@ function MonthView({
         ))}
       </div>
 
-      <div className="grid grid-cols-7 gap-2">
+      <div className="grid min-w-[840px] grid-cols-7 gap-2">
         {monthDays.map((k) => {
           const ev = eventsByDay.get(k) || [];
           const tk = tasksByDay.get(k) || [];
           const inMonth = sameMonthByKey(k, `${anchorMonthKey}-01`);
-          const isToday = k === todayKey;
+          const isTodayValue = k === todayKey;
           const isSelected = k === selectedDayKey;
 
           return (
@@ -1346,7 +1343,7 @@ function MonthView({
               key={k}
               onClick={() => onSelectDay(k)}
               className={[
-                "min-h-[118px] rounded-2xl border p-2 text-left transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent/30",
+                "min-h-[132px] rounded-2xl border p-2 text-left transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent/30",
                 inMonth ? "bg-background/45" : "bg-muted/30 opacity-70",
                 isSelected ? "ring-2 ring-ring shadow-sm" : "",
               ].join(" ")}
@@ -1354,7 +1351,7 @@ function MonthView({
               type="button"
             >
               <div className="flex items-center justify-between">
-                <div className={["text-xs font-medium", isToday ? "rounded-md border bg-background px-2 py-0.5" : ""].join(" ")}>
+                <div className={["text-xs font-medium", isTodayValue ? "rounded-md border bg-background px-2 py-0.5" : ""].join(" ")}>
                   {Number(k.slice(8, 10))}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
@@ -1514,12 +1511,12 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
         {botId === ALL_BOTS_ID ? "Select a bot to add" : loading ? "Adding…" : "Add"}
       </button>
 
-      <div className="rounded-2xl border bg-muted p-3 text-xs text-muted-foreground space-y-1">
+      <div className="rounded-2xl border bg-muted p-3 text-xs text-muted-foreground space-y-1 break-words">
         <div>
           Type local: <span className="font-mono">2026-03-05 14:00</span> (or <span className="font-mono">2:00pm</span>)
         </div>
         <div>
-          Stored as UTC ISO: <span className="font-mono">2026-03-05T20:00:00.000Z</span>
+          Stored as UTC ISO: <span className="font-mono break-all">2026-03-05T20:00:00.000Z</span>
         </div>
       </div>
     </div>

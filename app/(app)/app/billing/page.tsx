@@ -167,8 +167,8 @@ function TopStat({
 
 function FeatureLine({ children }: { children: React.ReactNode }) {
   return (
-    <li className="flex gap-2 text-sm text-muted-foreground">
-      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+    <li className="flex gap-2 text-sm leading-6 text-muted-foreground">
+      <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
       <span>{children}</span>
     </li>
   );
@@ -247,7 +247,7 @@ function BillingContent() {
 
         const planUi = normalizeUiPlan(a?.plan);
         setCurrentPlan(planUi);
-        if (purchasablePlanKeySet.has(planUi) || planUi === "free") {
+        if (activePlanKeySet.has(planUi)) {
           setDevPlan(planUi);
         }
 
@@ -662,7 +662,7 @@ function BillingContent() {
                 disabled={devSaving}
                 className="rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               >
-                {purchasablePlanKeys.map((planKey) => (
+                {activePlanKeys.map((planKey) => (
                   <option key={planKey} value={planKey}>
                     {planKey}
                   </option>
@@ -739,7 +739,7 @@ function BillingContent() {
         </Card>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+      <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3">
         {visiblePlans.map((p) => {
           const isCurrent = currentPlan === p.key;
           const isPurchasable = purchasablePlanKeySet.has(p.key);
@@ -750,7 +750,7 @@ function BillingContent() {
             <Card
               key={p.key}
               className={[
-                "relative overflow-hidden rounded-[28px] border shadow-sm transition-all duration-200 hover:-translate-y-[2px] hover:shadow-md",
+                "relative flex h-full flex-col overflow-hidden rounded-[28px] border shadow-sm transition-all duration-200 hover:-translate-y-[2px] hover:shadow-md",
                 p.accent,
                 isCurrent ? "ring-1 ring-border" : "",
                 highlighted ? "xl:scale-[1.01]" : "",
@@ -762,7 +762,7 @@ function BillingContent() {
 
               <CardHeader className="space-y-4">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <CardTitle className="text-xl tracking-tight">{p.name}</CardTitle>
                     <CardDescription className="mt-1 text-base">{p.price}</CardDescription>
                   </div>
@@ -771,7 +771,7 @@ function BillingContent() {
                     <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground shadow-sm">
                       {p.icon}
                     </div>
-                    <Badge variant={isCurrent ? "default" : "secondary"} className="rounded-full">
+                    <Badge variant={isCurrent ? "default" : "secondary"} className="rounded-full text-center">
                       {isCurrent ? "Current plan" : p.badge}
                     </Badge>
                   </div>
@@ -790,43 +790,45 @@ function BillingContent() {
                 ) : null}
               </CardHeader>
 
-              <CardContent className="space-y-4">
+              <CardContent className="flex flex-1 flex-col space-y-4">
                 <Separator />
 
-                <ul className="space-y-2">
+                <ul className="space-y-3">
                   {p.bullets.map((b) => (
                     <FeatureLine key={b}>{b}</FeatureLine>
                   ))}
                 </ul>
 
-                <div className="flex items-center gap-2 pt-2">
-                  {p.key === "free" ? (
-                    <Button asChild variant={p.cta.variant} className="rounded-2xl">
-                      <Link href={p.cta.href}>{p.cta.label}</Link>
-                    </Button>
-                  ) : isPurchasable ? (
-                    <Button
-                      variant={p.cta.variant}
-                      onClick={p.onClick}
-                      disabled={isCurrent || loadingPlan === p.key}
-                      className="rounded-2xl"
-                    >
-                      {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : p.cta.label}
-                    </Button>
-                  ) : (
-                    <Button variant="outline" disabled className="rounded-2xl">
-                      Unavailable
-                    </Button>
-                  )}
+                <div className="mt-auto space-y-3 pt-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {p.key === "free" ? (
+                      <Button asChild variant={p.cta.variant} className="rounded-2xl">
+                        <Link href={p.cta.href}>{p.cta.label}</Link>
+                      </Button>
+                    ) : isPurchasable ? (
+                      <Button
+                        variant={p.cta.variant}
+                        onClick={p.onClick}
+                        disabled={isCurrent || loadingPlan === p.key}
+                        className="rounded-2xl"
+                      >
+                        {isCurrent ? "Current" : loadingPlan === p.key ? "Redirecting..." : p.cta.label}
+                      </Button>
+                    ) : (
+                      <Button variant="outline" disabled className="rounded-2xl">
+                        Unavailable
+                      </Button>
+                    )}
 
-                  <Button asChild variant="ghost" className="rounded-2xl">
-                    <Link href="/pricing">Details</Link>
-                  </Button>
+                    <Button asChild variant="ghost" className="rounded-2xl">
+                      <Link href="/pricing">Details</Link>
+                    </Button>
+                  </div>
+
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    Plan updates are enforced server-side after checkout and webhook processing.
+                  </p>
                 </div>
-
-                <p className="text-xs text-muted-foreground">
-                  Plan updates are enforced server-side after checkout and webhook processing.
-                </p>
               </CardContent>
             </Card>
           );
