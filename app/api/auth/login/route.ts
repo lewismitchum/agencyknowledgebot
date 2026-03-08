@@ -1,4 +1,5 @@
 // app/api/auth/login/route.ts
+import { randomUUID } from "crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
@@ -18,6 +19,7 @@ async function readBody(req: NextRequest): Promise<{
   turnstile_token?: string;
 }> {
   const ct = req.headers.get("content-type") || "";
+
   if (ct.includes("application/json")) {
     const j = await req.json().catch(() => ({}));
     return {
@@ -28,8 +30,10 @@ async function readBody(req: NextRequest): Promise<{
       turnstile_token: j?.turnstile_token,
     };
   }
+
   const text = await req.text().catch(() => "");
   const params = new URLSearchParams(text);
+
   return {
     email: params.get("email") || undefined,
     password: params.get("password") || undefined,
@@ -87,7 +91,7 @@ async function verifyTurnstile(token: string, ip: string | null) {
   form.set("response", token);
   if (ip) form.set("remoteip", ip);
 
-  const r = await fetchJson("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form.toString(),
@@ -113,11 +117,6 @@ function normStatus(s: any): "active" | "pending" | "blocked" {
   return "pending";
 }
 
-/**
- * Back-compat migration:
- * If identity does not exist yet, but there's a legacy users.password_hash for this email,
- * allow login by that hash ONCE, then create identity and attach identity_id to all matching users rows.
- */
 async function getOrMigrateIdentityByEmail(db: Db, email: string, password: string) {
   await ensureIdentityTables(db);
 
@@ -131,7 +130,6 @@ async function getOrMigrateIdentityByEmail(db: Db, email: string, password: stri
 
   if (existing?.id) return { mode: "identity" as const, identity: existing };
 
-  // try legacy hash
   const legacy = (await db.get(
     `SELECT password_hash
      FROM users
@@ -148,7 +146,7 @@ async function getOrMigrateIdentityByEmail(db: Db, email: string, password: stri
   const ok = await bcrypt.compare(password, legacyHash);
   if (!ok) return { mode: "none" as const, identity: null };
 
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   const t = nowIso();
 
   await db.run(
@@ -161,7 +159,6 @@ async function getOrMigrateIdentityByEmail(db: Db, email: string, password: stri
     t
   );
 
-  // best-effort attach identity_id to existing membership rows
   await db.run(
     `UPDATE users
      SET identity_id = COALESCE(identity_id, ?),
@@ -222,7 +219,6 @@ export async function POST(req: NextRequest) {
     const agencyNeedle = agency.trim().toLowerCase();
     const nextPath = normNext(next);
 
-    // Select agency by NAME (for now). If you have slug later, add OR lower(slug)=?
     const agencyRow = (await db.get(
       `SELECT id, email, name
        FROM agencies
@@ -235,7 +231,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Agency not found" }, { status: 404 });
     }
 
-    // Identity auth (or migrate from legacy user hash)
     const identRes = await getOrMigrateIdentityByEmail(db, normalizedEmail, String(password));
     const identity = identRes.identity;
 
@@ -245,21 +240,23 @@ export async function POST(req: NextRequest) {
 
     const identityHash = String(identity.password_hash ?? "").trim();
     if (!identityHash) {
-      // identity exists but hasn't set password yet (invite completion should set it)
       return NextResponse.json(
         {
           error: "NO_PASSWORD_SET",
           message: "You need to set a password before logging in.",
-          redirectTo: `/set-password?email=${encodeURIComponent(normalizedEmail)}&agency=${encodeURIComponent(agencyRow.name || agency)}`,
+          redirectTo: `/set-password?email=${encodeURIComponent(normalizedEmail)}&agency=${encodeURIComponent(
+            agencyRow.name || agency
+          )}`,
         },
         { status: 403 }
       );
     }
 
     const ok = await bcrypt.compare(String(password), identityHash);
-    if (!ok) return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+    if (!ok) {
+      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+    }
 
-    // Membership row (users table) must exist for this agency
     const user = (await db.get(
       `SELECT id, email, role, status, has_completed_onboarding
        FROM users
@@ -281,9 +278,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No access to that agency" }, { status: 403 });
     }
 
-    // Attach identity_id if missing (best-effort)
-    if (user && user.id) {
-      await db.run(
+    await db
+      .run(
         `UPDATE users
          SET identity_id = COALESCE(identity_id, ?),
              updated_at = COALESCE(updated_at, ?)
@@ -291,8 +287,8 @@ export async function POST(req: NextRequest) {
         identity.id,
         nowIso(),
         user.id
-      ).catch(() => {});
-    }
+      )
+      .catch(() => {});
 
     const role = normRole(user.role);
     const status = normStatus(user.status);
@@ -329,6 +325,9 @@ export async function POST(req: NextRequest) {
     return res;
   } catch (err: any) {
     console.error("LOGIN_ERROR", err);
-    return NextResponse.json({ error: "Server error", message: err?.message || "Unknown error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Server error", message: String(err?.message || "Unknown error") },
+      { status: 500 }
+    );
   }
 }

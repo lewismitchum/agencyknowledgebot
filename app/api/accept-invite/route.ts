@@ -1,182 +1,247 @@
 // app/api/accept-invite/route.ts
-import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
+import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { getDb, type Db } from "@/lib/db";
-import { ensureSchema } from "@/lib/schema";
-import { nowIso, hashToken } from "@/lib/tokens";
+import { ensureInviteTables } from "@/lib/db/ensure-invites";
+import { hashToken, nowIso } from "@/lib/tokens";
 import { setSessionCookie } from "@/lib/session";
+import { ensureSchema } from "@/lib/schema";
+import { getPlanLimits, normalizePlan } from "@/lib/plans";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { sendWelcomeEmailSafe } from "@/lib/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function ensureInviteTables(db: Db) {
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS agency_invites (
-      id TEXT PRIMARY KEY,
-      agency_id TEXT NOT NULL,
-      email TEXT NOT NULL,
-      token_hash TEXT NOT NULL,
-      expires_at TEXT,
-      created_at TEXT,
-      accepted_at TEXT,
-      revoked_at TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_agency_invites_agency ON agency_invites(agency_id);
-    CREATE INDEX IF NOT EXISTS idx_agency_invites_email ON agency_invites(email);
-    CREATE INDEX IF NOT EXISTS idx_agency_invites_token_hash ON agency_invites(token_hash);
-  `);
-
-  const cols = (await db.all(`PRAGMA table_info(agency_invites)`)) as Array<{ name?: string }>;
-  const have = new Set((cols || []).map((c) => String(c?.name || "")));
-
-  if (!have.has("accepted_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN accepted_at TEXT`).catch(() => {});
-  if (!have.has("revoked_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN revoked_at TEXT`).catch(() => {});
-  if (!have.has("expires_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN expires_at TEXT`).catch(() => {});
-  if (!have.has("created_at")) await db.run(`ALTER TABLE agency_invites ADD COLUMN created_at TEXT`).catch(() => {});
-  if (!have.has("token_hash")) await db.run(`ALTER TABLE agency_invites ADD COLUMN token_hash TEXT`).catch(() => {});
-}
-
-async function ensureUserColumns(db: Db) {
+async function ensureUserAuthColumns(db: Db) {
   await db.run("ALTER TABLE users ADD COLUMN role TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN status TEXT").catch(() => {});
+  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN created_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN updated_at TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN email_verified INTEGER").catch(() => {});
-  await db.run("ALTER TABLE users ADD COLUMN password_hash TEXT").catch(() => {});
   await db.run("ALTER TABLE users ADD COLUMN has_completed_onboarding INTEGER").catch(() => {});
 }
 
-function isEmail(s: string) {
-  const v = String(s ?? "").trim().toLowerCase();
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+function pickMaxUsersFromLimits(limits: any): number | null {
+  const raw = limits?.max_users ?? limits?.users ?? limits?.seats ?? null;
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function countActiveBillableSeatsTx(db: Db, agencyId: string): Promise<number> {
+  const row = (await db.get(
+    `SELECT COUNT(*) as c
+     FROM users
+     WHERE agency_id = ?
+       AND COALESCE(status,'active') = 'active'
+       AND COALESCE(role,'member') NOT IN ('owner','admin')`,
+    agencyId
+  )) as { c: number } | undefined;
+
+  return Number(row?.c ?? 0);
+}
+
+async function countActivePendingInvitesTx(db: Db, agencyId: string): Promise<number> {
+  const row = (await db.get(
+    `SELECT COUNT(*) as c
+     FROM agency_invites
+     WHERE agency_id = ?
+       AND accepted_at IS NULL
+       AND revoked_at IS NULL
+       AND expires_at > ?`,
+    agencyId,
+    nowIso()
+  )) as { c: number } | undefined;
+
+  return Number(row?.c ?? 0);
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("x-real-ip") ||
+      "unknown";
+
+    try {
+      await enforceRateLimit({
+        userId: `ip:${ip}`,
+        agencyId: "public",
+        key: "accept_invite",
+        perMinute: 10,
+        perHour: 200,
+      });
+    } catch {
+      return NextResponse.json({ ok: false, error: "TOO_MANY_ATTEMPTS" }, { status: 429 });
+    }
+
+    await ensureInviteTables();
+
+    const body = await req.json().catch(() => ({}));
+    const token = String(body?.token || "").trim();
+    const password = String(body?.password || "").trim();
+
+    if (!token) {
+      return NextResponse.json({ error: "Missing token" }, { status: 400 });
+    }
+
+    if (!password) {
+      return NextResponse.json({ error: "Missing password" }, { status: 400 });
+    }
+
+    if (password.length < 8) {
+      return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
+    }
+
     const db: Db = await getDb();
     await ensureSchema(db);
-    await ensureInviteTables(db);
-    await ensureUserColumns(db);
-
-    const body = (await req.json().catch(() => ({}))) as any;
-
-    const token = String(body?.token ?? "").trim();
-    const password = String(body?.password ?? "").trim();
-
-    if (!token) return NextResponse.json({ ok: false, error: "MISSING_TOKEN" }, { status: 400 });
-    if (!password) return NextResponse.json({ ok: false, error: "MISSING_PASSWORD" }, { status: 400 });
-    if (password.length < 8)
-      return NextResponse.json({ ok: false, error: "WEAK_PASSWORD" }, { status: 400 });
+    await ensureUserAuthColumns(db);
 
     const token_hash = hashToken(token);
 
-    const invite = (await db.get(
-      `SELECT id, agency_id, email, expires_at, accepted_at, revoked_at
-       FROM agency_invites
-       WHERE token_hash = ?
-       LIMIT 1`,
-      token_hash
-    )) as
-      | {
-          id: string;
-          agency_id: string;
-          email: string;
-          expires_at: string | null;
-          accepted_at: string | null;
-          revoked_at: string | null;
+    await db.run("BEGIN IMMEDIATE TRANSACTION");
+
+    let welcomeTo: string | null = null;
+    let welcomeAgencyName: string | null = null;
+
+    try {
+      const invite = (await db.get(
+        `SELECT id, agency_id, email, expires_at, accepted_at, revoked_at
+         FROM agency_invites
+         WHERE token_hash = ?
+         LIMIT 1`,
+        token_hash
+      )) as
+        | {
+            id: string;
+            agency_id: string;
+            email: string;
+            expires_at: string;
+            accepted_at: string | null;
+            revoked_at: string | null;
+          }
+        | undefined;
+
+      if (!invite?.id || invite.revoked_at || invite.accepted_at) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid or expired invite" }, { status: 400 });
+      }
+
+      const exp = invite.expires_at ? new Date(invite.expires_at).getTime() : 0;
+      if (!exp || Date.now() > exp) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid or expired invite" }, { status: 400 });
+      }
+
+      const agency = (await db.get(
+        `SELECT id, email, name, plan
+         FROM agencies
+         WHERE id = ?
+         LIMIT 1`,
+        invite.agency_id
+      )) as { id: string; email: string; name: string | null; plan: string | null } | undefined;
+
+      if (!agency?.id) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid invite (agency missing)" }, { status: 400 });
+      }
+
+      const emailLower = String(invite.email || "").trim().toLowerCase();
+      if (!emailLower) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "Invalid invite (email missing)" }, { status: 400 });
+      }
+
+      const existing = (await db.get(
+        "SELECT id FROM users WHERE agency_id = ? AND lower(email) = ? LIMIT 1",
+        invite.agency_id,
+        emailLower
+      )) as { id: string } | undefined;
+
+      if (existing?.id) {
+        await db.run("ROLLBACK");
+        return NextResponse.json({ error: "User already exists" }, { status: 409 });
+      }
+
+      const plan = normalizePlan(agency.plan);
+      const limits = getPlanLimits(plan);
+      const maxUsers = pickMaxUsersFromLimits(limits);
+
+      if (maxUsers != null) {
+        const usedActiveBillable = await countActiveBillableSeatsTx(db, invite.agency_id);
+        const pendingInvites = await countActivePendingInvitesTx(db, invite.agency_id);
+
+        if (usedActiveBillable + pendingInvites >= Number(maxUsers)) {
+          await db.run("ROLLBACK");
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "SEAT_LIMIT_EXCEEDED",
+              plan,
+              used: usedActiveBillable,
+              pending_invites: pendingInvites,
+              limit: Number(maxUsers),
+            },
+            { status: 403 }
+          );
         }
-      | undefined;
+      }
 
-    if (!invite?.id) return NextResponse.json({ ok: false, error: "INVALID_INVITE" }, { status: 404 });
-    if (invite.revoked_at) return NextResponse.json({ ok: false, error: "INVITE_REVOKED" }, { status: 410 });
+      const userId = randomUUID();
+      const password_hash = await bcrypt.hash(password, 10);
+      const ts = nowIso();
 
-    // expires check (ISO string)
-    const exp = invite.expires_at ? Date.parse(invite.expires_at) : NaN;
-    if (invite.expires_at && Number.isFinite(exp) && Date.now() > exp) {
-      return NextResponse.json({ ok: false, error: "INVITE_EXPIRED" }, { status: 410 });
-    }
-
-    const email = String(invite.email ?? "").trim().toLowerCase();
-    if (!isEmail(email)) return NextResponse.json({ ok: false, error: "INVITE_EMAIL_INVALID" }, { status: 400 });
-
-    const password_hash = await bcrypt.hash(password, 10);
-    const t = nowIso();
-
-    // Find or create user in that agency
-    const existingUser = (await db.get(
-      `SELECT id, status, role
-       FROM users
-       WHERE agency_id = ? AND lower(email) = lower(?)
-       LIMIT 1`,
-      invite.agency_id,
-      email
-    )) as { id: string; status: string | null; role: string | null } | undefined;
-
-    if (!existingUser?.id) {
-      const userId = crypto.randomUUID();
       await db.run(
-        `INSERT INTO users
-         (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at, password_hash)
-         VALUES (?, ?, ?, 1, 'member', 'active', 0, ?, ?, ?)`,
+        `INSERT INTO users (id, agency_id, email, email_verified, role, status, has_completed_onboarding, password_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         userId,
         invite.agency_id,
-        email,
-        t,
-        t,
-        password_hash
+        emailLower,
+        1,
+        "member",
+        "active",
+        0,
+        password_hash,
+        ts,
+        ts
       );
 
-      // mark invite accepted
-      await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, t, invite.id);
+      await db.run(`UPDATE agency_invites SET accepted_at = ? WHERE id = ?`, ts, invite.id);
 
-      const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
-      setSessionCookie(res, {
-        agencyId: invite.agency_id,
-        agencyEmail: email, // stored but not used for authz decisions (userId+userEmail is what matters)
-        userId,
-        userEmail: email,
+      welcomeTo = emailLower;
+      welcomeAgencyName = agency.name;
+
+      await db.run("COMMIT");
+
+      if (welcomeTo) {
+        void sendWelcomeEmailSafe({ to: welcomeTo, agencyName: welcomeAgencyName });
+      }
+
+      const res = NextResponse.json({
+        ok: true,
+        redirectTo: "/app/chat",
+        agencyName: agency.name ?? undefined,
       });
+
+      setSessionCookie(res, {
+        agencyId: agency.id,
+        agencyEmail: agency.email,
+        userId,
+        userEmail: emailLower,
+      });
+
       return res;
+    } catch (inner) {
+      await db.run("ROLLBACK");
+      throw inner;
     }
-
-    // If blocked, do not override
-    const status = String(existingUser.status ?? "").toLowerCase();
-    if (status === "blocked") {
-      return NextResponse.json({ ok: false, error: "ACCOUNT_BLOCKED" }, { status: 403 });
-    }
-
-    // Existing user: activate + set password
-    await db.run(
-      `UPDATE users
-       SET status = 'active',
-           role = COALESCE(NULLIF(role,''), 'member'),
-           email_verified = 1,
-           password_hash = ?,
-           updated_at = ?
-       WHERE id = ? AND agency_id = ?`,
-      password_hash,
-      t,
-      existingUser.id,
-      invite.agency_id
-    );
-
-    // mark invite accepted (idempotent)
-    await db.run(`UPDATE agency_invites SET accepted_at = COALESCE(accepted_at, ?) WHERE id = ?`, t, invite.id);
-
-    const res = NextResponse.json({ ok: true, redirectTo: "/app/chat" });
-    setSessionCookie(res, {
-      agencyId: invite.agency_id,
-      agencyEmail: email,
-      userId: existingUser.id,
-      userEmail: email,
-    });
-    return res;
   } catch (err: any) {
-    console.error("ACCEPT_INVITE_API_ERROR", err);
+    console.error("ACCEPT_INVITE_ERROR", err);
     return NextResponse.json(
-      { ok: false, error: "INTERNAL_ERROR", message: String(err?.message ?? err) },
+      { error: "Server error", message: String(err?.message ?? err) },
       { status: 500 }
     );
   }
