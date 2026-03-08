@@ -1,4 +1,5 @@
 // app/api/agency/invites/accept/route.ts
+import { randomUUID } from "crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
@@ -57,11 +58,12 @@ function bad(error: string, status = 400) {
 }
 
 export async function GET(req: NextRequest) {
-  // GET does NOT accept the invite anymore.
-  // It only routes the user to the password UI with the token preserved.
   const url = new URL(req.url);
   const token = String(url.searchParams.get("token") ?? "").trim();
-  if (!token) return bad("MISSING_TOKEN", 400);
+
+  if (!token) {
+    return bad("MISSING_TOKEN", 400);
+  }
 
   return NextResponse.json({
     ok: true,
@@ -107,13 +109,13 @@ export async function POST(req: NextRequest) {
     if (invite.revoked_at) return bad("INVITE_REVOKED", 410);
 
     const exp = invite.expires_at ? Date.parse(invite.expires_at) : NaN;
-    if (invite.expires_at && Number.isFinite(exp) && Date.now() > exp) return bad("INVITE_EXPIRED", 410);
+    if (invite.expires_at && Number.isFinite(exp) && Date.now() > exp) {
+      return bad("INVITE_EXPIRED", 410);
+    }
 
     const email = String(invite.email ?? "").trim().toLowerCase();
     if (!isEmail(email)) return bad("INVITE_EMAIL_INVALID", 400);
 
-    // If already accepted, still allow password set + login (idempotent)
-    // but only if the user exists (or create it).
     const password_hash = await bcrypt.hash(password, 10);
     const t = nowIso();
 
@@ -129,7 +131,8 @@ export async function POST(req: NextRequest) {
     let userId = existingUser?.id || "";
 
     if (!userId) {
-      userId = crypto.randomUUID();
+      userId = randomUUID();
+
       await db.run(
         `INSERT INTO users
          (id, agency_id, email, email_verified, role, status, has_completed_onboarding, created_at, updated_at, password_hash)
@@ -160,7 +163,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Mark invite accepted (safe if already accepted)
     await db.run(
       `UPDATE agency_invites
        SET accepted_at = COALESCE(accepted_at, ?)
