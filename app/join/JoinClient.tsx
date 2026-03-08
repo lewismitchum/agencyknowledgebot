@@ -24,9 +24,6 @@ function pickTokenFromSearch(sp: ReturnType<typeof useSearchParams>) {
 }
 
 function pickTokenFromPathname(pathname: string) {
-  // supports:
-  // /join/<token>
-  // /join/<token>/anything
   const p = String(pathname || "").trim();
   if (!p) return "";
   const parts = p.split("/").filter(Boolean);
@@ -42,13 +39,10 @@ export default function JoinClient(props: Props) {
   const fromProp = useMemo(() => String(props.token ?? "").trim(), [props.token]);
   const fromQuery = useMemo(() => pickTokenFromSearch(sp), [sp]);
 
-  // resolved token (prop > query > pathname)
   const [resolvedToken, setResolvedToken] = useState<string>("");
-
   const [state, setState] = useState<State>({ status: "boot" });
 
   useEffect(() => {
-    // Resolve token on client, including pathname fallback.
     const path = typeof window !== "undefined" ? window.location.pathname : "";
     const fromPath = pickTokenFromPathname(path);
 
@@ -69,16 +63,24 @@ export default function JoinClient(props: Props) {
       setState({ status: "checking" });
 
       try {
-        const r = await fetchJson(`/api/agency/invites/accept?token=${encodeURIComponent(token)}`, {
+        const r = await fetch(`/api/agency/invites/accept?token=${encodeURIComponent(token)}`, {
           method: "GET",
           credentials: "include",
           cache: "no-store",
+          headers: { Accept: "application/json" },
         });
 
-        const j = await r.json().catch(() => null);
+        const raw = await r.text().catch(() => "");
+        let j: any = null;
+
+        try {
+          j = raw ? JSON.parse(raw) : null;
+        } catch {
+          j = null;
+        }
 
         if (!r.ok) {
-          const msg = String(j?.error || j?.message || `Invite failed (HTTP ${r.status})`);
+          const msg = String(j?.error || j?.message || raw || `Invite failed (HTTP ${r.status})`);
           if (!cancelled) setState({ status: "error", message: msg });
           return;
         }
