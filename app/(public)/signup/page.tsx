@@ -1,4 +1,3 @@
-// app/(public)/signup/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -31,6 +30,8 @@ export default function SignupPage() {
   const [nextPath, setNextPath] = useState("/app");
   const [isInvite, setIsInvite] = useState(false);
   const [inviteToken, setInviteToken] = useState("");
+
+  const [agreeLegal, setAgreeLegal] = useState(false);
 
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
@@ -104,6 +105,11 @@ export default function SignupPage() {
       return;
     }
 
+    if (!agreeLegal) {
+      setErr("You must agree to the Terms of Service and Privacy Policy.");
+      return;
+    }
+
     if (!siteKey) {
       setErr("Turnstile misconfigured (missing site key).");
       return;
@@ -127,6 +133,8 @@ export default function SignupPage() {
         password,
         turnstile_token: tsToken,
         next: nextPath || "/app",
+        accepted_terms: true,
+        accepted_privacy: true,
       };
 
       if (!isInvite) {
@@ -293,9 +301,32 @@ export default function SignupPage() {
                 </div>
               </div>
 
+              <div className="flex items-start gap-3 rounded-2xl border bg-background p-3">
+                <input
+                  id="agree-legal"
+                  type="checkbox"
+                  checked={agreeLegal}
+                  onChange={(e) => setAgreeLegal(e.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border"
+                />
+
+                <label htmlFor="agree-legal" className="text-sm leading-6 text-muted-foreground">
+                  I agree to the{" "}
+                  <Link href="/terms" className="text-foreground underline underline-offset-4">
+                    Terms of Service
+                  </Link>{" "}
+                  and{" "}
+                  <Link href="/privacy" className="text-foreground underline underline-offset-4">
+                    Privacy Policy
+                  </Link>
+                  . I understand Louis.Ai uses AI systems that may generate imperfect outputs, and I
+                  am responsible for reviewing results before relying on them.
+                </label>
+              </div>
+
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || !agreeLegal}
                 className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
               >
                 {loading ? "Creating..." : "Create account"}
