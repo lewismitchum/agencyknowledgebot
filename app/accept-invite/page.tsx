@@ -24,7 +24,6 @@ function AcceptInviteInner() {
   }, [sp]);
 
   const [state, setState] = useState<AcceptState>({ status: "idle" });
-
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
 
@@ -48,10 +47,12 @@ function AcceptInviteInner() {
       setState({ status: "error", message: "Please enter a password." });
       return;
     }
+
     if (p.length < 8) {
       setState({ status: "error", message: "Password must be at least 8 characters." });
       return;
     }
+
     if (p !== c) {
       setState({ status: "error", message: "Passwords do not match." });
       return;
@@ -60,30 +61,43 @@ function AcceptInviteInner() {
     setState({ status: "submitting" });
 
     try {
-      const res = await fetch("/api/accept-invite", {
+      const res = await fetch("/api/agency/invites/accept", {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ token, password: p }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const raw = await res.text().catch(() => "");
+      let data: any = null;
+
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {}
 
       if (!res.ok) {
-        const msg = (data && (data.error || data.message)) || `Invite failed (HTTP ${res.status})`;
-        setState({ status: "error", message: msg });
+        const msg =
+          (data && (data.error || data.message)) ||
+          raw ||
+          `Invite failed (HTTP ${res.status})`;
+
+        setState({ status: "error", message: String(msg) });
         return;
       }
 
-      const agencyName = (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
+      const agencyName =
+        (data && (data.agencyName || data.agency_name || data.agency)) || undefined;
 
       setState({ status: "success", agencyName });
       setPassword("");
       setConfirm("");
 
+      const redirectTo =
+        (data && (data.redirectTo || data.redirect_to)) || "/app/chat";
+
       setTimeout(() => {
-        window.location.href = "/app/chat";
-      }, 600);
+        window.location.href = String(redirectTo);
+      }, 400);
     } catch (e: any) {
       setState({
         status: "error",
@@ -99,7 +113,9 @@ function AcceptInviteInner() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <CardTitle>Accept invite</CardTitle>
-              <CardDescription className="mt-1">Set a password to finish joining the workspace.</CardDescription>
+              <CardDescription className="mt-1">
+                Set a password to finish joining the workspace.
+              </CardDescription>
             </div>
             <Badge variant="secondary">Louis.Ai</Badge>
           </div>
@@ -127,7 +143,7 @@ function AcceptInviteInner() {
               <div>
                 <label className="text-sm font-medium">Password</label>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 bg-background"
+                  className="mt-1 w-full rounded-xl border bg-background px-3 py-2"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="At least 8 characters"
@@ -140,7 +156,7 @@ function AcceptInviteInner() {
               <div>
                 <label className="text-sm font-medium">Confirm password</label>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 bg-background"
+                  className="mt-1 w-full rounded-xl border bg-background px-3 py-2"
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   placeholder="Re-enter password"
@@ -175,7 +191,9 @@ function AcceptInviteInner() {
 
           {state.status === "success" && (
             <>
-              <p className="text-sm">✅ Invite accepted{state.agencyName ? ` — welcome to ${state.agencyName}` : ""}.</p>
+              <p className="text-sm">
+                ✅ Invite accepted{state.agencyName ? ` — welcome to ${state.agencyName}` : ""}.
+              </p>
               <p className="text-sm text-muted-foreground">Redirecting you to chat…</p>
               <div className="flex gap-2">
                 <Button asChild>
