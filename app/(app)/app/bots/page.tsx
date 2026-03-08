@@ -16,11 +16,9 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type BotRow = {
   id: string;
@@ -43,6 +41,49 @@ type BotsResponse = {
     created_at: string | null;
   }>;
 };
+
+class HttpError extends Error {
+  status: number;
+  bodyText: string;
+
+  constructor(message: string, status: number, bodyText = "") {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+    this.bodyText = bodyText;
+  }
+}
+
+async function getJson<T = any>(input: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    credentials: init.credentials ?? "include",
+    headers: {
+      Accept: "application/json",
+      ...(init.headers || {}),
+    },
+  });
+
+  const raw = await res.text().catch(() => "");
+  let data: any = null;
+
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok) {
+    const msg =
+      (data && (data.message || data.error)) ||
+      raw ||
+      `Request failed (${res.status})`;
+
+    throw new HttpError(String(msg), res.status, raw);
+  }
+
+  return (data ?? (raw as any)) as T;
+}
 
 function formatDate(iso: string | null) {
   if (!iso) return "—";
@@ -124,7 +165,7 @@ export default function BotsPage() {
     setLoading(true);
     setMsg("");
     try {
-      const j = (await fetchJson<any>("/api/bots", {
+      const j = (await getJson("/api/bots", {
         credentials: "include",
         cache: "no-store",
       })) as BotsResponse | any;
@@ -142,13 +183,12 @@ export default function BotsPage() {
 
       setBots(normalized);
     } catch (e: any) {
-      if (e instanceof FetchJsonError) {
-        if (e.info.status === 401) {
+      if (e instanceof HttpError) {
+        if (e.status === 401) {
           window.location.href = "/login";
           return;
         }
-        const body = String(e.info.bodyText || "").trim();
-        setMsg(body || `Failed to load bots (${e.info.status})`);
+        setMsg(e.bodyText || `Failed to load bots (${e.status})`);
       } else {
         setMsg(e?.message || "Failed to load bots");
       }
@@ -160,7 +200,7 @@ export default function BotsPage() {
 
   async function loadMe() {
     try {
-      const j = await fetchJson<any>("/api/me", { credentials: "include", cache: "no-store" });
+      const j = await getJson<any>("/api/me", { credentials: "include", cache: "no-store" });
 
       const p = String(j?.plan ?? j?.agency?.plan ?? "") || null;
       setPlan(p);
@@ -170,7 +210,7 @@ export default function BotsPage() {
       setMeRole(roleRaw === "owner" ? "owner" : roleRaw === "admin" ? "admin" : "member");
       setMeUserId(String(j?.user?.id ?? ""));
     } catch (e: any) {
-      if (e instanceof FetchJsonError && (e.info.status === 401 || e.info.status === 403)) return;
+      if (e instanceof HttpError && (e.status === 401 || e.status === 403)) return;
     }
   }
 
@@ -250,7 +290,7 @@ export default function BotsPage() {
     setRenamingId(bot.id);
 
     try {
-      await fetchJson<any>(`/api/bots/${encodeURIComponent(bot.id)}`, {
+      await getJson<any>(`/api/bots/${encodeURIComponent(bot.id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -261,17 +301,18 @@ export default function BotsPage() {
       cancelRename();
       await loadBots();
     } catch (e: any) {
-      if (e instanceof FetchJsonError) {
-        if (e.info.status === 401) {
+      if (e instanceof HttpError) {
+        if (e.status === 401) {
           window.location.href = "/login";
           return;
         }
-        const raw = String(e.info.bodyText || "").trim();
+
+        const raw = String(e.bodyText || "").trim();
 
         if (raw === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only rename your own private bots.");
         else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER")
           setMsg("Owner/admin only.");
-        else setMsg(raw || `Rename failed (${e.info.status})`);
+        else setMsg(raw || `Rename failed (${e.status})`);
 
         return;
       }
@@ -301,7 +342,7 @@ export default function BotsPage() {
 
     setCreating(true);
     try {
-      await fetchJson<any>("/api/bots", {
+      await getJson<any>("/api/bots", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -317,13 +358,13 @@ export default function BotsPage() {
       await loadMe();
       await loadBots();
     } catch (e: any) {
-      if (e instanceof FetchJsonError) {
-        if (e.info.status === 401) {
+      if (e instanceof HttpError) {
+        if (e.status === 401) {
           window.location.href = "/login";
           return;
         }
 
-        const body = String(e.info.bodyText || "").trim();
+        const body = String(e.bodyText || "").trim();
 
         if (body.includes("BOT_LIMIT_EXCEEDED")) {
           const used = botLimitUsed;
@@ -346,7 +387,7 @@ export default function BotsPage() {
           return;
         }
 
-        setMsg(body || `Create failed (${e.info.status})`);
+        setMsg(body || `Create failed (${e.status})`);
         return;
       }
 
@@ -360,7 +401,7 @@ export default function BotsPage() {
     setMsg("");
     setRepairingId(botId);
     try {
-      await fetchJson<any>("/api/admin/fix-vector-store", {
+      await getJson<any>("/api/admin/fix-vector-store", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -370,13 +411,12 @@ export default function BotsPage() {
       setMsg("Vector store attached.");
       await loadBots();
     } catch (e: any) {
-      if (e instanceof FetchJsonError) {
-        if (e.info.status === 401) {
+      if (e instanceof HttpError) {
+        if (e.status === 401) {
           window.location.href = "/login";
           return;
         }
-        const body = String(e.info.bodyText || "").trim();
-        setMsg(body || `Repair failed (${e.info.status})`);
+        setMsg(e.bodyText || `Repair failed (${e.status})`);
         return;
       }
       setMsg(e?.message || "Repair failed");
@@ -400,7 +440,7 @@ export default function BotsPage() {
 
     setDeletingId(bot.id);
     try {
-      await fetchJson<any>(`/api/bots/${encodeURIComponent(bot.id)}`, {
+      await getJson<any>(`/api/bots/${encodeURIComponent(bot.id)}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -409,18 +449,18 @@ export default function BotsPage() {
       await loadMe();
       await loadBots();
     } catch (e: any) {
-      if (e instanceof FetchJsonError) {
-        if (e.info.status === 401) {
+      if (e instanceof HttpError) {
+        if (e.status === 401) {
           window.location.href = "/login";
           return;
         }
 
-        const raw = String(e.info.bodyText || "").trim();
+        const raw = String(e.bodyText || "").trim();
 
         if (raw === "FORBIDDEN_PRIVATE_BOT") setMsg("You can only delete your own private bots.");
         else if (raw === "FORBIDDEN_NOT_ADMIN_OR_OWNER" || raw === "FORBIDDEN_NOT_OWNER")
           setMsg("Owner/admin only.");
-        else setMsg(raw || `Delete failed (${e.info.status})`);
+        else setMsg(raw || `Delete failed (${e.status})`);
 
         return;
       }
