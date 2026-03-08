@@ -19,7 +19,6 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type Msg = { role: "user" | "assistant"; text: string };
 type BotRow = { id: string; name: string };
@@ -36,6 +35,51 @@ type Attachment = {
   document_id: string;
   filename: string;
 };
+
+class HttpError extends Error {
+  status: number;
+  statusText: string;
+  bodyText: string;
+
+  constructor(message: string, status: number, statusText: string, bodyText = "") {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+    this.statusText = statusText;
+    this.bodyText = bodyText;
+  }
+}
+
+async function getJson<T = any>(input: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    credentials: init.credentials ?? "include",
+    headers: {
+      Accept: "application/json",
+      ...(init.headers || {}),
+    },
+  });
+
+  const raw = await res.text().catch(() => "");
+  let data: any = null;
+
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok) {
+    const message =
+      (data && (data.message || data.error)) ||
+      raw ||
+      `Request failed (${res.status} ${res.statusText})`;
+
+    throw new HttpError(String(message), res.status, res.statusText, raw);
+  }
+
+  return (data ?? (raw as any)) as T;
+}
 
 function formatCountdown(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -369,7 +413,7 @@ export default function ChatPage() {
       try {
         setBootError("");
 
-        const j: any = await fetchJson("/api/me");
+        const j: any = await getJson("/api/me");
 
         setEmail(j?.user?.email ?? null);
         setEmailVerified(Boolean(j?.user?.email_verified));
@@ -400,21 +444,21 @@ export default function ChatPage() {
         const reset = Number(j?.daily_resets_in_seconds ?? 0);
         setDailyResetsInSeconds(reset);
       } catch (e: any) {
-        if (e instanceof FetchJsonError) {
-          const status = e.info.status;
+        if (e instanceof HttpError) {
+          const status = e.status;
           if (status === 401) {
             window.location.href = "/login";
             return;
           }
           if (status === 403) {
-            const body = parseMaybeJson(e.info.bodyText || "");
-            const message = String(body?.message ?? e.info.bodyText ?? "").toLowerCase();
+            const body = parseMaybeJson(e.bodyText || "");
+            const message = String(body?.message ?? e.bodyText ?? "").toLowerCase();
             const blocked = message.includes("blocked");
             setAccessBlocked(blocked ? "blocked" : "pending");
             setMeStatus(blocked ? "blocked" : "pending");
             return;
           }
-          setBootError(e.info.bodyText || `Failed to load session (${status})`);
+          setBootError(e.bodyText || `Failed to load session (${status})`);
         } else {
           setBootError(e?.message || "Failed to load session");
         }
@@ -422,7 +466,6 @@ export default function ChatPage() {
         setUsageLoaded(true);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -435,7 +478,7 @@ export default function ChatPage() {
     (async () => {
       try {
         setBootError("");
-        const j: any = await fetchJson("/api/bots");
+        const j: any = await getJson("/api/bots");
         const list: BotRow[] = Array.isArray(j?.bots) ? (j.bots as BotRow[]) : [];
         setBots(list);
 
@@ -453,19 +496,19 @@ export default function ChatPage() {
           setBotIdInUrl(next);
         }
       } catch (e: any) {
-        if (e instanceof FetchJsonError) {
-          if (e.info.status === 401) return (window.location.href = "/login");
-          if (e.info.status === 403) {
+        if (e instanceof HttpError) {
+          if (e.status === 401) return (window.location.href = "/login");
+          if (e.status === 403) {
             setAccessBlocked("pending");
             setBots([]);
             return;
           }
-          if (e.info.status === 405) {
+          if (e.status === 405) {
             setBootError(`405 from /api/bots (method mismatch). Check app/api/bots/route.ts exports GET.`);
             setBots([]);
             return;
           }
-          setBootError(`Failed to load bots: ${e.info.bodyText || `${e.info.status} ${e.info.statusText}`}`);
+          setBootError(`Failed to load bots: ${e.bodyText || `${e.status} ${e.statusText}`}`);
           setBots([]);
         } else {
           setBootError(`Failed to load bots: ${String(e?.message ?? e)}`);
@@ -475,8 +518,7 @@ export default function ChatPage() {
         setBotsLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessBlocked]);
+  }, [accessBlocked, selectedBotId]);
 
   useEffect(() => {
     if (!selectedBotId) return;
@@ -486,11 +528,11 @@ export default function ChatPage() {
       try {
         setBootError("");
         const url = `/api/conversation/messages?bot_id=${encodeURIComponent(selectedBotId)}`;
-        const j: any = await fetchJson(url);
+        const j: any = await getJson(url);
         setMessages(Array.isArray(j?.messages) ? (j.messages as Msg[]) : []);
       } catch (e: any) {
-        if (e instanceof FetchJsonError) {
-          if (e.info.status === 405) {
+        if (e instanceof HttpError) {
+          if (e.status === 405) {
             const url = `/api/conversation/messages?bot_id=${encodeURIComponent(selectedBotId)}`;
             setBootError(
               `405 from ${url}. You likely don't have GET implemented at app/api/conversation/messages/route.ts`
@@ -617,7 +659,7 @@ export default function ChatPage() {
     setAttachError("");
 
     try {
-      const j: any = await fetchJson("/api/chat", {
+      const j: any = await getJson("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -650,8 +692,8 @@ export default function ChatPage() {
         setDailyRemaining(normalizeDailyRemaining(j?.daily_remaining));
       }
     } catch (e: any) {
-      if (e instanceof FetchJsonError) {
-        if (e.info.status === 405) {
+      if (e instanceof HttpError) {
+        if (e.status === 405) {
           setMessages((m: Msg[]) => [
             ...m,
             {
@@ -664,12 +706,12 @@ export default function ChatPage() {
           return;
         }
 
-        if (e.info.status === 401) {
+        if (e.status === 401) {
           window.location.href = "/login";
           return;
         }
 
-        if (e.info.status === 403) {
+        if (e.status === 403) {
           setAccessBlocked("pending");
           setMessages((m: Msg[]) => [
             ...m,
@@ -681,8 +723,8 @@ export default function ChatPage() {
           return;
         }
 
-        const body = parseMaybeJson(e.info.bodyText || "");
-        const msg = String(body?.message ?? e.info.bodyText ?? "").trim();
+        const body = parseMaybeJson(e.bodyText || "");
+        const msg = String(body?.message ?? e.bodyText ?? "").trim();
         setMessages((m: Msg[]) => [...m, { role: "assistant", text: msg ? `Error: ${msg}` : "Request failed." }]);
         return;
       }
@@ -698,13 +740,13 @@ export default function ChatPage() {
     if (accessBlocked) return;
 
     try {
-      await fetchJson("/api/conversation/reset", {
+      await getJson("/api/conversation/reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bot_id: selectedBotId }),
       });
     } catch (e: any) {
-      if (e instanceof FetchJsonError && e.info.status === 405) {
+      if (e instanceof HttpError && e.status === 405) {
         setBootError(
           `405 from /api/conversation/reset. You likely don't have POST implemented at app/api/conversation/reset/route.ts`
         );
