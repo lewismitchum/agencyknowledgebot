@@ -1,3 +1,4 @@
+// app/(app)/app/_components/navbar.tsx
 "use client";
 
 import Link from "next/link";
@@ -21,7 +22,6 @@ import {
   Mail,
   Sheet as SheetIcon,
 } from "lucide-react";
-import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
 type MeResponse =
   | { user: null }
@@ -47,6 +47,49 @@ type DocRow = {
   openai_file_id: string | null;
   created_at: string;
 };
+
+class HttpError extends Error {
+  status: number;
+  bodyText: string;
+
+  constructor(message: string, status: number, bodyText = "") {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+    this.bodyText = bodyText;
+  }
+}
+
+async function getJson<T = any>(input: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    credentials: init.credentials ?? "include",
+    headers: {
+      Accept: "application/json",
+      ...(init.headers || {}),
+    },
+  });
+
+  const raw = await res.text().catch(() => "");
+  let data: any = null;
+
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok) {
+    const msg =
+      (data && (data.message || data.error)) ||
+      raw ||
+      `Request failed (${res.status})`;
+
+    throw new HttpError(String(msg), res.status, raw);
+  }
+
+  return (data ?? (raw as any)) as T;
+}
 
 function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
   const pathname = usePathname();
@@ -443,10 +486,10 @@ export default function Navbar() {
   useEffect(() => {
     (async () => {
       try {
-        const j = (await fetchJson("/api/me")) as MeResponse;
+        const j = await getJson<MeResponse>("/api/me");
         setMe(j);
       } catch (e: any) {
-        if (e instanceof FetchJsonError && (e.info.status === 401 || e.info.status === 403)) {
+        if (e instanceof HttpError && (e.status === 401 || e.status === 403)) {
           setMe({ user: null });
           return;
         }
@@ -465,7 +508,7 @@ export default function Navbar() {
         setLoadingBots(true);
         setBotsError(null);
 
-        const j: any = await fetchJson("/api/bots", { cache: "no-store" });
+        const j: any = await getJson("/api/bots", { cache: "no-store" });
         const list = Array.isArray(j?.bots) ? (j.bots as BotRow[]) : [];
         if (cancelled) return;
 
@@ -479,9 +522,8 @@ export default function Navbar() {
       } catch (e: any) {
         if (cancelled) return;
 
-        if (e instanceof FetchJsonError) {
-          const body = String(e.info.bodyText || "").trim();
-          setBotsError(body || `Failed to load bots (${e.info.status})`);
+        if (e instanceof HttpError) {
+          setBotsError(e.bodyText || `Failed to load bots (${e.status})`);
         } else {
           setBotsError(String(e?.message ?? e));
         }
@@ -510,16 +552,17 @@ export default function Navbar() {
         setLoadingDocs(true);
         setDocsError(null);
 
-        const j: any = await fetchJson(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, { cache: "no-store" });
+        const j: any = await getJson(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, {
+          cache: "no-store",
+        });
         const list = Array.isArray(j?.documents) ? (j.documents as DocRow[]) : [];
         if (cancelled) return;
 
         setDocs(list);
       } catch (e: any) {
         if (cancelled) return;
-        if (e instanceof FetchJsonError) {
-          const body = String(e.info.bodyText || "").trim();
-          setDocsError(body || `Failed to load docs (${e.info.status})`);
+        if (e instanceof HttpError) {
+          setDocsError(e.bodyText || `Failed to load docs (${e.status})`);
         } else {
           setDocsError(String(e?.message ?? e));
         }
@@ -544,7 +587,7 @@ export default function Navbar() {
 
     async function loadUnread() {
       try {
-        const j: any = await fetchJson("/api/notifications/list?limit=50", { cache: "no-store" });
+        const j: any = await getJson("/api/notifications/list?limit=50", { cache: "no-store" });
 
         if (j?.upsell?.code) {
           if (!cancelled) setNotifUnread(0);
