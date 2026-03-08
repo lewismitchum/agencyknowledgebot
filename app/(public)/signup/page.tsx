@@ -5,6 +5,9 @@ import Link from "next/link";
 import Script from "next/script";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+// Avoid redeclaring global turnstile type to prevent conflicts with other type definitions.
+// We will cast window.turnstile to any where needed.
+
 function getQuery() {
   if (typeof window === "undefined") return new URLSearchParams();
   return new URLSearchParams(window.location.search || "");
@@ -21,13 +24,13 @@ export default function SignupPage() {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
-  const [tsToken, setTsToken] = useState<string>("");
+  const [tsToken, setTsToken] = useState("");
   const [tsReady, setTsReady] = useState(false);
 
-  const [prefillEmail, setPrefillEmail] = useState<string>("");
-  const [nextPath, setNextPath] = useState<string>("/app");
-  const [isInvite, setIsInvite] = useState<boolean>(false);
-  const [inviteToken, setInviteToken] = useState<string>("");
+  const [prefillEmail, setPrefillEmail] = useState("");
+  const [nextPath, setNextPath] = useState("/app");
+  const [isInvite, setIsInvite] = useState(false);
+  const [inviteToken, setInviteToken] = useState("");
 
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
@@ -43,20 +46,23 @@ export default function SignupPage() {
     if (email) setPrefillEmail(email);
     if (next) setNextPath(next);
     if (invite === "1" || invite.toLowerCase() === "true") setIsInvite(true);
-    if (token) setInviteToken(token);
+    if (token) {
+      setInviteToken(token);
+      setIsInvite(true);
+    }
   }, []);
 
   useEffect(() => {
     if (!siteKey) return;
     if (!tsReady) return;
     if (!widgetRef.current) return;
-    if (!window.turnstile) return;
+    if (!(window as any).turnstile) return;
     if (widgetIdRef.current) return;
 
-    widgetIdRef.current = window.turnstile.render(widgetRef.current, {
+    widgetIdRef.current = (window as any).turnstile.render(widgetRef.current, {
       sitekey: siteKey,
       theme: "auto",
-      callback: (token) => setTsToken(token || ""),
+      callback: (token: string) => setTsToken(token || ""),
       "error-callback": () => setTsToken(""),
       "expired-callback": () => setTsToken(""),
     });
@@ -64,9 +70,9 @@ export default function SignupPage() {
 
   function resetTurnstile() {
     const id = widgetIdRef.current;
-    if (id && window.turnstile) {
+    if (id && (window as any).turnstile) {
       try {
-        window.turnstile.reset(id);
+        (window as any).turnstile.reset(id);
       } catch {}
     }
     setTsToken("");
@@ -82,18 +88,16 @@ export default function SignupPage() {
       : "Free tier includes one agency bot and a daily message limit.";
   }, [isInvite]);
 
-  async function onSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErr("");
     setOk("");
 
-    const fd = new FormData(e.currentTarget as HTMLFormElement);
+    const fd = new FormData(e.currentTarget);
 
-    // This input is "Agency name" for normal signup, and "Display name" for invite flow.
     const nameOrAgency = String(fd.get("name") || "").trim();
-
     const email = normalizeEmail(String(fd.get("email") || ""));
-    const password = String(fd.get("password") || "");
+    const password = String(fd.get("password") || "").trim();
 
     if (!email || !password || (!isInvite && !nameOrAgency)) {
       setErr("Missing fields");
@@ -118,19 +122,19 @@ export default function SignupPage() {
     setLoading(true);
 
     try {
-      const body: any = {
+      const body: Record<string, any> = {
         email,
         password,
         turnstile_token: tsToken,
         next: nextPath || "/app",
       };
 
-      // Normal signup expects agency (workspace name). Invite flow may be handled server-side by invite_token.
       if (!isInvite) {
-        body.agency = nameOrAgency;
+        body.agencyName = nameOrAgency;
+        body.name = nameOrAgency;
       } else {
         body.name = nameOrAgency || "Invited User";
-        body.invite = 1;
+        body.invite = true;
         if (inviteToken) body.invite_token = inviteToken;
       }
 
@@ -138,16 +142,8 @@ export default function SignupPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        redirect: "manual",
         body: JSON.stringify(body),
       });
-
-      if (r.status >= 300 && r.status < 400) {
-        const loc = r.headers.get("location") || "";
-        setOk("Account created.");
-        window.location.href = loc || nextPath || "/app";
-        return;
-      }
 
       const ct = r.headers.get("content-type") || "";
       const raw = await r.text().catch(() => "");
@@ -160,7 +156,12 @@ export default function SignupPage() {
       }
 
       if (!r.ok) {
-        setErr(j?.error || j?.message || raw || "Signup failed");
+        const missing = Array.isArray(j?.missing) ? j.missing.join(", ") : "";
+        setErr(
+          missing
+            ? `Missing fields: ${missing}`
+            : j?.error || j?.message || raw || "Signup failed"
+        );
         resetTurnstile();
         return;
       }
@@ -191,10 +192,12 @@ export default function SignupPage() {
           <div className="hidden md:block">
             <div className="rounded-3xl border bg-card p-8 shadow-sm">
               <div className="text-sm font-semibold">{isInvite ? "You’re invited" : "Start Free"}</div>
-              <div className="mt-2 text-2xl font-semibold tracking-tight">Your agency’s docs, instantly searchable.</div>
+              <div className="mt-2 text-2xl font-semibold tracking-tight">
+                Your agency’s docs, instantly searchable.
+              </div>
               <p className="mt-3 text-sm text-muted-foreground">
-                Upload SOPs, onboarding, pricing, and brand docs. Louis answers from what you upload—no guessing for
-                internal info.
+                Upload SOPs, onboarding, pricing, and brand docs. Louis answers from what you upload—no
+                guessing for internal info.
               </p>
 
               <div className="mt-6 grid gap-3">
@@ -256,7 +259,9 @@ export default function SignupPage() {
                   ].join(" ")}
                   placeholder="you@agency.com"
                 />
-                {prefillEmail ? <div className="text-xs text-muted-foreground">Email prefilled from invite.</div> : null}
+                {prefillEmail ? (
+                  <div className="text-xs text-muted-foreground">Email prefilled from invite.</div>
+                ) : null}
               </div>
 
               <div className="space-y-2">
@@ -279,7 +284,9 @@ export default function SignupPage() {
                 <div className="rounded-2xl border bg-background p-3">
                   <div ref={widgetRef} />
                   {!siteKey ? (
-                    <div className="mt-2 text-xs text-muted-foreground">Missing NEXT_PUBLIC_TURNSTILE_SITE_KEY</div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      Missing NEXT_PUBLIC_TURNSTILE_SITE_KEY
+                    </div>
                   ) : !tsReady ? (
                     <div className="mt-2 text-xs text-muted-foreground">Loading captcha…</div>
                   ) : null}
@@ -295,8 +302,8 @@ export default function SignupPage() {
               </button>
 
               <p className="text-xs text-muted-foreground">
-                By creating an account, you agree to keep uploads confidential and to use Louis.Ai for internal knowledge
-                only.
+                By creating an account, you agree to keep uploads confidential and to use Louis.Ai for
+                internal knowledge only.
               </p>
 
               <div className="text-sm text-muted-foreground">

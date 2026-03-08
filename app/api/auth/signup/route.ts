@@ -11,31 +11,84 @@ import { setSessionCookie } from "@/lib/session";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type SignupBody = {
+  name?: string | null;
+  full_name?: string | null;
+  displayName?: string | null;
+  fullName?: string | null;
+  agencyName?: string | null;
+  agency_name?: string | null;
+  agency?: string | null;
+  workspaceName?: string | null;
+  workspace_name?: string | null;
+  email?: string | null;
+  password?: string | null;
+  turnstile_token?: string | null;
+  turnstileToken?: string | null;
+  captchaToken?: string | null;
+  invite?: string | null;
+  invite_token?: string | null;
+  inviteToken?: string | null;
+  next?: string | null;
+};
+
 async function readBody(req: NextRequest) {
   const ct = req.headers.get("content-type") || "";
+
   if (ct.includes("application/json")) {
-    const j = await req.json().catch(() => ({}));
+    const j = (await req.json().catch(() => ({}))) as SignupBody;
+
     return {
-      name: j?.name,
-      email: j?.email,
-      password: j?.password,
-      turnstile_token: j?.turnstile_token,
-      invite: j?.invite,
-      invite_token: j?.invite_token,
-      next: j?.next,
+      // person name aliases
+      name: j?.name ?? j?.full_name ?? j?.displayName ?? j?.fullName ?? null,
+
+      // agency/workspace aliases
+      agencyName:
+        j?.agencyName ??
+        j?.agency_name ??
+        j?.agency ??
+        j?.workspaceName ??
+        j?.workspace_name ??
+        null,
+
+      email: j?.email ?? null,
+      password: j?.password ?? null,
+
+      // captcha aliases
+      turnstile_token: j?.turnstile_token ?? j?.turnstileToken ?? j?.captchaToken ?? null,
+
+      invite: j?.invite ?? null,
+      invite_token: j?.invite_token ?? j?.inviteToken ?? null,
+      next: j?.next ?? null,
       isJson: true as const,
     };
   }
 
   const text = await req.text().catch(() => "");
   const params = new URLSearchParams(text);
+
   return {
-    name: params.get("name"),
+    name:
+      params.get("name") ||
+      params.get("full_name") ||
+      params.get("displayName") ||
+      params.get("fullName"),
+
+    agencyName:
+      params.get("agencyName") ||
+      params.get("agency_name") ||
+      params.get("agency") ||
+      params.get("workspaceName") ||
+      params.get("workspace_name"),
+
     email: params.get("email"),
     password: params.get("password"),
-    turnstile_token: params.get("turnstile_token"),
+    turnstile_token:
+      params.get("turnstile_token") ||
+      params.get("turnstileToken") ||
+      params.get("captchaToken"),
     invite: params.get("invite"),
-    invite_token: params.get("invite_token"),
+    invite_token: params.get("invite_token") || params.get("inviteToken"),
     next: params.get("next"),
     isJson: false as const,
   };
@@ -65,7 +118,7 @@ async function verifyTurnstile(token: string, ip: string | null) {
   form.set("response", token);
   if (ip) form.set("remoteip", ip);
 
-  const r = await fetchJson("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form.toString(),
@@ -76,18 +129,17 @@ async function verifyTurnstile(token: string, ip: string | null) {
   return { ok: false as const, error: "TURNSTILE_FAILED", details: j ?? null };
 }
 
-function normName(s: string) {
+function normName(s: string | null | undefined) {
   return String(s ?? "").trim();
 }
 
-function normEmail(s: string) {
+function normEmail(s: string | null | undefined) {
   return String(s ?? "").trim().toLowerCase();
 }
 
 function normNext(s: any) {
   const v = String(s ?? "").trim();
   if (!v) return "/app";
-  // basic safety: only allow internal paths
   if (!v.startsWith("/")) return "/app";
   if (v.startsWith("//")) return "/app";
   return v;
@@ -114,18 +166,51 @@ export async function POST(req: NextRequest) {
     await ensureSchema(db);
     await ensureUserRoleColumns(db);
 
-    const { name, email, password, turnstile_token, invite, invite_token, next, isJson } = await readBody(req);
+    const { name, agencyName, email, password, turnstile_token, invite, invite_token, next, isJson } =
+      await readBody(req);
 
-    const agencyName = normName(name);
+    const personName = normName(name);
+    const normalizedAgencyName = normName(agencyName);
     const normalizedEmail = normEmail(email);
     const rawPassword = String(password ?? "").trim();
     const nextPath = normNext(next);
 
     const inviteMode = isInviteMode(invite, invite_token);
 
-    // For invite mode, agencyName is not required.
-    if ((!inviteMode && !agencyName) || !normalizedEmail || !rawPassword) {
-      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    const missingFields: string[] = [];
+
+    if (!inviteMode && !normalizedAgencyName) {
+      missingFields.push("agencyName");
+    }
+
+    if (!normalizedEmail) {
+      missingFields.push("email");
+    }
+
+    if (!rawPassword) {
+      missingFields.push("password");
+    }
+
+    if (!String(turnstile_token ?? "").trim()) {
+      missingFields.push("turnstile_token");
+    }
+
+    if (missingFields.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Missing fields",
+          missing: missingFields,
+          received: {
+            hasName: !!personName,
+            hasAgencyName: !!normalizedAgencyName,
+            hasEmail: !!normalizedEmail,
+            hasPassword: !!rawPassword,
+            hasTurnstileToken: !!String(turnstile_token ?? "").trim(),
+            inviteMode,
+          },
+        },
+        { status: 400 }
+      );
     }
 
     const ip =
@@ -135,12 +220,16 @@ export async function POST(req: NextRequest) {
 
     const ts = await verifyTurnstile(String(turnstile_token || ""), ip);
     if (!ts.ok) {
-      return NextResponse.json({ error: ts.error }, { status: 400 });
+      return NextResponse.json(
+        {
+          error: ts.error,
+          details: "Turnstile verification failed",
+        },
+        { status: 400 }
+      );
     }
 
-    // =========================
-    // INVITE SIGNUP (SET PASSWORD FOR EXISTING INVITED USER)
-    // =========================
+    // INVITE SIGNUP
     if (inviteMode) {
       const existing = (await db.get(
         `SELECT id, agency_id, status, role, password_hash, email_verified
@@ -171,7 +260,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Account blocked" }, { status: 403 });
       }
 
-      // If they already have a password, this is an existing account.
       const alreadyHasPassword = !!String(existing.password_hash ?? "").trim();
       if (alreadyHasPassword) {
         const redirectTo = `/login?email=${encodeURIComponent(normalizedEmail)}&next=${encodeURIComponent(nextPath)}`;
@@ -181,7 +269,6 @@ export async function POST(req: NextRequest) {
 
       const password_hash = await bcrypt.hash(rawPassword, 10);
 
-      // Invited users should be ACTIVE immediately and considered email-verified (invite email is proof of control).
       await db.run(
         `UPDATE users
          SET password_hash = ?,
@@ -206,7 +293,6 @@ export async function POST(req: NextRequest) {
       const agencyEmail = String(agencyRow?.email ?? "").trim() || normalizedEmail;
       const agencyDisplayName = String(agencyRow?.name ?? "").trim() || null;
 
-      // Non-blocking welcome
       if (agencyDisplayName) {
         void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName: agencyDisplayName });
       }
@@ -232,11 +318,8 @@ export async function POST(req: NextRequest) {
       return res;
     }
 
-    // =========================
-    // NORMAL SIGNUP (CURRENT BEHAVIOR)
-    // =========================
+    // NORMAL SIGNUP
 
-    // Safety: block if email is already used as an agency login anywhere
     const existingAgencyByEmail = (await db.get(
       "SELECT id FROM agencies WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
@@ -246,7 +329,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
 
-    // Block if this email already exists as a user in ANY agency
     const existingUserAnywhere = (await db.get(
       "SELECT id FROM users WHERE lower(email) = ? LIMIT 1",
       normalizedEmail
@@ -256,13 +338,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
 
-    // If agency name already exists => join flow (pending approval)
     const existingAgencyByName = (await db.get(
       `SELECT id, name, email
        FROM agencies
        WHERE lower(name) = lower(?)
        LIMIT 1`,
-      agencyName
+      normalizedAgencyName
     )) as { id: string; name: string | null; email: string | null } | undefined;
 
     const password_hash = await bcrypt.hash(rawPassword, 10);
@@ -282,7 +363,7 @@ export async function POST(req: NextRequest) {
       verifyUrl = `${getAppUrl()}/verify-email?token=${tokenParam}`;
     }
 
-    // JOIN EXISTING AGENCY (PENDING)
+    // JOIN EXISTING AGENCY
     if (existingAgencyByName?.id) {
       const agencyId = String(existingAgencyByName.id);
       const newUserId = randomUUID();
@@ -337,7 +418,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.redirect(new URL(redirectTo, req.url));
     }
 
-    // CREATE NEW AGENCY (OWNER)
+    // CREATE NEW AGENCY
     const agencyId = randomUUID();
     const ownerUserId = randomUUID();
 
@@ -347,7 +428,7 @@ export async function POST(req: NextRequest) {
         email_verified, email_verify_token_hash, email_verify_expires_at, email_verify_last_sent_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agencyId,
-      agencyName,
+      normalizedAgencyName,
       normalizedEmail,
       password_hash,
       null,
@@ -395,7 +476,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (emailVerified) {
-      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName });
+      void sendWelcomeEmailSafe({ to: normalizedEmail, agencyName: normalizedAgencyName });
     }
 
     const redirectTo = willSendEmail ? "/check-email" : "/app/chat";
