@@ -589,34 +589,35 @@ function BillingContent() {
           </div>
 
           <div className="flex w-full flex-col gap-2 lg:w-auto lg:min-w-[280px]">
-            <Button
-              variant="outline"
-              onClick={openPortal}
-              disabled={!hasStripeCustomer || !isPaid || portalLoading}
-              title={!hasStripeCustomer ? "No Stripe customer yet" : !isPaid ? "Upgrade first" : "Manage subscription"}
-              className="h-11 rounded-2xl"
-            >
-              {portalLoading ? "Opening..." : "Manage subscription"}
-            </Button>
+  <Button
+    variant="outline"
+    onClick={openPortal}
+    disabled={!hasStripeCustomer || !isPaid || portalLoading}
+    title={!hasStripeCustomer ? "No Stripe customer yet" : !isPaid ? "Upgrade first" : "Manage subscription"}
+    className="h-11 rounded-2xl"
+  >
+    {portalLoading ? "Opening..." : "Manage subscription"}
+  </Button>
 
-            {isPaid && hasStripeCustomer ? (
-              <Button
-                variant="destructive"
-                onClick={openPortal}
-                disabled={portalLoading}
-                className="h-11 rounded-2xl"
-              >
-                {portalLoading ? "Opening..." : "Cancel subscription"}
-              </Button>
-            ) : null}
+  {isPaid ? (
+    <Button
+      variant="destructive"
+      onClick={openPortal}
+      disabled={!hasStripeCustomer || portalLoading}
+      title={!hasStripeCustomer ? "No Stripe customer yet for this workspace" : "Cancel subscription"}
+      className="h-11 rounded-2xl"
+    >
+      {portalLoading ? "Opening..." : "Cancel subscription"}
+    </Button>
+  ) : null}
 
-            <Button asChild variant="outline" className="h-11 rounded-2xl">
-              <Link href="/pricing">
-                Full pricing details
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Link>
-            </Button>
-          </div>
+  <Button asChild variant="outline" className="h-11 rounded-2xl">
+    <Link href="/pricing">
+      Full pricing details
+      <ArrowRight className="ml-2 h-4 w-4" />
+    </Link>
+  </Button>
+</div>
         </div>
       </section>
 
