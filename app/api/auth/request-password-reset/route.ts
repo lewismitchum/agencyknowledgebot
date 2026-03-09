@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
 
     const token = signResetToken(acct);
     const baseUrl = getAppUrl();
-    const resetUrl = `${baseUrl}/app/reset-password?token=${encodeURIComponent(token)}`;
+    const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
 
     await sendEmail({
       to: acct.email,
