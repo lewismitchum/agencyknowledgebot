@@ -69,7 +69,7 @@ async function verifyTurnstile(token: string, ip: string | null) {
   form.set("response", token);
   if (ip) form.set("remoteip", ip);
 
-  const r = await fetchJson("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form.toString(),
@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
 
     const token = signResetToken(acct);
     const baseUrl = getAppUrl();
-    const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
+    const resetUrl = `${baseUrl}/app/reset-password?token=${encodeURIComponent(token)}`;
 
     await sendEmail({
       to: acct.email,
