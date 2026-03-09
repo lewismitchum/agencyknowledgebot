@@ -128,7 +128,62 @@ async function getOrMigrateIdentityByEmail(db: Db, email: string, password: stri
     email
   )) as { id: string; email: string; password_hash: string | null; email_verified: number | null } | undefined;
 
-  if (existing?.id) return { mode: "identity" as const, identity: existing };
+  if (existing?.id) {
+    const identityHash = String(existing.password_hash ?? "").trim();
+
+    if (identityHash) {
+      const identityOk = await bcrypt.compare(password, identityHash).catch(() => false);
+      if (identityOk) {
+        return { mode: "identity" as const, identity: existing };
+      }
+    }
+
+    const legacy = (await db.get(
+      `SELECT password_hash
+       FROM users
+       WHERE lower(email) = lower(?)
+         AND password_hash IS NOT NULL
+         AND trim(password_hash) != ''
+       LIMIT 1`,
+      email
+    )) as { password_hash: string } | undefined;
+
+    const legacyHash = String(legacy?.password_hash ?? "").trim();
+
+    if (legacyHash) {
+      const legacyOk = await bcrypt.compare(password, legacyHash).catch(() => false);
+
+      if (legacyOk) {
+        await db.run(
+          `UPDATE identities
+           SET password_hash = ?, updated_at = ?
+           WHERE id = ?`,
+          legacyHash,
+          nowIso(),
+          existing.id
+        );
+
+        const repaired = (await db.get(
+          `SELECT id, email, password_hash, email_verified
+           FROM identities
+           WHERE id = ?
+           LIMIT 1`,
+          existing.id
+        )) as
+          | {
+              id: string;
+              email: string;
+              password_hash: string | null;
+              email_verified: number | null;
+            }
+          | undefined;
+
+        return { mode: "identity_repaired" as const, identity: repaired ?? existing };
+      }
+    }
+
+    return { mode: "identity" as const, identity: existing };
+  }
 
   const legacy = (await db.get(
     `SELECT password_hash
