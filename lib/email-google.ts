@@ -49,6 +49,18 @@ async function dbAll(db: any, sql: string, args: any[] = []) {
   }
 }
 
+async function dbRun(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.run(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.run(sql, args);
+    }
+    throw err;
+  }
+}
+
 async function ensureEmailAccountsSchema(db: any) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS email_accounts (
@@ -75,14 +87,18 @@ async function ensureEmailAccountsSchema(db: any) {
   const cols = await dbAll(db, `PRAGMA table_info(email_accounts)`);
   const have = new Set((cols || []).map((c: any) => String(c?.name || "")));
 
-  if (!have.has("email")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN email TEXT;`);
-  if (!have.has("access_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN access_token TEXT;`);
-  if (!have.has("refresh_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN refresh_token TEXT;`);
-  if (!have.has("expiry_date")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN expiry_date INTEGER;`);
-  if (!have.has("scope")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN scope TEXT;`);
-  if (!have.has("token_type")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN token_type TEXT;`);
-  if (!have.has("created_at")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;`);
-  if (!have.has("updated_at")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;`);
+  if (!have.has("email")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN email TEXT;`).catch(() => {});
+  if (!have.has("access_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN access_token TEXT;`).catch(() => {});
+  if (!have.has("refresh_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN refresh_token TEXT;`).catch(() => {});
+  if (!have.has("expiry_date")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN expiry_date INTEGER;`).catch(() => {});
+  if (!have.has("scope")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN scope TEXT;`).catch(() => {});
+  if (!have.has("token_type")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN token_type TEXT;`).catch(() => {});
+  if (!have.has("created_at")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+  }
+  if (!have.has("updated_at")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+  }
 }
 
 async function refreshAccessToken(args: {
@@ -96,15 +112,21 @@ async function refreshAccessToken(args: {
   body.set("refresh_token", args.refreshToken);
   body.set("grant_type", "refresh_token");
 
-  const r = await fetchJson("https://oauth2.googleapis.com/token", {
+  const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
+    cache: "no-store",
   });
 
   const j = (await r.json().catch(() => null)) as any;
+
   if (!r.ok || !j) {
-    return { ok: false as const, error: "TOKEN_REFRESH_FAILED", details: j ?? null };
+    return {
+      ok: false as const,
+      error: "TOKEN_REFRESH_FAILED",
+      details: j ?? null,
+    };
   }
 
   return {
@@ -114,7 +136,7 @@ async function refreshAccessToken(args: {
       expires_in: toIntOrNull(j.expires_in) ?? 0,
       scope: typeof j.scope === "string" ? j.scope : null,
       token_type: typeof j.token_type === "string" ? j.token_type : null,
-      refresh_token: j.refresh_token ? String(j.refresh_token) : null, // usually not returned
+      refresh_token: j.refresh_token ? String(j.refresh_token) : null,
     },
   };
 }
@@ -145,7 +167,7 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
      FROM email_accounts
      WHERE agency_id = ? AND user_id = ?
      LIMIT 1`,
-    [args.agencyId, args.userId],
+    [args.agencyId, args.userId]
   )) as AccountRow | undefined;
 
   if (!account?.id) {
@@ -160,9 +182,6 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
     return { ok: false as const, error: "MISSING_TOKENS" };
   }
 
-  // Refresh if:
-  // - no access token
-  // - expiry within next 2 minutes
   const needsRefresh =
     !accessToken || (expiryDate != null && Number.isFinite(expiryDate) && expiryDate <= nowMs() + 2 * 60 * 1000);
 
@@ -171,10 +190,23 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
   let finalExpiry: number | null = expiryDate;
 
   if (needsRefresh) {
-    if (!refreshToken) return { ok: false as const, error: "MISSING_REFRESH_TOKEN" };
+    if (!refreshToken) {
+      return { ok: false as const, error: "MISSING_REFRESH_TOKEN" };
+    }
 
-    const rr = await refreshAccessToken({ clientId, clientSecret, refreshToken });
-    if (!rr.ok) return { ok: false as const, error: rr.error, details: rr.details };
+    const rr = await refreshAccessToken({
+      clientId,
+      clientSecret,
+      refreshToken,
+    });
+
+    if (!rr.ok) {
+      return {
+        ok: false as const,
+        error: rr.error,
+        details: rr.details,
+      };
+    }
 
     finalAccess = rr.tokens.access_token || "";
     finalExpiry = nowMs() + (Number(rr.tokens.expires_in || 0) * 1000 || 0);
@@ -183,17 +215,19 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
       finalRefresh = rr.tokens.refresh_token;
     }
 
-    // Persist refreshed access token (+ expiry). Keep refresh token if not resent.
-    await db.run(
+    await dbRun(
+      db,
       `UPDATE email_accounts
        SET access_token = ?, refresh_token = ?, expiry_date = ?, updated_at = ?
        WHERE agency_id = ? AND user_id = ?`,
-      encrypt(finalAccess || ""),
-      encrypt(finalRefresh || ""),
-      finalExpiry,
-      nowMs(),
-      args.agencyId,
-      args.userId,
+      [
+        encrypt(finalAccess || ""),
+        encrypt(finalRefresh || ""),
+        finalExpiry,
+        nowMs(),
+        args.agencyId,
+        args.userId,
+      ]
     );
   }
 
