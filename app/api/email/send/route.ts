@@ -83,11 +83,6 @@ function splitEmails(input: string) {
     .filter(Boolean);
 }
 
-/**
- * Turso/libSQL wrappers vary:
- * - some expect db.get(sql, ...args) / db.run(sql, ...args)
- * - others expect db.get(sql, argsArray) / ...
- */
 async function dbGet(db: any, sql: string, args: any[]) {
   try {
     return await db.get(sql, ...args);
@@ -112,6 +107,18 @@ async function dbRun(db: any, sql: string, args: any[]) {
   }
 }
 
+async function dbAll(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.all(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+      return await db.all(sql, args);
+    }
+    throw err;
+  }
+}
+
 async function ensureEmailTables(db: Db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS email_drafts (
@@ -125,11 +132,46 @@ async function ensureEmailTables(db: Db) {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+  `);
+
+  const draftCols = (await dbAll(db, `PRAGMA table_info(email_drafts)`)) as Array<{ name?: string }>;
+  const haveDraft = new Set(draftCols.map((c) => String(c?.name || "").trim()));
+
+  if (!haveDraft.has("bot_id")) {
+    await db.exec(`ALTER TABLE email_drafts ADD COLUMN bot_id TEXT`).catch(() => {});
+  }
+  if (!haveDraft.has("thread_id")) {
+    await db.exec(`ALTER TABLE email_drafts ADD COLUMN thread_id TEXT`).catch(() => {});
+  }
+  if (!haveDraft.has("subject")) {
+    await db.exec(`ALTER TABLE email_drafts ADD COLUMN subject TEXT`).catch(() => {});
+  }
+  if (!haveDraft.has("body")) {
+    await db.exec(`ALTER TABLE email_drafts ADD COLUMN body TEXT`).catch(() => {});
+  }
+  if (!haveDraft.has("created_at")) {
+    await db.exec(`ALTER TABLE email_drafts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+  }
+  if (!haveDraft.has("updated_at")) {
+    await db.exec(`ALTER TABLE email_drafts ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+  }
+
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_email_drafts_agency_user_created
       ON email_drafts(agency_id, user_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_email_drafts_thread
-      ON email_drafts(thread_id);
+  `);
 
+  const draftColsAfter = (await dbAll(db, `PRAGMA table_info(email_drafts)`)) as Array<{ name?: string }>;
+  const haveDraftAfter = new Set(draftColsAfter.map((c) => String(c?.name || "").trim()));
+
+  if (haveDraftAfter.has("thread_id")) {
+    await db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_email_drafts_thread
+        ON email_drafts(thread_id);
+    `);
+  }
+
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS email_send_events (
       id TEXT PRIMARY KEY,
       agency_id TEXT NOT NULL,
@@ -146,13 +188,64 @@ async function ensureEmailTables(db: Db) {
       created_at INTEGER NOT NULL,
       raw_response TEXT
     );
+  `);
+
+  const sendCols = (await dbAll(db, `PRAGMA table_info(email_send_events)`)) as Array<{ name?: string }>;
+  const haveSend = new Set(sendCols.map((c) => String(c?.name || "").trim()));
+
+  if (!haveSend.has("draft_id")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN draft_id TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("thread_id")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN thread_id TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("gmail_message_id")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN gmail_message_id TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("to_email")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN to_email TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("cc_email")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN cc_email TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("bcc_email")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN bcc_email TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("subject")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN subject TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("sent_body")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN sent_body TEXT`).catch(() => {});
+  }
+  if (!haveSend.has("used_override")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN used_override INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+  }
+  if (!haveSend.has("created_at")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+  }
+  if (!haveSend.has("raw_response")) {
+    await db.exec(`ALTER TABLE email_send_events ADD COLUMN raw_response TEXT`).catch(() => {});
+  }
+
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_email_send_events_agency_created
       ON email_send_events(agency_id, created_at);
+  `);
+
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_email_send_events_user_created
       ON email_send_events(user_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_email_send_events_thread
-      ON email_send_events(thread_id);
   `);
+
+  const sendColsAfter = (await dbAll(db, `PRAGMA table_info(email_send_events)`)) as Array<{ name?: string }>;
+  const haveSendAfter = new Set(sendColsAfter.map((c) => String(c?.name || "").trim()));
+
+  if (haveSendAfter.has("thread_id")) {
+    await db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_email_send_events_thread
+        ON email_send_events(thread_id);
+    `);
+  }
 }
 
 export async function POST(req: NextRequest) {
