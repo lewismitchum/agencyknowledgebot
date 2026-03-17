@@ -278,6 +278,7 @@ export default function EmailPage() {
 
   const [gmailConnected, setGmailConnected] = useState<boolean>(false);
   const [connectHint, setConnectHint] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [threadsError, setThreadsError] = useState("");
@@ -350,8 +351,8 @@ export default function EmailPage() {
   }, [composeTo, composeBody, composeConfirm, composeSending]);
 
   const canSummarizeInbox = useMemo(() => {
-    return gmailConnected && botId.trim().length > 0 && !summaryLoading;
-  }, [gmailConnected, botId, summaryLoading]);
+    return gmailConnected && botId.trim().length > 0 && !summaryLoading && !disconnecting;
+  }, [gmailConnected, botId, summaryLoading, disconnecting]);
 
   const activeThread = threads.find((t) => t.id === selectedThreadId) || null;
   const activeBotName = botId ? bots.find((b) => b.id === botId)?.name || "Selected" : "None";
@@ -365,6 +366,54 @@ export default function EmailPage() {
 
   function goConnectGmail() {
     window.location.href = "/api/email/connect";
+  }
+
+  async function disconnectGmail() {
+    if (disconnecting) return;
+
+    setDisconnecting(true);
+    setConnectHint(null);
+    setThreadsError("");
+    setThreadError("");
+    setReplyDraftError("");
+    setSendError("");
+    setComposeError("");
+    setSummaryError("");
+
+    try {
+      await fetchJson<any>("/api/email/disconnect", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      setGmailConnected(false);
+      setThreads([]);
+      setSelectedThreadId(null);
+      setThread(null);
+      setQ("");
+      setQApplied("");
+      setReplyDraftId(null);
+      setReplyBody("");
+      setConfirmSend(false);
+      setSendOk(null);
+      setSummaryData(null);
+      setAiMsgs([]);
+      setAiOpen(false);
+      setConnectHint("Gmail disconnected.");
+      if (tab === "inbox") {
+        setMobilePanel("list");
+      }
+    } catch (e: any) {
+      const st = getFetchJsonStatus(e);
+      if (isFetchJsonError(e) && st === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      setConnectHint(e?.message ?? "Failed to disconnect Gmail");
+    } finally {
+      setDisconnecting(false);
+    }
   }
 
   useEffect(() => {
@@ -1157,16 +1206,27 @@ export default function EmailPage() {
                 Connect Gmail
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  refreshThreads().catch(() => {});
-                  refreshDrafts().catch(() => {});
-                }}
-                className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-              >
-                Refresh inbox
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    refreshThreads().catch(() => {});
+                    refreshDrafts().catch(() => {});
+                  }}
+                  disabled={disconnecting}
+                  className="rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent disabled:opacity-60"
+                >
+                  Refresh inbox
+                </button>
+                <button
+                  type="button"
+                  onClick={() => disconnectGmail().catch(() => {})}
+                  disabled={disconnecting}
+                  className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-red-100 disabled:opacity-60"
+                >
+                  {disconnecting ? "Disconnecting…" : "Disconnect Gmail"}
+                </button>
+              </div>
             )}
 
             <div className="grid grid-cols-2 gap-2">
@@ -1411,9 +1471,19 @@ export default function EmailPage() {
                 Connect Gmail
               </button>
             ) : (
-              <div className="rounded-2xl border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
-                Connected inbox ready
-              </div>
+              <>
+                <div className="rounded-2xl border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+                  Connected inbox ready
+                </div>
+                <button
+                  type="button"
+                  onClick={() => disconnectGmail().catch(() => {})}
+                  disabled={disconnecting}
+                  className="w-full rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 hover:bg-red-100 disabled:opacity-60"
+                >
+                  {disconnecting ? "Disconnecting…" : "Disconnect Gmail"}
+                </button>
+              </>
             )}
 
             <button
