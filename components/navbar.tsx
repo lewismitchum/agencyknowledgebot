@@ -375,7 +375,7 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                         ].join(" ")}
                         onClick={() => {
                           setMoreOpen(false);
-                          router.push("/app/spreadsheets");
+                          router.push("/app/outreach");
                         }}
                       >
                         <Target className="h-4 w-4" />
@@ -711,7 +711,7 @@ export default function Navbar() {
 
             <NavLink href="/app/schedule">Schedule</NavLink>
             <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
-            <NavLink href="/app/spreadsheets">Outreach</NavLink>
+            <NavLink href="/app/outreach">Outreach</NavLink>
 
             <Link
               href="/app/notifications"
