@@ -1,83 +1,51 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { UpgradeGate } from "@/components/upgrade-gate";
-import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
+import Link from "next/link";
 
-type Upsell = { code?: string; message?: string };
+export default function OutreachPage() {
+  return (
+    <div className="mx-auto max-w-6xl space-y-6 p-6">
+      <div>
+        <h1 className="text-2xl font-semibold">Outreach</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Standalone outreach workspace for lead generation, campaign management, and email automation.
+        </p>
+      </div>
 
-type CampaignSummary = {
-  id: string;
-  title: string;
-  description?: string;
-  status: string;
-  source_query?: string;
-  created_at?: string;
-  updated_at?: string;
-  lead_count: number;
-  sent_count: number;
-  replied_count: number;
-  new_count: number;
-};
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="rounded-3xl border bg-card p-6 shadow-sm lg:col-span-2">
+          <div className="text-base font-semibold">Lead generation</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This page is now reserved for outreach only. Lead finding, campaign creation, email drafting, and send
+            automation should live here instead of inside spreadsheets.
+          </p>
 
-type OutreachLead = {
-  id: string;
-  company_name: string;
-  contact_name?: string;
-  contact_title?: string;
-  email?: string;
-  website?: string;
-  location?: string;
-  niche?: string;
-  source_url?: string;
-  confidence?: number | null;
-  status: string;
-  last_contacted_at?: string;
-  replied_at?: string;
-  notes?: string;
-  created_at?: string;
-  updated_at?: string;
-};
+          <div className="mt-4 rounded-2xl border bg-background/40 p-4 text-sm text-muted-foreground">
+            Next step: move the lead finder and campaign UI from <span className="font-mono">/app/spreadsheets</span>{" "}
+            into this page.
+          </div>
+        </div>
 
-type CampaignDetail = {
-  id: string;
-  title: string;
-  description?: string;
-  status: string;
-  source_query?: string;
-  created_at?: string;
-  updated_at?: string;
-};
+        <div className="rounded-3xl border bg-card p-6 shadow-sm">
+          <div className="text-base font-semibold">Quick links</div>
 
-const LEAD_STATUSES = [
-  { value: "new", label: "New" },
-  { value: "reviewed", label: "Reviewed" },
-  { value: "approved", label: "Approved" },
-  { value: "rejected", label: "Rejected" },
-  { value: "drafted", label: "Drafted" },
-  { value: "sent", label: "Sent" },
-  { value: "replied", label: "Replied" },
-  { value: "bounced", label: "Bounced" },
-  { value: "do_not_contact", label: "Do Not Contact" },
-] as const;
+          <div className="mt-4 space-y-3">
+            <Link
+              href="/app/spreadsheets"
+              className="block rounded-xl border px-4 py-3 text-sm transition hover:bg-muted"
+            >
+              Open Spreadsheets
+            </Link>
 
-function isFetchJsonError(e: any): e is FetchJsonError {
-  return !!e && typeof e === "object" && ("status" in e || "code" in e);
-}
-
-function cx(...parts: Array<string | false | null | undefined>) {
-  return parts.filter(Boolean).join(" ");
-}
-
-function formatDate(iso?: string) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
-function formatConfidence(v?: number | null) {
-  if (v == null) return "—";
-  if (!Number.isFinite(v)) return "—";
-  return `${Math.round(v * 100)}%`;
+            <Link
+              href="/app/email"
+              className="block rounded-xl border px-4 py-3 text-sm transition hover:bg-muted"
+            >
+              Open Email
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
