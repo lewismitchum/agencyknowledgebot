@@ -21,6 +21,7 @@ import {
   Mail,
   Sheet as SheetIcon,
   Brain,
+  Target,
 } from "lucide-react";
 import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
@@ -370,6 +371,21 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                         type="button"
                         className={[
                           "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
+                          starts("/app/outreach") ? "bg-muted" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/app/spreadsheets");
+                        }}
+                      >
+                        <Target className="h-4 w-4" />
+                        Outreach
+                      </button>
+
+                      <button
+                        type="button"
+                        className={[
+                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                           starts("/app/support") ? "bg-muted" : "",
                         ].join(" ")}
                         onClick={() => {
@@ -695,6 +711,7 @@ export default function Navbar() {
 
             <NavLink href="/app/schedule">Schedule</NavLink>
             <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
+            <NavLink href="/app/spreadsheets">Outreach</NavLink>
 
             <Link
               href="/app/notifications"

@@ -185,12 +185,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </NavItem>
 
               {canSeeSheets && (
-                <NavItem
-                  href="/app/spreadsheets"
-                  active={pathname?.startsWith("/app/spreadsheets")}
-                >
-                  Spreadsheets
-                </NavItem>
+                <>
+                  <NavItem
+                    href="/app/spreadsheets"
+                    active={pathname?.startsWith("/app/spreadsheets")}
+                  >
+                    Spreadsheets
+                  </NavItem>
+
+                  <NavItem
+                    href="/app/spreadsheets"
+                    active={pathname?.startsWith("/app/spreadsheets")}
+                  >
+                    Outreach
+                  </NavItem>
+                </>
               )}
 
               {canSeeEmail && (
