@@ -194,8 +194,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   </NavItem>
 
                   <NavItem
-                    href="/app/spreadsheets"
-                    active={pathname?.startsWith("/app/spreadsheets")}
+                    href="/app/outreach"
+                    active={pathname?.startsWith("/app/outreach")}
                   >
                     Outreach
                   </NavItem>
