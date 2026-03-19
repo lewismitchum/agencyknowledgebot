@@ -1,4 +1,3 @@
-// app/api/spreadsheets/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
@@ -100,7 +99,7 @@ async function getAuthorizedBotId(db: Db, agencyId: string, userId: string, rawB
      LIMIT 1`,
     botId,
     agencyId
-  );
+  ) as { id: string; owner_user_id: string | null } | undefined;
 
   if (!bot) return null;
 
@@ -135,6 +134,7 @@ export async function GET(req: NextRequest) {
             csv: false,
             ai: false,
           },
+          campaigns: [],
           upsell: {
             code: "PLAN_REQUIRED",
             message: "Upgrade to unlock spreadsheet AI generation and updates.",
@@ -145,6 +145,43 @@ export async function GET(req: NextRequest) {
     }
 
     const canApply = ctx.role === "owner" || ctx.role === "admin";
+
+    const campaigns = (await db.all(
+      `
+      SELECT
+        c.id,
+        c.title,
+        c.description,
+        c.status,
+        c.source_query,
+        c.created_at,
+        c.updated_at,
+        COUNT(l.id) AS lead_count,
+        SUM(CASE WHEN l.status = 'sent' THEN 1 ELSE 0 END) AS sent_count,
+        SUM(CASE WHEN l.status = 'replied' THEN 1 ELSE 0 END) AS replied_count,
+        SUM(CASE WHEN l.status = 'new' THEN 1 ELSE 0 END) AS new_count
+      FROM outreach_campaigns c
+      LEFT JOIN outreach_leads l
+        ON l.campaign_id = c.id
+      WHERE c.agency_id = ? AND c.user_id = ?
+      GROUP BY c.id, c.title, c.description, c.status, c.source_query, c.created_at, c.updated_at
+      ORDER BY c.created_at DESC
+      `,
+      ctx.agencyId,
+      ctx.userId
+    )) as Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      status: string;
+      source_query: string | null;
+      created_at: string;
+      updated_at: string;
+      lead_count: number;
+      sent_count: number;
+      replied_count: number;
+      new_count: number;
+    }>;
 
     return Response.json({
       ok: true,
@@ -157,6 +194,19 @@ export async function GET(req: NextRequest) {
         csv: true,
         ai: true,
       },
+      campaigns: campaigns.map((c) => ({
+        id: String(c.id),
+        title: String(c.title || "Campaign"),
+        description: c.description ? String(c.description) : "",
+        status: String(c.status || "active"),
+        source_query: c.source_query ? String(c.source_query) : "",
+        created_at: String(c.created_at || ""),
+        updated_at: String(c.updated_at || ""),
+        lead_count: Number(c.lead_count || 0),
+        sent_count: Number(c.sent_count || 0),
+        replied_count: Number(c.replied_count || 0),
+        new_count: Number(c.new_count || 0),
+      })),
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
