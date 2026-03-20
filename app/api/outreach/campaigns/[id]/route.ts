@@ -1,12 +1,10 @@
-// app/api/outreach/campaigns/[id]/route.ts
 import type { NextRequest } from "next/server";
 import { getDb, type Db } from "@/lib/db";
 import { requireActiveMember } from "@/lib/authz";
 import { ensureSchema } from "@/lib/schema";
-import { getAgencyPlan } from "@/lib/enforcement";
-import { normalizePlan, requireFeature } from "@/lib/plans";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type PatchBody = {
   lead_id?: string;
@@ -31,6 +29,54 @@ function clampString(s: string, max: number) {
   return t.length > max ? t.slice(0, max) : t;
 }
 
+async function dbGet(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.get(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (
+      msg.includes("Number of arguments mismatch") ||
+      msg.includes("expected") ||
+      msg.includes("mismatch")
+    ) {
+      return await db.get(sql, args);
+    }
+    throw err;
+  }
+}
+
+async function dbAll(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.all(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (
+      msg.includes("Number of arguments mismatch") ||
+      msg.includes("expected") ||
+      msg.includes("mismatch")
+    ) {
+      return await db.all(sql, args);
+    }
+    throw err;
+  }
+}
+
+async function dbRun(db: any, sql: string, args: any[] = []) {
+  try {
+    return await db.run(sql, ...args);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (
+      msg.includes("Number of arguments mismatch") ||
+      msg.includes("expected") ||
+      msg.includes("mismatch")
+    ) {
+      return await db.run(sql, args);
+    }
+    throw err;
+  }
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -41,23 +87,19 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, session.agencyId, session.plan);
-    const planKey = normalizePlan(plan);
-    const gate = requireFeature(planKey, "spreadsheets");
-    if (!gate.ok) return Response.json(gate.body, { status: gate.status });
-
     const { id } = await ctx.params;
     const campaignId = clampString(id ?? "", 200);
-    if (!campaignId) return Response.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
+    if (!campaignId) {
+      return Response.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
+    }
 
-    const campaign = (await db.get(
+    const campaign = (await dbGet(
+      db,
       `SELECT id, title, description, status, source_query, created_at, updated_at
        FROM outreach_campaigns
        WHERE id = ? AND agency_id = ? AND user_id = ?
        LIMIT 1`,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [campaignId, session.agencyId, session.userId]
     )) as
       | {
           id: string;
@@ -74,7 +116,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       return Response.json({ ok: false, error: "CAMPAIGN_NOT_FOUND" }, { status: 404 });
     }
 
-    const leads = (await db.all(
+    const leads = (await dbAll(
+      db,
       `SELECT
          id,
          company_name,
@@ -95,9 +138,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
        FROM outreach_leads
        WHERE campaign_id = ? AND agency_id = ? AND user_id = ?
        ORDER BY created_at DESC`,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [campaignId, session.agencyId, session.userId]
     )) as Array<Record<string, any>>;
 
     return Response.json({
@@ -132,8 +173,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
-    if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     console.error("OUTREACH_CAMPAIGN_GET_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });
@@ -146,34 +191,32 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, session.agencyId, session.plan);
-    const planKey = normalizePlan(plan);
-    const gate = requireFeature(planKey, "spreadsheets");
-    if (!gate.ok) return Response.json(gate.body, { status: gate.status });
-
     const { id } = await ctx.params;
     const campaignId = clampString(id ?? "", 200);
-    if (!campaignId) return Response.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
+    if (!campaignId) {
+      return Response.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
+    }
 
     const body = (await req.json().catch(() => null)) as PatchBody | null;
     const leadId = clampString(body?.lead_id ?? "", 200);
     const status = clampString(body?.status ?? "", 50).toLowerCase();
     const notes = clampString(body?.notes ?? "", 2000);
 
-    if (!leadId) return Response.json({ ok: false, error: "MISSING_LEAD_ID" }, { status: 400 });
+    if (!leadId) {
+      return Response.json({ ok: false, error: "MISSING_LEAD_ID" }, { status: 400 });
+    }
+
     if (!ALLOWED_STATUSES.has(status)) {
       return Response.json({ ok: false, error: "INVALID_STATUS" }, { status: 400 });
     }
 
-    const row = (await db.get(
+    const row = (await dbGet(
+      db,
       `SELECT id
        FROM outreach_leads
        WHERE id = ? AND campaign_id = ? AND agency_id = ? AND user_id = ?
        LIMIT 1`,
-      leadId,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [leadId, campaignId, session.agencyId, session.userId]
     )) as { id: string } | undefined;
 
     if (!row?.id) {
@@ -184,7 +227,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const lastContactedAt = status === "sent" ? now : null;
     const repliedAt = status === "replied" ? now : null;
 
-    await db.run(
+    await dbRun(
+      db,
       `UPDATE outreach_leads
        SET status = ?,
            notes = ?,
@@ -192,25 +236,25 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
            replied_at = COALESCE(?, replied_at),
            updated_at = ?
        WHERE id = ? AND campaign_id = ? AND agency_id = ? AND user_id = ?`,
-      status,
-      notes || null,
-      lastContactedAt,
-      repliedAt,
-      now,
-      leadId,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [
+        status,
+        notes || null,
+        lastContactedAt,
+        repliedAt,
+        now,
+        leadId,
+        campaignId,
+        session.agencyId,
+        session.userId,
+      ]
     );
 
-    await db.run(
+    await dbRun(
+      db,
       `UPDATE outreach_campaigns
        SET updated_at = ?
        WHERE id = ? AND agency_id = ? AND user_id = ?`,
-      now,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [now, campaignId, session.agencyId, session.userId]
     );
 
     return Response.json({
@@ -222,8 +266,12 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
-    if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     console.error("OUTREACH_CAMPAIGN_PATCH_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });
@@ -236,43 +284,37 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
     const db: Db = await getDb();
     await ensureSchema(db);
 
-    const plan = await getAgencyPlan(db, session.agencyId, session.plan);
-    const planKey = normalizePlan(plan);
-    const gate = requireFeature(planKey, "spreadsheets");
-    if (!gate.ok) return Response.json(gate.body, { status: gate.status });
-
     const { id } = await ctx.params;
     const campaignId = clampString(id ?? "", 200);
-    if (!campaignId) return Response.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
+    if (!campaignId) {
+      return Response.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
+    }
 
-    const row = (await db.get(
+    const row = (await dbGet(
+      db,
       `SELECT id
        FROM outreach_campaigns
        WHERE id = ? AND agency_id = ? AND user_id = ?
        LIMIT 1`,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [campaignId, session.agencyId, session.userId]
     )) as { id: string } | undefined;
 
     if (!row?.id) {
       return Response.json({ ok: false, error: "CAMPAIGN_NOT_FOUND" }, { status: 404 });
     }
 
-    await db.run(
+    await dbRun(
+      db,
       `DELETE FROM outreach_leads
        WHERE campaign_id = ? AND agency_id = ? AND user_id = ?`,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [campaignId, session.agencyId, session.userId]
     );
 
-    await db.run(
+    await dbRun(
+      db,
       `DELETE FROM outreach_campaigns
        WHERE id = ? AND agency_id = ? AND user_id = ?`,
-      campaignId,
-      session.agencyId,
-      session.userId
+      [campaignId, session.agencyId, session.userId]
     );
 
     return Response.json({
@@ -282,8 +324,12 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
     });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
-    if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
+    if (msg === "UNAUTHENTICATED") {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (msg === "FORBIDDEN_NOT_ACTIVE") {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     console.error("OUTREACH_CAMPAIGN_DELETE_ERROR", err);
     return Response.json({ error: "Server error", message: msg }, { status: 500 });

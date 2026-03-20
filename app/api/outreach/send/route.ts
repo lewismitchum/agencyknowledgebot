@@ -1,4 +1,3 @@
-// app/api/outreach/send/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { requireActiveMember } from "@/lib/authz";
@@ -61,7 +60,11 @@ async function dbAll(db: any, sql: string, args: any[] = []) {
     return await db.all(sql, ...args);
   } catch (err: any) {
     const msg = String(err?.message || "");
-    if (msg.includes("Number of arguments mismatch") || msg.includes("expected") || msg.includes("mismatch")) {
+    if (
+      msg.includes("Number of arguments mismatch") ||
+      msg.includes("expected") ||
+      msg.includes("mismatch")
+    ) {
       return await db.all(sql, args);
     }
     throw err;
@@ -146,6 +149,27 @@ async function ensureEmailTables(db: Db) {
   }
 }
 
+function buildRawEmail(params: {
+  fromEmail?: string | null;
+  to: string[];
+  subject: string;
+  body: string;
+}) {
+  const lines: string[] = [];
+  lines.push(`To: ${params.to.join(", ")}`);
+  if (safeString(params.fromEmail || "")) {
+    lines.push(`From: ${safeString(params.fromEmail || "")}`);
+  }
+  lines.push(`Subject: ${params.subject || "(no subject)"}`);
+  lines.push(`MIME-Version: 1.0`);
+  lines.push(`Content-Type: text/plain; charset="UTF-8"`);
+  lines.push(`Content-Transfer-Encoding: 7bit`);
+  lines.push("");
+  lines.push(params.body);
+  lines.push("");
+  return b64urlEncodeUtf8(lines.join("\r\n"));
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204 });
 }
@@ -166,11 +190,6 @@ export async function POST(req: NextRequest) {
         { ok: false, error: "Email inbox is available on Corporation.", code: "upgrade_required" },
         { status: 403 }
       );
-    }
-
-    const sheetsGate = requireFeature(planKey, "spreadsheets");
-    if (!sheetsGate.ok) {
-      return NextResponse.json(sheetsGate.body, { status: sheetsGate.status });
     }
 
     await enforceRateLimit({
@@ -224,7 +243,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const gmailRes = await getValidGmailClient({ agencyId: session.agencyId, userId: session.userId });
+    const gmailRes = await getValidGmailClient({
+      agencyId: session.agencyId,
+      userId: session.userId,
+    });
 
     if (!gmailRes.ok) {
       const code =
@@ -236,7 +258,12 @@ export async function POST(req: NextRequest) {
               ? "missing_google_env"
               : "gmail_auth_error";
 
-      const status = gmailRes.error === "NOT_CONNECTED" || gmailRes.error === "MISSING_TOKENS" ? 409 : 500;
+      const status =
+        gmailRes.error === "NOT_CONNECTED" ||
+        gmailRes.error === "MISSING_TOKENS" ||
+        gmailRes.error === "MISSING_REFRESH_TOKEN"
+          ? 409
+          : 500;
 
       return NextResponse.json(
         {
@@ -254,6 +281,7 @@ export async function POST(req: NextRequest) {
     }
 
     const gmail = gmailRes.gmail;
+    const senderEmail = safeString(gmailRes.email || "");
     const now = new Date().toISOString();
     const createdAt = Date.now();
 
@@ -269,14 +297,14 @@ export async function POST(req: NextRequest) {
 
     for (const item of leads) {
       const leadId = safeString(item?.leadId || "");
-      const to = safeString(item?.to || "");
-      const subject = safeString(item?.subject || "");
+      const requestedTo = safeString(item?.to || "");
+      const requestedSubject = safeString(item?.subject || "");
       const bodyText = safeString(item?.body || "");
 
-      if (!leadId || !isValidEmail(to) || !bodyText) {
+      if (!leadId || !bodyText) {
         skipped.push({
           leadId: leadId || "unknown",
-          reason: !leadId ? "missing_lead_id" : !isValidEmail(to) ? "invalid_email" : "empty_body",
+          reason: !leadId ? "missing_lead_id" : "empty_body",
         });
         continue;
       }
@@ -297,75 +325,90 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      if (!isValidEmail(safeString(dbLead.email || ""))) {
+      const authoritativeEmail = safeString(dbLead.email || "");
+      if (!isValidEmail(authoritativeEmail)) {
         skipped.push({ leadId, reason: "lead_email_not_verified_enough" });
         continue;
       }
 
-      const toList = splitEmails(to);
+      const toList = splitEmails(authoritativeEmail);
+      if (toList.length === 0 || !toList.every(isValidEmail)) {
+        skipped.push({ leadId, reason: "invalid_email" });
+        continue;
+      }
 
-      const lines: string[] = [];
-      lines.push(`To: ${toList.join(", ")}`);
-      if (gmailRes.email) lines.push(`From: ${gmailRes.email}`);
-      if (subject) lines.push(`Subject: ${subject}`);
-      lines.push(`MIME-Version: 1.0`);
-      lines.push(`Content-Type: text/plain; charset="UTF-8"`);
-      lines.push(`Content-Transfer-Encoding: 7bit`);
-      lines.push("");
-      lines.push(bodyText);
-      lines.push("");
-
-      const sendRes = await gmail.users.messages.send({
-        userId: "me",
-        requestBody: {
-          raw: b64urlEncodeUtf8(lines.join("\r\n")),
-        },
+      const subject = requestedSubject || "Quick intro";
+      const raw = buildRawEmail({
+        fromEmail: senderEmail || null,
+        to: toList,
+        subject,
+        body: bodyText,
       });
 
-      const gmailMessageId = safeString(sendRes?.data?.id || "") || null;
-      const threadId = safeString(sendRes?.data?.threadId || "") || null;
+      try {
+        const sendRes = await gmail.users.messages.send({
+          userId: "me",
+          requestBody: {
+            raw,
+          },
+        });
 
-      await db.run(
-        `INSERT INTO email_send_events
-         (id, agency_id, user_id, draft_id, thread_id, gmail_message_id, to_email, cc_email, bcc_email, subject, sent_body, used_override, created_at, raw_response)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        crypto.randomUUID(),
-        session.agencyId,
-        session.userId,
-        null,
-        threadId,
-        gmailMessageId,
-        to,
-        "",
-        "",
-        subject,
-        bodyText,
-        0,
-        createdAt,
-        JSON.stringify(sendRes?.data || {})
-      );
+        const gmailMessageId = safeString(sendRes?.data?.id || "") || null;
+        const threadId = safeString(sendRes?.data?.threadId || "") || null;
 
-      await db.run(
-        `UPDATE outreach_leads
-         SET status = 'sent',
-             last_contacted_at = ?,
-             updated_at = ?
-         WHERE id = ? AND campaign_id = ? AND agency_id = ? AND user_id = ?`,
-        now,
-        now,
-        leadId,
-        campaignId,
-        session.agencyId,
-        session.userId
-      );
+        await db.run(
+          `INSERT INTO email_send_events
+           (id, agency_id, user_id, draft_id, thread_id, gmail_message_id, to_email, cc_email, bcc_email, subject, sent_body, used_override, created_at, raw_response)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          crypto.randomUUID(),
+          session.agencyId,
+          session.userId,
+          null,
+          threadId,
+          gmailMessageId,
+          authoritativeEmail,
+          "",
+          "",
+          subject,
+          bodyText,
+          requestedTo && requestedTo !== authoritativeEmail ? 1 : 0,
+          createdAt,
+          JSON.stringify(sendRes?.data || {})
+        );
 
-      sent.push({
-        leadId,
-        gmailMessageId,
-        threadId,
-        toEmail: to,
-        subject,
-      });
+        await db.run(
+          `UPDATE outreach_leads
+           SET status = 'sent',
+               last_contacted_at = ?,
+               updated_at = ?
+           WHERE id = ? AND campaign_id = ? AND agency_id = ? AND user_id = ?`,
+          now,
+          now,
+          leadId,
+          campaignId,
+          session.agencyId,
+          session.userId
+        );
+
+        sent.push({
+          leadId,
+          gmailMessageId,
+          threadId,
+          toEmail: authoritativeEmail,
+          subject,
+        });
+      } catch (sendErr: any) {
+        console.error("OUTREACH_SINGLE_SEND_ERROR", {
+          leadId,
+          campaignId,
+          message: String(sendErr?.message || sendErr),
+        });
+
+        skipped.push({
+          leadId,
+          reason: safeString(sendErr?.message || "gmail_send_failed") || "gmail_send_failed",
+        });
+      }
     }
 
     await db.run(
@@ -410,7 +453,12 @@ export async function POST(req: NextRequest) {
 
     console.error("OUTREACH_SEND_ERROR", err);
     return NextResponse.json(
-      { ok: false, error: "Internal server error", code: "internal", message: String(err?.message || err) },
+      {
+        ok: false,
+        error: "Internal server error",
+        code: "internal",
+        message: String(err?.message || err),
+      },
       { status: 500 }
     );
   }

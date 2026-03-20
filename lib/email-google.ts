@@ -1,4 +1,3 @@
-// lib/email-google.ts
 import { google } from "googleapis";
 import { getDb } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/crypto";
@@ -9,6 +8,7 @@ type AccountRow = {
   access_token: string | null;
   refresh_token: string | null;
   expiry_date: number | null;
+  provider: string | null;
 };
 
 function nowMs() {
@@ -23,6 +23,10 @@ function toIntOrNull(v: any): number | null {
   const n = Number(v);
   if (!Number.isFinite(n)) return null;
   return Math.trunc(n);
+}
+
+function safeString(v: any) {
+  return String(v ?? "").trim();
 }
 
 async function dbGet(db: any, sql: string, args: any[]) {
@@ -79,26 +83,46 @@ async function ensureEmailAccountsSchema(db: any) {
     );
   `);
 
-  await db.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user
-      ON email_accounts(agency_id, user_id);
-  `);
-
   const cols = await dbAll(db, `PRAGMA table_info(email_accounts)`);
-  const have = new Set((cols || []).map((c: any) => String(c?.name || "")));
+  const have = new Set((cols || []).map((c: any) => String(c?.name || "").trim()));
 
-  if (!have.has("email")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN email TEXT;`).catch(() => {});
-  if (!have.has("access_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN access_token TEXT;`).catch(() => {});
-  if (!have.has("refresh_token")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN refresh_token TEXT;`).catch(() => {});
-  if (!have.has("expiry_date")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN expiry_date INTEGER;`).catch(() => {});
-  if (!have.has("scope")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN scope TEXT;`).catch(() => {});
-  if (!have.has("token_type")) await db.exec(`ALTER TABLE email_accounts ADD COLUMN token_type TEXT;`).catch(() => {});
+  if (!have.has("provider")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN provider TEXT`).catch(() => {});
+  }
+  if (!have.has("email")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN email TEXT`).catch(() => {});
+  }
+  if (!have.has("access_token")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN access_token TEXT`).catch(() => {});
+  }
+  if (!have.has("refresh_token")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN refresh_token TEXT`).catch(() => {});
+  }
+  if (!have.has("expiry_date")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN expiry_date INTEGER`).catch(() => {});
+  }
+  if (!have.has("scope")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN scope TEXT`).catch(() => {});
+  }
+  if (!have.has("token_type")) {
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN token_type TEXT`).catch(() => {});
+  }
   if (!have.has("created_at")) {
-    await db.exec(`ALTER TABLE email_accounts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`).catch(() => {});
   }
   if (!have.has("updated_at")) {
-    await db.exec(`ALTER TABLE email_accounts ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+    await db.exec(`ALTER TABLE email_accounts ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`).catch(() => {});
   }
+
+  await db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_agency_user_provider
+      ON email_accounts(agency_id, user_id, provider);
+  `);
+
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_email_accounts_agency_user
+      ON email_accounts(agency_id, user_id);
+  `);
 }
 
 async function refreshAccessToken(args: {
@@ -126,13 +150,24 @@ async function refreshAccessToken(args: {
       ok: false as const,
       error: "TOKEN_REFRESH_FAILED",
       details: j ?? null,
+      status: r.status,
+    };
+  }
+
+  const accessToken = safeString(j.access_token);
+  if (!accessToken) {
+    return {
+      ok: false as const,
+      error: "TOKEN_REFRESH_FAILED",
+      details: j ?? null,
+      status: r.status,
     };
   }
 
   return {
     ok: true as const,
     tokens: {
-      access_token: String(j.access_token ?? ""),
+      access_token: accessToken,
       expires_in: toIntOrNull(j.expires_in) ?? 0,
       scope: typeof j.scope === "string" ? j.scope : null,
       token_type: typeof j.token_type === "string" ? j.token_type : null,
@@ -163,9 +198,17 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
 
   const account = (await dbGet(
     db,
-    `SELECT id, email, access_token, refresh_token, expiry_date
+    `SELECT id, email, access_token, refresh_token, expiry_date, provider
      FROM email_accounts
-     WHERE agency_id = ? AND user_id = ?
+     WHERE agency_id = ? AND user_id = ? AND (provider = 'google' OR provider = 'gmail' OR provider IS NULL OR provider = '')
+     ORDER BY
+       CASE
+         WHEN provider = 'google' THEN 0
+         WHEN provider = 'gmail' THEN 1
+         ELSE 2
+       END,
+       updated_at DESC,
+       created_at DESC
      LIMIT 1`,
     [args.agencyId, args.userId]
   )) as AccountRow | undefined;
@@ -174,8 +217,8 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
     return { ok: false as const, error: "NOT_CONNECTED" };
   }
 
-  const accessToken = decrypt(account.access_token) || "";
-  const refreshToken = decrypt(account.refresh_token) || "";
+  const accessToken = safeString(decrypt(account.access_token) || "");
+  const refreshToken = safeString(decrypt(account.refresh_token) || "");
   const expiryDate = account.expiry_date == null ? null : Number(account.expiry_date);
 
   if (!accessToken && !refreshToken) {
@@ -183,7 +226,8 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
   }
 
   const needsRefresh =
-    !accessToken || (expiryDate != null && Number.isFinite(expiryDate) && expiryDate <= nowMs() + 2 * 60 * 1000);
+    !accessToken ||
+    (expiryDate != null && Number.isFinite(expiryDate) && expiryDate <= nowMs() + 2 * 60 * 1000);
 
   let finalAccess = accessToken;
   let finalRefresh = refreshToken;
@@ -205,28 +249,28 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
         ok: false as const,
         error: rr.error,
         details: rr.details,
+        status: rr.status,
       };
     }
 
-    finalAccess = rr.tokens.access_token || "";
-    finalExpiry = nowMs() + (Number(rr.tokens.expires_in || 0) * 1000 || 0);
+    finalAccess = safeString(rr.tokens.access_token || "");
+    finalExpiry = nowMs() + Math.max(0, Number(rr.tokens.expires_in || 0)) * 1000;
 
     if (rr.tokens.refresh_token) {
-      finalRefresh = rr.tokens.refresh_token;
+      finalRefresh = safeString(rr.tokens.refresh_token);
     }
 
     await dbRun(
       db,
       `UPDATE email_accounts
-       SET access_token = ?, refresh_token = ?, expiry_date = ?, updated_at = ?
-       WHERE agency_id = ? AND user_id = ?`,
+       SET access_token = ?, refresh_token = ?, expiry_date = ?, updated_at = ?, provider = COALESCE(NULLIF(provider, ''), 'google')
+       WHERE id = ?`,
       [
         encrypt(finalAccess || ""),
         encrypt(finalRefresh || ""),
         finalExpiry,
         nowMs(),
-        args.agencyId,
-        args.userId,
+        account.id,
       ]
     );
   }
@@ -240,9 +284,30 @@ export async function getValidGmailClient(args: { agencyId: string; userId: stri
 
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
+  let resolvedEmail = safeString(account.email || "");
+
+  if (!resolvedEmail) {
+    try {
+      const profile = await gmail.users.getProfile({ userId: "me" });
+      resolvedEmail = safeString(profile?.data?.emailAddress || "");
+
+      if (resolvedEmail) {
+        await dbRun(
+          db,
+          `UPDATE email_accounts
+           SET email = ?, updated_at = ?, provider = COALESCE(NULLIF(provider, ''), 'google')
+           WHERE id = ?`,
+          [resolvedEmail, nowMs(), account.id]
+        );
+      }
+    } catch {
+      // keep going; send can still work without cached email
+    }
+  }
+
   return {
     ok: true as const,
     gmail,
-    email: account.email ?? null,
+    email: resolvedEmail || null,
   };
 }

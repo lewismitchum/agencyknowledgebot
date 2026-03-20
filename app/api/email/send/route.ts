@@ -1,4 +1,3 @@
-// app/api/email/send/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { requireActiveMember } from "@/lib/authz";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -32,7 +31,10 @@ function safeString(v: any) {
 function sanitizeError(err: any) {
   const message = String(err?.message || "");
   const name = String(err?.name || "");
-  const code = (err?.code ?? err?.response?.data?.error?.status ?? err?.response?.status ?? undefined) as any;
+  const code = (err?.code ??
+    err?.response?.data?.error?.status ??
+    err?.response?.status ??
+    undefined) as any;
 
   const googleReason =
     err?.response?.data?.error?.errors?.[0]?.reason ??
@@ -81,6 +83,60 @@ function splitEmails(input: string) {
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean);
+}
+
+function isValidEmail(email: string) {
+  const value = safeString(email).toLowerCase();
+  if (!value) return false;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return false;
+  if (
+    value.includes("example.com") ||
+    value.includes("test.com") ||
+    value.includes("yourcompany.com") ||
+    value.includes("domain.com")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function buildRawEmail(params: {
+  fromEmail?: string | null;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+  body: string;
+  messageId?: string;
+  references?: string;
+  inReplyTo?: string;
+}) {
+  const lines: string[] = [];
+  lines.push(`To: ${params.to.join(", ")}`);
+  if (params.cc?.length) lines.push(`Cc: ${params.cc.join(", ")}`);
+  if (params.bcc?.length) lines.push(`Bcc: ${params.bcc.join(", ")}`);
+  if (safeString(params.fromEmail || "")) lines.push(`From: ${safeString(params.fromEmail || "")}`);
+  if (safeString(params.subject || "")) lines.push(`Subject: ${safeString(params.subject || "")}`);
+
+  if (safeString(params.messageId || "")) {
+    lines.push(`In-Reply-To: ${safeString(params.messageId || "")}`);
+  } else if (safeString(params.inReplyTo || "")) {
+    lines.push(`In-Reply-To: ${safeString(params.inReplyTo || "")}`);
+  }
+
+  const refs = `${safeString(params.references || "")} ${safeString(params.messageId || "")}`.trim();
+  if (refs) {
+    lines.push(`References: ${refs}`);
+  }
+
+  lines.push(`MIME-Version: 1.0`);
+  lines.push(`Content-Type: text/plain; charset="UTF-8"`);
+  lines.push(`Content-Transfer-Encoding: 7bit`);
+  lines.push("");
+  lines.push(params.body);
+  lines.push("");
+
+  return b64urlEncodeUtf8(lines.join("\r\n"));
 }
 
 async function dbGet(db: any, sql: string, args: any[]) {
@@ -325,7 +381,12 @@ export async function POST(req: NextRequest) {
               ? "missing_google_env"
               : "gmail_auth_error";
 
-      const status = gmailRes.error === "NOT_CONNECTED" || gmailRes.error === "MISSING_TOKENS" ? 409 : 500;
+      const status =
+        gmailRes.error === "NOT_CONNECTED" ||
+        gmailRes.error === "MISSING_TOKENS" ||
+        gmailRes.error === "MISSING_REFRESH_TOKEN"
+          ? 409
+          : 500;
 
       return NextResponse.json(
         {
@@ -345,6 +406,7 @@ export async function POST(req: NextRequest) {
     }
 
     const gmail = gmailRes.gmail;
+    const senderEmail = safeString(gmailRes.email || "");
 
     let finalTo = "";
     let finalCc = "";
@@ -373,7 +435,10 @@ export async function POST(req: NextRequest) {
       );
 
       if (!draft?.id) {
-        return NextResponse.json({ ok: false, error: "Draft not found", code: "draft_not_found" }, { status: 404 });
+        return NextResponse.json(
+          { ok: false, error: "Draft not found", code: "draft_not_found" },
+          { status: 404 }
+        );
       }
 
       if (safeString(draft.thread_id || "") !== threadId) {
@@ -397,7 +462,9 @@ export async function POST(req: NextRequest) {
 
       finalTo = pickReplyTo(headers);
       finalSubject = normalizeReplySubject(extractHeader(headers, "Subject") || safeString(draft.subject || ""));
-      finalBody = sanitizeBody(bodyOverride != null && safeString(bodyOverride).length > 0 ? bodyOverride : String(draft.body || ""));
+      finalBody = sanitizeBody(
+        bodyOverride != null && safeString(bodyOverride).length > 0 ? bodyOverride : String(draft.body || "")
+      );
       usedOverride = bodyOverride != null && safeString(bodyOverride).length > 0 ? 1 : 0;
       gmailThreadId = threadId;
 
@@ -405,7 +472,7 @@ export async function POST(req: NextRequest) {
       const references = extractHeader(headers, "References");
       const inReplyTo = extractHeader(headers, "In-Reply-To");
 
-      if (!finalTo) {
+      if (!finalTo || !isValidEmail(finalTo)) {
         return NextResponse.json(
           { ok: false, error: "Could not determine recipient from thread", code: "missing_recipient" },
           { status: 400 }
@@ -413,34 +480,25 @@ export async function POST(req: NextRequest) {
       }
 
       if (!finalBody) {
-        return NextResponse.json({ ok: false, error: "Empty email body", code: "empty_body" }, { status: 400 });
+        return NextResponse.json(
+          { ok: false, error: "Empty email body", code: "empty_body" },
+          { status: 400 }
+        );
       }
-
-      const lines: string[] = [];
-      lines.push(`To: ${finalTo}`);
-      if (gmailRes.email) lines.push(`From: ${gmailRes.email}`);
-      lines.push(`Subject: ${finalSubject}`);
-
-      if (messageId) lines.push(`In-Reply-To: ${messageId}`);
-      if (references || messageId) {
-        const refs = `${references ? references + " " : ""}${messageId || ""}`.trim();
-        if (refs) lines.push(`References: ${refs}`);
-      } else if (inReplyTo) {
-        lines.push(`In-Reply-To: ${inReplyTo}`);
-      }
-
-      lines.push(`MIME-Version: 1.0`);
-      lines.push(`Content-Type: text/plain; charset="UTF-8"`);
-      lines.push(`Content-Transfer-Encoding: 7bit`);
-      lines.push("");
-      lines.push(finalBody);
-      lines.push("");
 
       where = "gmail_send_reply";
       const sendRes = await gmail.users.messages.send({
         userId: "me",
         requestBody: {
-          raw: b64urlEncodeUtf8(lines.join("\r\n")),
+          raw: buildRawEmail({
+            fromEmail: senderEmail || null,
+            to: [finalTo],
+            subject: finalSubject,
+            body: finalBody,
+            messageId,
+            references,
+            inReplyTo,
+          }),
           threadId,
         },
       });
@@ -484,39 +542,60 @@ export async function POST(req: NextRequest) {
     finalTo = composeTo;
     finalCc = composeCc;
     finalBcc = composeBcc;
-    finalSubject = composeSubject;
+    finalSubject = composeSubject || "(no subject)";
     finalBody = sanitizeBody(composeBody);
 
     if (!finalTo) {
-      return NextResponse.json({ ok: false, error: "Missing To", code: "missing_to" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Missing To", code: "missing_to" },
+        { status: 400 }
+      );
     }
 
     if (!finalBody) {
-      return NextResponse.json({ ok: false, error: "Empty email body", code: "empty_body" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Empty email body", code: "empty_body" },
+        { status: 400 }
+      );
     }
 
     const toList = splitEmails(finalTo);
     const ccList = splitEmails(finalCc);
     const bccList = splitEmails(finalBcc);
 
-    const lines: string[] = [];
-    lines.push(`To: ${toList.join(", ")}`);
-    if (ccList.length) lines.push(`Cc: ${ccList.join(", ")}`);
-    if (bccList.length) lines.push(`Bcc: ${bccList.join(", ")}`);
-    if (gmailRes.email) lines.push(`From: ${gmailRes.email}`);
-    if (finalSubject) lines.push(`Subject: ${finalSubject}`);
-    lines.push(`MIME-Version: 1.0`);
-    lines.push(`Content-Type: text/plain; charset="UTF-8"`);
-    lines.push(`Content-Transfer-Encoding: 7bit`);
-    lines.push("");
-    lines.push(finalBody);
-    lines.push("");
+    if (toList.length === 0 || !toList.every(isValidEmail)) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid To email", code: "invalid_to" },
+        { status: 400 }
+      );
+    }
+
+    if (ccList.some((x) => !isValidEmail(x))) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid Cc email", code: "invalid_cc" },
+        { status: 400 }
+      );
+    }
+
+    if (bccList.some((x) => !isValidEmail(x))) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid Bcc email", code: "invalid_bcc" },
+        { status: 400 }
+      );
+    }
 
     where = "gmail_send_compose";
     const sendRes = await gmail.users.messages.send({
       userId: "me",
       requestBody: {
-        raw: b64urlEncodeUtf8(lines.join("\r\n")),
+        raw: buildRawEmail({
+          fromEmail: senderEmail || null,
+          to: toList,
+          cc: ccList,
+          bcc: bccList,
+          subject: finalSubject,
+          body: finalBody,
+        }),
       },
     });
 
@@ -558,7 +637,10 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     const msg = String(err?.message || "");
     if (msg.includes("Too many requests") || msg.includes("Hourly limit")) {
-      return NextResponse.json({ ok: false, error: msg, code: "rate_limited", where: "rate_limit" }, { status: 429 });
+      return NextResponse.json(
+        { ok: false, error: msg, code: "rate_limited", where: "rate_limit" },
+        { status: 429 }
+      );
     }
 
     console.error("Email send error:", err);
