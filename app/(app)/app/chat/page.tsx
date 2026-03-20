@@ -1,4 +1,3 @@
-// app/(app)/app/chat/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -937,7 +936,7 @@ export default function ChatPage() {
               </CardDescription>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2" data-tour="chat-bot-selector">
               <div className="text-sm text-muted-foreground">Bot</div>
               <select
                 className="h-10 rounded-2xl border bg-background/70 px-3 text-sm backdrop-blur"
@@ -1075,24 +1074,26 @@ export default function ChatPage() {
             {attachError ? <div className="mt-3 text-xs text-destructive">{attachError}</div> : null}
 
             <div className="mt-4 grid gap-3">
-              <Textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={
-                  !selectedBotId
-                    ? "Select a bot first…"
-                    : dailyBlocked
-                    ? "Daily limit reached…"
-                    : docsEmpty
-                    ? "Ask anything… (Upload docs for internal answers)"
-                    : "Ask a question… (Ctrl/⌘ + Enter to send)"
-                }
-                disabled={!selectedBotId || dailyBlocked || uploadingAttachments}
-                className="min-h-[130px] rounded-[24px] border bg-background/70 px-4 py-3 text-sm shadow-sm backdrop-blur"
-                onKeyDown={(e) => {
-                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send();
-                }}
-              />
+              <div data-tour="chat-input">
+                <Textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder={
+                    !selectedBotId
+                      ? "Select a bot first…"
+                      : dailyBlocked
+                        ? "Daily limit reached…"
+                        : docsEmpty
+                          ? "Ask anything… (Upload docs for internal answers)"
+                          : "Ask a question… (Ctrl/⌘ + Enter to send)"
+                  }
+                  disabled={!selectedBotId || dailyBlocked || uploadingAttachments}
+                  className="min-h-[130px] rounded-[24px] border bg-background/70 px-4 py-3 text-sm shadow-sm backdrop-blur"
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send();
+                  }}
+                />
+              </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-xs text-muted-foreground">
@@ -1101,7 +1102,7 @@ export default function ChatPage() {
                     : "Louis prioritizes your uploaded docs for internal answers."}
                 </div>
 
-                <Button onClick={send} disabled={!canSend} className="rounded-2xl px-5">
+                <Button data-tour="chat-send" onClick={send} disabled={!canSend} className="rounded-2xl px-5">
                   <Send className="mr-2 h-4 w-4" />
                   {loading ? "Sending…" : uploadingAttachments ? "Uploading…" : dailyBlocked ? "Daily limit reached" : "Send"}
                 </Button>

@@ -675,7 +675,7 @@ export default function DocsPage() {
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <span className="text-xs text-muted-foreground">Bot</span>
-          <div className="relative">
+          <div className="relative" data-tour="docs-bot-selector">
             <Bot className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <select
               value={selectedBotId}
@@ -703,7 +703,7 @@ export default function DocsPage() {
       ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1fr_0.95fr]">
-        <div className="rounded-[28px] border bg-card/80 p-5 shadow-sm">
+        <div className="rounded-[28px] border bg-card/80 p-5 shadow-sm" data-tour="docs-upload">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex-1">
               <div className="text-lg font-semibold tracking-tight">Upload to this bot</div>
@@ -786,7 +786,7 @@ export default function DocsPage() {
         </div>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-4" data-tour="docs-list">
         {loading ? (
           <div className="rounded-[28px] border bg-card/70 p-8 text-sm text-muted-foreground shadow-sm">
             Loading documents…

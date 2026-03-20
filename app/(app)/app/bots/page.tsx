@@ -1,4 +1,3 @@
-// app/(app)/app/bots/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -608,172 +607,174 @@ export default function BotsPage() {
               </div>
             ) : null}
 
-            {loading ? (
-              <div className="rounded-[28px] border bg-muted/20 p-8 text-sm text-muted-foreground">
-                Loading bots…
-              </div>
-            ) : bots.length === 0 ? (
-              <div className="rounded-[28px] border bg-muted/20 p-10 text-center">
-                <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/80">
-                  <Bot className="h-6 w-6 text-muted-foreground" />
+            <div data-tour="bots-list">
+              {loading ? (
+                <div className="rounded-[28px] border bg-muted/20 p-8 text-sm text-muted-foreground">
+                  Loading bots…
                 </div>
-                <div className="mt-4 text-lg font-semibold tracking-tight">No bots yet</div>
-                <div className="mt-2 text-sm text-muted-foreground">
-                  Create your first bot on the right to start organizing knowledge.
+              ) : bots.length === 0 ? (
+                <div className="rounded-[28px] border bg-muted/20 p-10 text-center">
+                  <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-3xl border bg-background/80">
+                    <Bot className="h-6 w-6 text-muted-foreground" />
+                  </div>
+                  <div className="mt-4 text-lg font-semibold tracking-tight">No bots yet</div>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    Create your first bot on the right to start organizing knowledge.
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {bots.map((b) => {
-                  const missing = !b.vector_store_id;
-                  const isPrivate = b.scope ? b.scope === "private" : !!b.owner_user_id;
-                  const canManage = canManageBot(b);
+              ) : (
+                <div className="space-y-4">
+                  {bots.map((b) => {
+                    const missing = !b.vector_store_id;
+                    const isPrivate = b.scope ? b.scope === "private" : !!b.owner_user_id;
+                    const canManage = canManageBot(b);
 
-                  return (
-                    <div
-                      key={b.id}
-                      className="rounded-[28px] border bg-background p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md"
-                    >
-                      <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-                        <div className="min-w-0 flex-1">
-                          {renamingId === b.id ? (
-                            <div className="max-w-md space-y-3">
-                              <Input
-                                value={renameValue}
-                                onChange={(e) => setRenameValue(e.target.value)}
-                                placeholder="Bot name"
-                                className="rounded-2xl"
-                              />
-                              <div className="flex items-center gap-2">
+                    return (
+                      <div
+                        key={b.id}
+                        className="rounded-[28px] border bg-background p-5 shadow-sm transition hover:-translate-y-[2px] hover:shadow-md"
+                      >
+                        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                          <div className="min-w-0 flex-1">
+                            {renamingId === b.id ? (
+                              <div className="max-w-md space-y-3">
+                                <Input
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  placeholder="Bot name"
+                                  className="rounded-2xl"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    className="h-9 rounded-full px-4"
+                                    onClick={() => submitRename(b)}
+                                  >
+                                    Save
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-9 rounded-full px-4"
+                                    onClick={cancelRename}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="flex items-start gap-3">
+                                  <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-muted/30 text-muted-foreground shadow-sm">
+                                    {isPrivate ? (
+                                      <Lock className="h-4 w-4" />
+                                    ) : (
+                                      <Building2 className="h-4 w-4" />
+                                    )}
+                                  </div>
+
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <div className="truncate text-base font-semibold tracking-tight">
+                                        {b.name}
+                                      </div>
+                                      <Badge variant="outline" className="rounded-full">
+                                        {isPrivate ? "Private" : "Agency"}
+                                      </Badge>
+                                      {missing ? (
+                                        <Badge
+                                          variant="outline"
+                                          className="rounded-full border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100"
+                                        >
+                                          Missing vector store
+                                        </Badge>
+                                      ) : (
+                                        <Badge variant="secondary" className="rounded-full">
+                                          Ready
+                                        </Badge>
+                                      )}
+                                    </div>
+
+                                    <div className="mt-2 text-sm text-muted-foreground">
+                                      {isPrivate
+                                        ? "Private bot visible only to you."
+                                        : "Agency bot shared across the workspace."}
+                                    </div>
+
+                                    {b.description ? (
+                                      <div className="mt-2 text-sm text-muted-foreground">
+                                        {b.description}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+
+                                <div className="mt-4 grid gap-3 text-xs text-muted-foreground sm:grid-cols-2">
+                                  <div className="rounded-2xl border bg-muted/20 px-3 py-2">
+                                    Created: {formatDate(b.created_at)}
+                                  </div>
+                                  <div className="rounded-2xl border bg-muted/20 px-3 py-2">
+                                    Vector store: {missing ? "Missing" : "Attached"}
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          <div className="flex w-full flex-col gap-3 xl:w-auto xl:min-w-[320px]">
+                            {missing ? (
+                              <div className="rounded-3xl border bg-muted/20 p-4">
+                                <div className="text-sm font-semibold">Repair required</div>
+                                <div className="mt-2 text-sm text-muted-foreground">
+                                  This bot needs a vector store before it can answer from uploaded docs.
+                                </div>
                                 <Button
                                   size="sm"
-                                  className="h-9 rounded-full px-4"
-                                  onClick={() => submitRename(b)}
+                                  variant="secondary"
+                                  className="mt-3 h-9 rounded-full px-4"
+                                  disabled={repairingId === b.id}
+                                  onClick={() => repairVectorStore(b.id)}
                                 >
-                                  Save
+                                  {repairingId === b.id ? "Repairing…" : "Repair vector store"}
                                 </Button>
+                              </div>
+                            ) : null}
+
+                            <div className="flex flex-wrap gap-2 xl:justify-end">
+                              {canManage && renamingId !== b.id ? (
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   className="h-9 rounded-full px-4"
-                                  onClick={cancelRename}
+                                  onClick={() => startRename(b)}
+                                  disabled={!canRenameBot(b)}
                                 >
-                                  Cancel
+                                  Rename
                                 </Button>
-                              </div>
+                              ) : null}
+
+                              {canManage ? (
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  className="h-9 rounded-full px-4"
+                                  disabled={deletingId === b.id || !canDeleteBot(b)}
+                                  onClick={() => deleteBot(b)}
+                                >
+                                  {deletingId === b.id ? "Deleting…" : "Delete"}
+                                </Button>
+                              ) : (
+                                <span className="self-center text-xs text-muted-foreground">No actions</span>
+                              )}
                             </div>
-                          ) : (
-                            <>
-                              <div className="flex items-start gap-3">
-                                <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-muted/30 text-muted-foreground shadow-sm">
-                                  {isPrivate ? (
-                                    <Lock className="h-4 w-4" />
-                                  ) : (
-                                    <Building2 className="h-4 w-4" />
-                                  )}
-                                </div>
-
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <div className="truncate text-base font-semibold tracking-tight">
-                                      {b.name}
-                                    </div>
-                                    <Badge variant="outline" className="rounded-full">
-                                      {isPrivate ? "Private" : "Agency"}
-                                    </Badge>
-                                    {missing ? (
-                                      <Badge
-                                        variant="outline"
-                                        className="rounded-full border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100"
-                                      >
-                                        Missing vector store
-                                      </Badge>
-                                    ) : (
-                                      <Badge variant="secondary" className="rounded-full">
-                                        Ready
-                                      </Badge>
-                                    )}
-                                  </div>
-
-                                  <div className="mt-2 text-sm text-muted-foreground">
-                                    {isPrivate
-                                      ? "Private bot visible only to you."
-                                      : "Agency bot shared across the workspace."}
-                                  </div>
-
-                                  {b.description ? (
-                                    <div className="mt-2 text-sm text-muted-foreground">
-                                      {b.description}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-
-                              <div className="mt-4 grid gap-3 text-xs text-muted-foreground sm:grid-cols-2">
-                                <div className="rounded-2xl border bg-muted/20 px-3 py-2">
-                                  Created: {formatDate(b.created_at)}
-                                </div>
-                                <div className="rounded-2xl border bg-muted/20 px-3 py-2">
-                                  Vector store: {missing ? "Missing" : "Attached"}
-                                </div>
-                              </div>
-                            </>
-                          )}
-                        </div>
-
-                        <div className="flex w-full flex-col gap-3 xl:w-auto xl:min-w-[320px]">
-                          {missing ? (
-                            <div className="rounded-3xl border bg-muted/20 p-4">
-                              <div className="text-sm font-semibold">Repair required</div>
-                              <div className="mt-2 text-sm text-muted-foreground">
-                                This bot needs a vector store before it can answer from uploaded docs.
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                className="mt-3 h-9 rounded-full px-4"
-                                disabled={repairingId === b.id}
-                                onClick={() => repairVectorStore(b.id)}
-                              >
-                                {repairingId === b.id ? "Repairing…" : "Repair vector store"}
-                              </Button>
-                            </div>
-                          ) : null}
-
-                          <div className="flex flex-wrap gap-2 xl:justify-end">
-                            {canManage && renamingId !== b.id ? (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-9 rounded-full px-4"
-                                onClick={() => startRename(b)}
-                                disabled={!canRenameBot(b)}
-                              >
-                                Rename
-                              </Button>
-                            ) : null}
-
-                            {canManage ? (
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                className="h-9 rounded-full px-4"
-                                disabled={deletingId === b.id || !canDeleteBot(b)}
-                                onClick={() => deleteBot(b)}
-                              >
-                                {deletingId === b.id ? "Deleting…" : "Delete"}
-                              </Button>
-                            ) : (
-                              <span className="self-center text-xs text-muted-foreground">No actions</span>
-                            )}
                           </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -872,6 +873,7 @@ export default function BotsPage() {
               </div>
 
               <Button
+                data-tour="create-bot"
                 onClick={createBot}
                 disabled={creating || !name.trim() || (scope === "agency" && agencyBotAtCap)}
                 className="h-11 w-full rounded-2xl"
