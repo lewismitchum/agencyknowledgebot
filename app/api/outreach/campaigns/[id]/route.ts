@@ -229,3 +229,63 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return Response.json({ error: "Server error", message: msg }, { status: 500 });
   }
 }
+
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const session = await requireActiveMember(req);
+    const db: Db = await getDb();
+    await ensureSchema(db);
+
+    const plan = await getAgencyPlan(db, session.agencyId, session.plan);
+    const planKey = normalizePlan(plan);
+    const gate = requireFeature(planKey, "spreadsheets");
+    if (!gate.ok) return Response.json(gate.body, { status: gate.status });
+
+    const { id } = await ctx.params;
+    const campaignId = clampString(id ?? "", 200);
+    if (!campaignId) return Response.json({ ok: false, error: "MISSING_ID" }, { status: 400 });
+
+    const row = (await db.get(
+      `SELECT id
+       FROM outreach_campaigns
+       WHERE id = ? AND agency_id = ? AND user_id = ?
+       LIMIT 1`,
+      campaignId,
+      session.agencyId,
+      session.userId
+    )) as { id: string } | undefined;
+
+    if (!row?.id) {
+      return Response.json({ ok: false, error: "CAMPAIGN_NOT_FOUND" }, { status: 404 });
+    }
+
+    await db.run(
+      `DELETE FROM outreach_leads
+       WHERE campaign_id = ? AND agency_id = ? AND user_id = ?`,
+      campaignId,
+      session.agencyId,
+      session.userId
+    );
+
+    await db.run(
+      `DELETE FROM outreach_campaigns
+       WHERE id = ? AND agency_id = ? AND user_id = ?`,
+      campaignId,
+      session.agencyId,
+      session.userId
+    );
+
+    return Response.json({
+      ok: true,
+      campaign_id: campaignId,
+      deleted: true,
+    });
+  } catch (err: any) {
+    const msg = String(err?.code ?? err?.message ?? err);
+    if (msg === "UNAUTHENTICATED") return Response.json({ error: "Unauthorized" }, { status: 401 });
+    if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ error: "Forbidden" }, { status: 403 });
+
+    console.error("OUTREACH_CAMPAIGN_DELETE_ERROR", err);
+    return Response.json({ error: "Server error", message: msg }, { status: 500 });
+  }
+}

@@ -111,22 +111,24 @@ function CampaignCard({
   campaign,
   active,
   onOpen,
+  onDelete,
+  deleting,
 }: {
   campaign: CampaignSummary;
   active: boolean;
   onOpen: () => void;
+  onDelete: () => void;
+  deleting: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onOpen}
+    <div
       className={cx(
-        "w-full rounded-3xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-[1px]",
+        "w-full rounded-3xl border bg-card p-5 text-left shadow-sm transition",
         active && "border-foreground/30 ring-2 ring-foreground/10"
       )}
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
+        <button type="button" onClick={onOpen} className="flex-1 text-left">
           <div className="text-base font-semibold">{campaign.title}</div>
           <div className="mt-1 text-xs text-muted-foreground">
             {campaign.description || campaign.source_query || "Lead campaign"}
@@ -134,18 +136,29 @@ function CampaignCard({
           <div className="mt-2 text-xs text-muted-foreground">
             Created: {formatDate(campaign.created_at)} • Updated: {formatDate(campaign.updated_at)}
           </div>
-        </div>
+        </button>
 
-        <div className="flex flex-wrap gap-2 text-xs">
-          <span className="rounded-full border bg-background/60 px-3 py-1">Leads: {campaign.lead_count || 0}</span>
-          <span className="rounded-full border bg-background/60 px-3 py-1">New: {campaign.new_count || 0}</span>
-          <span className="rounded-full border bg-background/60 px-3 py-1">Sent: {campaign.sent_count || 0}</span>
-          <span className="rounded-full border bg-background/60 px-3 py-1">
-            Replied: {campaign.replied_count || 0}
-          </span>
+        <div className="flex flex-col items-end gap-3">
+          <div className="flex flex-wrap justify-end gap-2 text-xs">
+            <span className="rounded-full border bg-background/60 px-3 py-1">Leads: {campaign.lead_count || 0}</span>
+            <span className="rounded-full border bg-background/60 px-3 py-1">New: {campaign.new_count || 0}</span>
+            <span className="rounded-full border bg-background/60 px-3 py-1">Sent: {campaign.sent_count || 0}</span>
+            <span className="rounded-full border bg-background/60 px-3 py-1">
+              Replied: {campaign.replied_count || 0}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={deleting}
+            className="rounded-xl border border-red-200 px-3 py-2 text-xs text-red-700 hover:bg-red-50 disabled:opacity-60"
+          >
+            {deleting ? "Deleting..." : "Delete campaign"}
+          </button>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -167,6 +180,7 @@ export default function OutreachPage() {
   const [findingLeads, setFindingLeads] = useState(false);
   const [campaignError, setCampaignError] = useState("");
   const [campaignMsg, setCampaignMsg] = useState("");
+  const [deletingCampaignId, setDeletingCampaignId] = useState<string | null>(null);
 
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [campaignDetail, setCampaignDetail] = useState<CampaignDetail | null>(null);
@@ -380,6 +394,55 @@ export default function OutreachPage() {
       setCampaignError(e?.message ?? "Failed to find leads");
     } finally {
       setFindingLeads(false);
+    }
+  }
+
+  async function onDeleteCampaign(campaignId: string) {
+    const ok = window.confirm("Delete this campaign and all of its leads?");
+    if (!ok) return;
+
+    setDeletingCampaignId(campaignId);
+    setCampaignError("");
+    setCampaignMsg("");
+    setCampaignDetailError("");
+    setDraftError("");
+
+    try {
+      await fetchJson<any>(`/api/outreach/campaigns/${encodeURIComponent(campaignId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      const remaining = campaigns.filter((c) => c.id !== campaignId);
+      setCampaigns(remaining);
+
+      if (selectedCampaignId === campaignId) {
+        setSelectedCampaignId(null);
+        setCampaignDetail(null);
+        setCampaignLeads([]);
+        setSelectedLeadIds([]);
+        setDrafts([]);
+      }
+
+      setCampaignMsg("Campaign deleted.");
+
+      if (remaining.length > 0) {
+        const nextId = remaining[0].id;
+        await loadCampaignDetail(nextId);
+      } else {
+        setCampaignDetail(null);
+        setCampaignLeads([]);
+        setSelectedLeadIds([]);
+        setDrafts([]);
+      }
+    } catch (e: any) {
+      if (isFetchJsonError(e) && (e.status === 401 || e?.info?.status === 401)) {
+        window.location.href = "/login";
+        return;
+      }
+      setCampaignError(e?.message ?? "Failed to delete campaign");
+    } finally {
+      setDeletingCampaignId(null);
     }
   }
 
@@ -730,7 +793,7 @@ export default function OutreachPage() {
         <div>
           <h1 className="text-2xl font-semibold">Outreach</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Find leads, draft campaign emails, and send them directly from outreach. Plan:{" "}
+            Find leads, draft campaign emails, send them directly from outreach, and delete campaigns when needed. Plan:{" "}
             <span className="font-mono">{plan ?? "unknown"}</span>
           </p>
         </div>
@@ -817,7 +880,7 @@ export default function OutreachPage() {
             <div>
               <div className="text-base font-semibold">Campaigns</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Open a campaign to review leads and update statuses.
+                Open a campaign to review leads, send outreach, or delete the campaign.
               </div>
             </div>
 
@@ -832,8 +895,12 @@ export default function OutreachPage() {
                     key={campaign.id}
                     campaign={campaign}
                     active={selectedCampaignId === campaign.id}
+                    deleting={deletingCampaignId === campaign.id}
                     onOpen={() => {
                       void loadCampaignDetail(campaign.id);
+                    }}
+                    onDelete={() => {
+                      void onDeleteCampaign(campaign.id);
                     }}
                   />
                 ))}
@@ -1254,7 +1321,7 @@ export default function OutreachPage() {
               </div>
 
               <div className="rounded-2xl border bg-background/40 p-4 text-sm text-muted-foreground">
-                Real send is now wired through outreach. Verified-email leads can be drafted and sent directly here.
+                Real send is now wired through outreach. Verified-email leads can be drafted, sent, and deleted with their campaign from here.
               </div>
             </div>
           </div>
