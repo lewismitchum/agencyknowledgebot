@@ -1,4 +1,3 @@
-// app/(app)/app/_components/navbar.tsx
 "use client";
 
 import Link from "next/link";
@@ -21,6 +20,10 @@ import {
   Rocket,
   Mail,
   Sheet as SheetIcon,
+  ChevronLeft,
+  ChevronRight,
+  LogOut,
+  PanelLeft,
 } from "lucide-react";
 
 type MeResponse =
@@ -60,6 +63,10 @@ class HttpError extends Error {
   }
 }
 
+const STORAGE_SIDEBAR_COLLAPSED = "louisai_sidebar_collapsed";
+const DESKTOP_SIDEBAR_WIDE = 280;
+const DESKTOP_SIDEBAR_COLLAPSED = 88;
+
 async function getJson<T = any>(input: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(input, {
     ...init,
@@ -80,37 +87,11 @@ async function getJson<T = any>(input: string, init: RequestInit = {}): Promise<
   }
 
   if (!res.ok) {
-    const msg =
-      (data && (data.message || data.error)) ||
-      raw ||
-      `Request failed (${res.status})`;
-
+    const msg = (data && (data.message || data.error)) || raw || `Request failed (${res.status})`;
     throw new HttpError(String(msg), res.status, raw);
   }
 
   return (data ?? (raw as any)) as T;
-}
-
-function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
-  const pathname = usePathname();
-  const active = pathname === href;
-
-  return (
-    <Link
-      href={href}
-      className={[
-        "relative text-sm font-medium",
-        "rounded-full px-4 py-1.5",
-        "transition-all duration-200",
-        "hover:-translate-y-[1px]",
-        active
-          ? "bg-muted text-foreground shadow-sm"
-          : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
-      ].join(" ")}
-    >
-      {children}
-    </Link>
-  );
 }
 
 function shortFilename(name: string, max = 28) {
@@ -146,8 +127,7 @@ function MobileTabButton({
       type="button"
       onClick={onGo}
       className={[
-        "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
-        "min-w-[68px] shrink-0",
+        "relative flex min-w-[68px] shrink-0 flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
         "active:scale-[0.98]",
         active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       ].join(" ")}
@@ -171,6 +151,46 @@ function MobileTabButton({
   );
 }
 
+function DesktopSidebarLink({
+  href,
+  label,
+  icon,
+  active,
+  collapsed,
+  badge,
+}: {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  collapsed: boolean;
+  badge?: number;
+}) {
+  return (
+    <Link
+      href={href}
+      title={collapsed ? label : undefined}
+      className={[
+        "group relative flex items-center rounded-2xl px-3 py-3 text-sm transition-all",
+        active ? "bg-muted text-foreground shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        collapsed ? "justify-center" : "gap-3",
+      ].join(" ")}
+    >
+      <span className="inline-flex h-5 w-5 items-center justify-center">{icon}</span>
+
+      {!collapsed ? <span className="truncate">{label}</span> : null}
+
+      {!collapsed && badge && badge > 0 ? <UnreadPill count={badge} /> : null}
+
+      {collapsed && badge && badge > 0 ? (
+        <span className="absolute right-1 top-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-foreground px-1 text-[10px] font-semibold text-background">
+          {badge > 99 ? "99+" : String(badge)}
+        </span>
+      ) : null}
+    </Link>
+  );
+}
+
 function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnread: number }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -187,7 +207,6 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
 
   const isActive = (p: string) => pathname === p;
   const starts = (p: string) => pathname.startsWith(p);
-
   const show = starts("/app");
 
   useEffect(() => {
@@ -211,7 +230,9 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
           return;
         }
         document.body.style.paddingBottom = "calc(env(safe-area-inset-bottom) + 76px)";
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     applyPadding();
@@ -308,8 +329,7 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                   <button
                     type="button"
                     className={[
-                      "relative flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
-                      "min-w-[68px] shrink-0",
+                      "relative flex min-w-[68px] shrink-0 flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
                       "active:scale-[0.98]",
                       moreOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground",
                     ].join(" ")}
@@ -423,9 +443,7 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                       </button>
                     </div>
 
-                    <div className="mt-3 text-xs text-muted-foreground">
-                      Swipe the bottom tabs left/right to see everything.
-                    </div>
+                    <div className="mt-3 text-xs text-muted-foreground">Swipe the bottom tabs left/right to see everything.</div>
                   </div>
                 </SheetContent>
               </Sheet>
@@ -458,10 +476,49 @@ export default function Navbar() {
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [botsError, setBotsError] = useState<string | null>(null);
   const [docsError, setDocsError] = useState<string | null>(null);
+  const [notifUnread, setNotifUnread] = useState(0);
+  const [collapsed, setCollapsed] = useState(false);
 
   const docsPanelRef = useRef<HTMLDivElement | null>(null);
 
-  const [notifUnread, setNotifUnread] = useState(0);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED);
+      setCollapsed(saved === "1");
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_SIDEBAR_COLLAPSED, collapsed ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [collapsed]);
+
+  useEffect(() => {
+    function applyDesktopOffset() {
+      try {
+        const isDesktop = window.matchMedia("(min-width: 768px)").matches;
+        if (!isDesktop) {
+          document.body.style.paddingLeft = "";
+          return;
+        }
+        document.body.style.paddingLeft = `${collapsed ? DESKTOP_SIDEBAR_COLLAPSED : DESKTOP_SIDEBAR_WIDE}px`;
+      } catch {
+        // ignore
+      }
+    }
+
+    applyDesktopOffset();
+    window.addEventListener("resize", applyDesktopOffset);
+    return () => {
+      window.removeEventListener("resize", applyDesktopOffset);
+      document.body.style.paddingLeft = "";
+    };
+  }, [collapsed]);
 
   useEffect(() => {
     if (botFromUrl && botFromUrl !== activeBotId) setActiveBotId(botFromUrl);
@@ -626,9 +683,27 @@ export default function Navbar() {
     return b.owner_user_id == null ? `Docs (Agency)` : `Docs (Private)`;
   }, [bots, activeBotId]);
 
+  const docsHref = useMemo(() => {
+    return `/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`;
+  }, [activeBotId]);
+
+  const navItems = [
+    { href: "/app", label: "Dashboard", icon: <LayoutDashboard className="h-5 w-5" /> },
+    { href: "/app/chat", label: "Chat", icon: <MessageSquare className="h-5 w-5" /> },
+    { href: docsHref, label: activeBotLabel, icon: <FileText className="h-5 w-5" />, docs: true },
+    { href: "/app/schedule", label: "Schedule", icon: <CalendarDays className="h-5 w-5" /> },
+    { href: "/app/spreadsheets", label: "Spreadsheets", icon: <SheetIcon className="h-5 w-5" /> },
+    { href: "/app/notifications", label: "Notifications", icon: <Bell className="h-5 w-5" />, badge: notifUnread },
+    { href: "/app/email", label: "Email", icon: <Mail className="h-5 w-5" /> },
+    { href: "/app/bots", label: "Bots", icon: <Bot className="h-5 w-5" /> },
+    { href: "/app/billing", label: "Billing", icon: <CreditCard className="h-5 w-5" /> },
+    { href: "/app/support", label: "Support", icon: <LifeBuoy className="h-5 w-5" /> },
+    { href: "/launch", label: "Launch", icon: <Rocket className="h-5 w-5" /> },
+  ];
+
   return (
     <>
-      <header className="sticky top-0 z-50 border-b bg-background/70 backdrop-blur">
+      <header className="sticky top-0 z-50 border-b bg-background/70 backdrop-blur md:hidden">
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 md:px-6">
           <Link href="/app" className="group flex items-center gap-2">
             <div className="badge-glow relative overflow-hidden rounded-full px-3 py-1.5">
@@ -637,150 +712,212 @@ export default function Navbar() {
                 Louis<span className="text-muted-foreground">.Ai</span>
               </span>
             </div>
-
-            <span className="hidden text-sm text-muted-foreground md:block">Docs-prioritized AI for agencies</span>
           </Link>
-
-          <nav className="hidden items-center gap-2 md:flex">
-            <NavLink href="/app">Dashboard</NavLink>
-            <NavLink href="/app/chat">Chat</NavLink>
-
-            <div className="relative" ref={docsPanelRef}>
-              <button
-                type="button"
-                onClick={() => setDocsOpen((v) => !v)}
-                className={[
-                  "text-sm transition-colors",
-                  "rounded-full px-3 py-1.5",
-                  pathname.startsWith("/app/docs")
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                ].join(" ")}
-              >
-                {activeBotLabel}
-              </button>
-
-              {docsOpen ? (
-                <div className="absolute right-0 mt-2 w-[360px] rounded-xl border bg-background p-3 shadow-lg">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Docs</div>
-
-                    <Link
-                      href={`/app/docs${activeBotId ? `?bot_id=${encodeURIComponent(activeBotId)}` : ""}`}
-                      className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => setDocsOpen(false)}
-                    >
-                      Open Docs page
-                    </Link>
-                  </div>
-
-                  <div className="mt-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">Bot:</span>
-                      <select
-                        className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
-                        value={activeBotId}
-                        onChange={(e) => setActiveBotId(e.target.value)}
-                        disabled={loadingBots || bots.length === 0}
-                      >
-                        {bots.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name} {b.owner_user_id == null ? "(Agency)" : "(Private)"}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 max-h-[280px] overflow-auto rounded-lg border">
-                    {loadingBots ? (
-                      <div className="px-3 py-2 text-sm text-muted-foreground">Loading bots…</div>
-                    ) : botsError ? (
-                      <div className="px-3 py-2 text-sm text-red-500">{botsError}</div>
-                    ) : loadingDocs ? (
-                      <div className="px-3 py-2 text-sm text-muted-foreground">Loading docs…</div>
-                    ) : docsError ? (
-                      <div className="px-3 py-2 text-sm text-red-500">{docsError}</div>
-                    ) : docs.length === 0 ? (
-                      <div className="px-3 py-2 text-sm text-muted-foreground">No docs for this bot.</div>
-                    ) : (
-                      <div className="flex flex-col">
-                        {docs.map((d) => (
-                          <Link
-                            key={d.id}
-                            href={`/app/docs?bot_id=${encodeURIComponent(activeBotId)}&doc_id=${encodeURIComponent(d.id)}`}
-                            className="px-3 py-2 text-sm hover:bg-muted"
-                            title={d.filename}
-                            onClick={() => setDocsOpen(false)}
-                          >
-                            {shortFilename(d.filename)}
-                          </Link>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-2 text-[11px] text-muted-foreground">This list is scoped to the selected bot.</div>
-                </div>
-              ) : null}
-            </div>
-
-            <NavLink href="/app/schedule">Schedule</NavLink>
-            <NavLink href="/app/spreadsheets">Spreadsheets</NavLink>
-
-            <Link
-              href="/app/notifications"
-              className={[
-                "text-sm transition-colors",
-                "rounded-full px-3 py-1.5",
-                pathname === "/app/notifications"
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              ].join(" ")}
-            >
-              <span className="inline-flex items-center">
-                Notifications
-                <UnreadPill count={notifUnread} />
-              </span>
-            </Link>
-
-            <NavLink href="/app/email">Email</NavLink>
-            <NavLink href="/app/bots">Bots</NavLink>
-            <NavLink href="/app/support">Support</NavLink>
-            <NavLink href="/launch">Launch</NavLink>
-          </nav>
 
           <div className="flex items-center gap-2">
             <ModeToggle />
 
             {me === null ? (
-              <div className="hidden md:flex items-center gap-2">
-                <div className="h-8 w-24 rounded-full bg-muted" />
-              </div>
+              <div className="h-8 w-24 rounded-full bg-muted" />
             ) : isAuthed ? (
-              <div className="hidden md:flex items-center gap-2">
-                <Badge
-                  variant={emailVerified ? "secondary" : "outline"}
-                  className="rounded-full"
-                  title={emailVerified ? "Email verified" : "Email not verified"}
-                >
-                  {emailVerified ? "Verified" : "Unverified"}
-                </Badge>
-
-                <span className="max-w-[220px] truncate text-xs text-muted-foreground">{email}</span>
-
-                <Button variant="outline" size="sm" className="rounded-full" onClick={logout}>
-                  Logout
-                </Button>
-              </div>
+              <Button variant="outline" size="sm" className="rounded-full" onClick={logout}>
+                Logout
+              </Button>
             ) : (
-              <Button asChild variant="outline" size="sm" className="hidden rounded-full md:inline-flex">
+              <Button asChild variant="outline" size="sm" className="rounded-full">
                 <Link href="/login">Login</Link>
               </Button>
             )}
           </div>
         </div>
       </header>
+
+      <aside
+        className={[
+          "fixed left-0 top-0 z-40 hidden h-screen border-r bg-background/90 backdrop-blur md:flex",
+          "transition-all duration-200",
+          collapsed ? `w-[${DESKTOP_SIDEBAR_COLLAPSED}px]` : `w-[${DESKTOP_SIDEBAR_WIDE}px]`,
+        ].join(" ")}
+        style={{ width: collapsed ? DESKTOP_SIDEBAR_COLLAPSED : DESKTOP_SIDEBAR_WIDE }}
+      >
+        <div className="flex h-full w-full flex-col">
+          <div className="flex items-center justify-between gap-2 border-b px-4 py-4">
+            <Link
+              href="/app"
+              title="Louis.Ai"
+              className={[
+                "group flex min-w-0 items-center gap-2",
+                collapsed ? "justify-center" : "",
+              ].join(" ")}
+            >
+              <div className="badge-glow relative overflow-hidden rounded-full px-3 py-1.5">
+                <div className="pointer-events-none absolute inset-0 opacity-60 [background:radial-gradient(600px_200px_at_20%_0%,hsl(var(--primary)/0.16),transparent_60%)]" />
+                <span className="relative text-sm font-semibold tracking-tight">
+                  Louis<span className="text-muted-foreground">.Ai</span>
+                </span>
+              </div>
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => setCollapsed((v) => !v)}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border bg-background text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-3 py-3">
+            <div className="space-y-1">
+              {navItems.map((item) => {
+                const active =
+                  item.href.startsWith("/app/docs")
+                    ? pathname.startsWith("/app/docs")
+                    : item.href === "/app"
+                      ? pathname === "/app"
+                      : pathname.startsWith(item.href);
+
+                return (
+                  <DesktopSidebarLink
+                    key={item.label}
+                    href={item.href}
+                    label={item.label}
+                    icon={item.icon}
+                    active={active}
+                    collapsed={collapsed}
+                    badge={item.badge}
+                  />
+                );
+              })}
+            </div>
+
+            {!collapsed ? (
+              <div className="mt-4 rounded-2xl border bg-card/60 p-3" ref={docsPanelRef}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Docs</div>
+
+                  <Link
+                    href={docsHref}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setDocsOpen(false)}
+                  >
+                    Open
+                  </Link>
+                </div>
+
+                <div className="mt-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Bot:</span>
+                    <select
+                      className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
+                      value={activeBotId}
+                      onChange={(e) => setActiveBotId(e.target.value)}
+                      disabled={loadingBots || bots.length === 0}
+                    >
+                      {bots.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name} {b.owner_user_id == null ? "(Agency)" : "(Private)"}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="mt-3 max-h-[280px] overflow-auto rounded-lg border">
+                  {loadingBots ? (
+                    <div className="px-3 py-2 text-sm text-muted-foreground">Loading bots…</div>
+                  ) : botsError ? (
+                    <div className="px-3 py-2 text-sm text-red-500">{botsError}</div>
+                  ) : loadingDocs ? (
+                    <div className="px-3 py-2 text-sm text-muted-foreground">Loading docs…</div>
+                  ) : docsError ? (
+                    <div className="px-3 py-2 text-sm text-red-500">{docsError}</div>
+                    ) : docs.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-muted-foreground">No docs for this bot.</div>
+                  ) : (
+                    <div className="flex flex-col">
+                      {docs.map((d) => (
+                        <Link
+                          key={d.id}
+                          href={`/app/docs?bot_id=${encodeURIComponent(activeBotId)}&doc_id=${encodeURIComponent(d.id)}`}
+                          className="px-3 py-2 text-sm hover:bg-muted"
+                          title={d.filename}
+                          onClick={() => setDocsOpen(false)}
+                        >
+                          {shortFilename(d.filename)}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-2 text-[11px] text-muted-foreground">This list is scoped to the selected bot.</div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="border-t px-3 py-3">
+            <div className={collapsed ? "flex flex-col items-center gap-2" : "space-y-3"}>
+              <div className={collapsed ? "flex flex-col items-center gap-2" : "flex items-center gap-2"}>
+                <ModeToggle />
+
+                {!collapsed ? (
+                  <>
+                    {me === null ? (
+                      <div className="h-8 w-24 rounded-full bg-muted" />
+                    ) : isAuthed ? (
+                      <>
+                        <Badge
+                          variant={emailVerified ? "secondary" : "outline"}
+                          className="rounded-full"
+                          title={emailVerified ? "Email verified" : "Email not verified"}
+                        >
+                          {emailVerified ? "Verified" : "Unverified"}
+                        </Badge>
+
+                        <span className="max-w-[140px] truncate text-xs text-muted-foreground">{email}</span>
+                      </>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+
+              {!collapsed ? (
+                isAuthed ? (
+                  <Button variant="outline" size="sm" className="rounded-full" onClick={logout}>
+                    Logout
+                  </Button>
+                ) : (
+                  <Button asChild variant="outline" size="sm" className="rounded-full">
+                    <Link href="/login">Login</Link>
+                  </Button>
+                )
+              ) : isAuthed ? (
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-background text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  aria-label="Logout"
+                  title="Logout"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
+              ) : (
+                <Link
+                  href="/login"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-background text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  aria-label="Login"
+                  title="Login"
+                >
+                  <PanelLeft className="h-4 w-4" />
+                </Link>
+              )}
+            </div>
+          </div>
+        </div>
+      </aside>
 
       <MobileNav activeBotId={activeBotId} notifUnread={notifUnread} />
     </>
