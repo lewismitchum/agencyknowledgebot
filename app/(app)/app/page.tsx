@@ -5,18 +5,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bell,
   Bot,
-  Brain,
   CalendarDays,
   CheckCircle2,
-  ChevronRight,
-  CircleDashed,
   CreditCard,
   FileText,
   Mail,
   MessageSquare,
   Rocket,
-  Shield,
-  Sparkles,
   X,
 } from "lucide-react";
 
@@ -49,7 +44,6 @@ type ChecklistItem = {
   done: boolean;
   href: string;
   action: string;
-  hint: string;
 };
 
 const EMPTY_PROGRESS: OnboardingProgress = {
@@ -76,23 +70,19 @@ function StatCard({
   icon,
   label,
   value,
-  hint,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
-  hint: string;
 }) {
   return (
-    <div className="rounded-3xl border bg-card/75 p-5 shadow-sm backdrop-blur transition-all duration-200 hover:-translate-y-[2px] hover:shadow-md">
-      <div className="flex items-start justify-between gap-3">
+    <div className="rounded-3xl border bg-card/75 p-5 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
-          <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
-          <div className="mt-2 text-xs text-muted-foreground">{hint}</div>
+          <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
         </div>
-
-        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground shadow-sm">
+        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-background text-muted-foreground">
           {icon}
         </div>
       </div>
@@ -100,118 +90,54 @@ function StatCard({
   );
 }
 
-function ActionLink({
+function QuickLink({
   href,
-  icon,
   title,
   desc,
 }: {
   href: string;
-  icon: React.ReactNode;
   title: string;
   desc: string;
 }) {
   return (
     <Link
       href={href}
-      className="group rounded-2xl border bg-background/50 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:bg-accent/40 hover:shadow-sm"
+      className="rounded-2xl border bg-background p-4 transition hover:-translate-y-[1px] hover:bg-accent"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-          {icon}
-        </div>
-        <ChevronRight className="mt-1 h-4 w-4 text-muted-foreground transition-transform duration-200 group-hover:translate-x-0.5" />
-      </div>
-
-      <div className="mt-4 text-sm font-medium">{title}</div>
+      <div className="text-sm font-medium">{title}</div>
       <div className="mt-1 text-xs text-muted-foreground">{desc}</div>
     </Link>
   );
 }
 
-function StepCard({
-  step,
-  title,
-  body,
-  primaryHref,
-  primaryLabel,
-  secondaryHref,
-  secondaryLabel,
-  icon,
-}: {
-  step: string;
-  title: string;
-  body: string;
-  primaryHref: string;
-  primaryLabel: string;
-  secondaryHref?: string;
-  secondaryLabel?: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-3xl border bg-background/45 p-5 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground shadow-sm">
-          {icon}
-        </div>
-        <div className="rounded-full border bg-background/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          {step}
-        </div>
-      </div>
-
-      <div className="mt-4 text-sm font-medium">{title}</div>
-      <div className="mt-1 text-xs leading-5 text-muted-foreground">{body}</div>
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Link
-          href={primaryHref}
-          className="inline-flex items-center justify-center rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
-        >
-          {primaryLabel}
-        </Link>
-
-        {secondaryHref && secondaryLabel ? (
-          <Link
-            href={secondaryHref}
-            className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-          >
-            {secondaryLabel}
-          </Link>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function ChecklistRow({ item }: { item: ChecklistItem }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-sm">
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="mt-0.5">
+    <div className="flex items-center justify-between gap-3 rounded-2xl border bg-background p-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <div>
           {item.done ? (
             <div className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border bg-primary/10 text-primary">
               <CheckCircle2 className="h-4 w-4" />
             </div>
           ) : (
-            <div className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-              <CircleDashed className="h-4 w-4" />
+            <div className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border bg-background text-muted-foreground">
+              <Rocket className="h-4 w-4" />
             </div>
           )}
         </div>
 
         <div className="min-w-0">
           <div className="text-sm font-medium">{item.label}</div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">{item.hint}</div>
         </div>
       </div>
 
       <Link
         href={item.href}
         className={[
-          "shrink-0 rounded-xl px-3 py-2 text-sm transition-all duration-200",
+          "shrink-0 rounded-xl px-3 py-2 text-sm transition",
           item.done
-            ? "border bg-background/60 backdrop-blur hover:-translate-y-[1px] hover:bg-accent"
-            : "bg-primary text-primary-foreground hover:-translate-y-[1px] hover:opacity-95",
+            ? "border bg-background hover:bg-accent"
+            : "bg-primary text-primary-foreground hover:opacity-95",
         ].join(" ")}
       >
         {item.action}
@@ -224,15 +150,6 @@ export default function DashboardPage() {
   const [tab, setTab] = useState<TabKey>("overview");
   const [stats, setStats] = useState<OnboardingStats | null>(null);
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
-
-  const tabs = useMemo(
-    () =>
-      [
-        { key: "overview" as const, label: "Overview" },
-        { key: "notifications" as const, label: "Notifications" },
-      ] as const,
-    []
-  );
 
   useEffect(() => {
     let cancelled = false;
@@ -276,100 +193,149 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
     const completed = window.localStorage.getItem(STORAGE_COMPLETED) === "1";
     const dismissed = window.localStorage.getItem(STORAGE_SUCCESS_DISMISSED) === "1";
-
-    if (completed && !dismissed) {
-      setShowSuccessBanner(true);
-    }
+    if (completed && !dismissed) setShowSuccessBanner(true);
   }, []);
 
   const progress = stats?.onboarding ?? EMPTY_PROGRESS;
   const showOnboarding = isNewWorkspace(stats);
 
-  const checklist = useMemo<ChecklistItem[]>(() => {
-    const scheduleEnabled = !!stats?.schedule_enabled;
-    const emailEnabled = !!stats?.email_enabled;
+  const hero = useMemo(() => {
+    if (!stats) {
+      return {
+        title: "Get started",
+        body: "Open your workspace and take the next step.",
+        href: "/app/docs",
+        action: "Open docs",
+      };
+    }
 
+    if (!progress.created_first_bot) {
+      return {
+        title: "Create your first bot",
+        body: "Start with one bot for your workspace.",
+        href: "/app/bots",
+        action: "Create bot",
+      };
+    }
+
+    if (!progress.uploaded_first_doc) {
+      return {
+        title: "Upload your first document",
+        body: "Give Louis knowledge before you start chatting.",
+        href: "/app/docs",
+        action: "Upload document",
+      };
+    }
+
+    if (!progress.sent_first_chat) {
+      return {
+        title: "Ask your first question",
+        body: "Start using your uploaded knowledge in chat.",
+        href: "/app/chat",
+        action: "Open chat",
+      };
+    }
+
+    if (stats.schedule_enabled && !progress.opened_schedule) {
+      return {
+        title: "Open schedule",
+        body: "Review tasks and events extracted from documents.",
+        href: "/app/schedule",
+        action: "Open schedule",
+      };
+    }
+
+    if (stats.email_enabled && !progress.connected_gmail) {
+      return {
+        title: "Connect Gmail",
+        body: "Unlock inbox and sending workflows.",
+        href: "/app/email",
+        action: "Open email",
+      };
+    }
+
+    if (stats.email_enabled && progress.connected_gmail && !progress.summarized_inbox) {
+      return {
+        title: "Summarize your inbox",
+        body: "Finish email setup with your first inbox summary.",
+        href: "/app/email",
+        action: "Open email",
+      };
+    }
+
+    return {
+      title: "Welcome back",
+      body: "Your workspace is ready. Pick up where you left off.",
+      href: "/app/chat",
+      action: "Open chat",
+    };
+  }, [stats, progress]);
+
+  const checklist = useMemo<ChecklistItem[]>(() => {
     const items: ChecklistItem[] = [
       {
         id: "bot",
         label: progress.created_first_bot ? "Bot created" : "Create your first bot",
         done: progress.created_first_bot,
         href: "/app/bots",
-        action: progress.created_first_bot ? "Manage" : "Create bot",
-        hint: progress.created_first_bot
-          ? "Your workspace has a bot ready."
-          : "Start with one bot so your workspace has a dedicated AI assistant.",
+        action: progress.created_first_bot ? "Open" : "Create",
       },
       {
         id: "docs",
         label: progress.uploaded_first_doc ? "Document uploaded" : "Upload your first document",
         done: progress.uploaded_first_doc,
         href: "/app/docs",
-        action: progress.uploaded_first_doc ? "Open docs" : "Upload",
-        hint: progress.uploaded_first_doc
-          ? "Your knowledge base already has uploaded content."
-          : "Upload SOPs, onboarding docs, pricing, proposals, or internal notes.",
+        action: progress.uploaded_first_doc ? "Open" : "Upload",
       },
       {
         id: "chat",
-        label: progress.sent_first_chat ? "First chat sent" : "Ask your first question in chat",
+        label: progress.sent_first_chat ? "First chat sent" : "Ask your first question",
         done: progress.sent_first_chat,
         href: "/app/chat",
-        action: progress.sent_first_chat ? "Open chat" : "Start chat",
-        hint: progress.sent_first_chat
-          ? "You’ve already started using Louis in chat."
-          : "Ask Louis to summarize what it knows or answer an internal question.",
-      },
-      {
-        id: "schedule",
-        label: scheduleEnabled
-          ? progress.opened_schedule
-            ? "Schedule opened"
-            : "Open schedule"
-          : "Unlock schedule extraction",
-        done: scheduleEnabled ? progress.opened_schedule : false,
-        href: scheduleEnabled ? "/app/schedule" : "/app/billing",
-        action: scheduleEnabled ? "Open schedule" : "Upgrade",
-        hint: scheduleEnabled
-          ? progress.opened_schedule
-            ? "Your schedule workspace is active."
-            : "Open schedule to review events, tasks, and extracted workflow items."
-          : "Upgrade to enable extraction-driven schedule and task workflows.",
+        action: progress.sent_first_chat ? "Open" : "Start",
       },
     ];
 
-    if (emailEnabled) {
+    if (stats?.schedule_enabled) {
+      items.push({
+        id: "schedule",
+        label: progress.opened_schedule ? "Schedule opened" : "Open schedule",
+        done: progress.opened_schedule,
+        href: "/app/schedule",
+        action: "Open",
+      });
+    } else {
+      items.push({
+        id: "schedule-upgrade",
+        label: "Unlock schedule",
+        done: false,
+        href: "/app/billing",
+        action: "Upgrade",
+      });
+    }
+
+    if (stats?.email_enabled) {
       items.push({
         id: "gmail",
         label: progress.connected_gmail ? "Gmail connected" : "Connect Gmail",
         done: progress.connected_gmail,
         href: "/app/email",
-        action: progress.connected_gmail ? "Open email" : "Connect",
-        hint: progress.connected_gmail
-          ? "Your Gmail integration is connected."
-          : "Connect Gmail to unlock inbox summaries and email workflows.",
+        action: progress.connected_gmail ? "Open" : "Connect",
       });
 
       items.push({
-        id: "summarized_inbox",
+        id: "summary",
         label: progress.summarized_inbox ? "Inbox summarized" : "Summarize your inbox",
         done: progress.summarized_inbox,
         href: "/app/email",
-        action: "Open email",
-        hint: progress.summarized_inbox
-          ? "You’ve already used inbox summarization."
-          : "Open Email and run an inbox summary to finish the email onboarding flow.",
+        action: "Open",
       });
     }
 
     return items;
   }, [stats, progress]);
-
-  const completedChecklistCount = Number(progress.completed_steps ?? 0);
-  const checklistPercent = Number(progress.percent ?? 0);
 
   function dismissSuccessBanner() {
     setShowSuccessBanner(false);
@@ -381,197 +347,93 @@ export default function DashboardPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       {showSuccessBanner ? (
-        <div className="relative overflow-hidden rounded-[28px] border bg-card/80 p-6 shadow-sm backdrop-blur md:p-7">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.12),transparent_50%)]" />
-
-          <div className="relative flex flex-col gap-5">
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="inline-flex items-center gap-2 rounded-full border bg-background/65 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground backdrop-blur">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  You’re all set
-                </div>
-
-                <h2 className="mt-4 text-2xl font-semibold tracking-tight md:text-3xl">
-                  Onboarding complete. Your workspace is ready.
-                </h2>
-
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
-                  You’ve finished the guided setup. Now jump straight into the workflows that matter most.
-                </p>
+        <div className="relative rounded-[28px] border bg-card/80 p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium">Workspace ready</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                You finished setup. Jump back into your workflow.
               </div>
-
-              <button
-                type="button"
-                onClick={dismissSuccessBanner}
-                className="rounded-xl border border-white/10 p-2 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-                aria-label="Dismiss success banner"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Link
+                  href="/app/chat"
+                  className="inline-flex items-center justify-center rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground"
+                >
+                  Open chat
+                </Link>
+                <Link
+                  href="/app/docs"
+                  className="inline-flex items-center justify-center rounded-2xl border bg-background px-4 py-3 text-sm"
+                >
+                  Open docs
+                </Link>
+              </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <Link
-                href="/app/chat"
-                className="inline-flex items-center justify-center rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
-              >
-                Open Chat
-              </Link>
-
-              <Link
-                href="/app/docs"
-                className="inline-flex items-center justify-center rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-              >
-                Upload Docs
-              </Link>
-
-              <Link
-                href="/app/schedule"
-                className="inline-flex items-center justify-center rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-              >
-                Open Schedule
-              </Link>
-            </div>
+            <button
+              type="button"
+              onClick={dismissSuccessBanner}
+              className="rounded-xl border p-2 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+              aria-label="Dismiss success banner"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
       ) : null}
 
-      <div className="relative overflow-hidden rounded-[28px] border bg-card/80 p-6 shadow-sm backdrop-blur md:p-7">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.12),transparent_50%)]" />
-
-        <div className="relative flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-full border bg-background/65 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground backdrop-blur">
-              <Sparkles className="h-3.5 w-3.5" />
-              Agency Knowledge OS
-            </div>
-
-            <h1 className="mt-4 max-w-3xl text-3xl font-semibold tracking-tight md:text-4xl">
-              Your workspace, built for real agency knowledge.
-            </h1>
-
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
-              Upload docs, chat with your internal knowledge, and turn documents into tasks + events with a cleaner,
-              faster workflow.
-            </p>
-
-            <div className="mt-5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">
-                Secure multi-tenant isolation
-              </span>
-              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">Docs-first answers</span>
-              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">
-                Schedule extraction (paid)
-              </span>
-              <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">Auto memory refresh</span>
-            </div>
+      <div className="rounded-[28px] border bg-card/80 p-6 shadow-sm">
+        <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">Welcome back</h1>
+            <p className="mt-2 text-sm text-muted-foreground">Here’s the next best step for your workspace.</p>
           </div>
 
-          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[280px]">
-            <Link
-              href="/app/docs"
-              className="inline-flex w-full items-center justify-center rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
-            >
-              Upload documents
-            </Link>
-            <Link
-              href="/app/chat"
-              className="inline-flex w-full items-center justify-center rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-            >
-              Open chat
-            </Link>
-            <div className="text-center text-[11px] text-muted-foreground">
-              Tip: upload first, then chat for better answers immediately.
+          <div className="w-full md:w-auto md:min-w-[280px]">
+            <div className="rounded-3xl border bg-background p-5">
+              <div className="text-sm font-medium">{hero.title}</div>
+              <div className="mt-1 text-sm text-muted-foreground">{hero.body}</div>
+              <div className="mt-4">
+                <Link
+                  href={hero.href}
+                  className="inline-flex w-full items-center justify-center rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground"
+                >
+                  {hero.action}
+                </Link>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
-        <StatCard
-          icon={<Bot className="h-5 w-5" />}
-          label="Bots"
-          value={String(stats?.bots_count ?? "—")}
-          hint="Shared and private assistants"
-        />
-        <StatCard
-          icon={<FileText className="h-5 w-5" />}
-          label="Documents"
-          value={String(stats?.documents_count ?? "—")}
-          hint="Knowledge uploaded to workspace"
-        />
-        <StatCard
-          icon={<CreditCard className="h-5 w-5" />}
-          label="Plan"
-          value={String(stats?.plan ?? "—")}
-          hint="Current billing tier"
-        />
+        <StatCard icon={<Bot className="h-5 w-5" />} label="Bots" value={String(stats?.bots_count ?? "—")} />
+        <StatCard icon={<FileText className="h-5 w-5" />} label="Documents" value={String(stats?.documents_count ?? "—")} />
+        <StatCard icon={<CreditCard className="h-5 w-5" />} label="Plan" value={String(stats?.plan ?? "—")} />
         <StatCard
           icon={<CalendarDays className="h-5 w-5" />}
           label="Schedule"
           value={stats?.schedule_enabled ? "On" : "Off"}
-          hint={stats?.schedule_enabled ? "Extraction enabled" : "Upgrade to unlock extraction"}
         />
       </div>
 
-      <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-full border bg-background/60 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              <Brain className="h-3.5 w-3.5" />
-              Agency Brain
-            </div>
-            <div className="mt-3 text-lg font-medium tracking-tight">Open the shared intelligence layer for your agency.</div>
-            <div className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Use Agency Brain as the central place for shared knowledge, private context, documents, schedule activity,
-              and inbox-driven workflows.
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Link
-              href="/app/brain"
-              className="inline-flex items-center justify-center rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
-            >
-              Open Agency Brain
-            </Link>
-            <Link
-              href="/app/docs"
-              className="inline-flex items-center justify-center rounded-2xl border bg-background/60 px-4 py-3 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-            >
-              Add knowledge
-            </Link>
-          </div>
-        </div>
-      </div>
-
       {showOnboarding ? (
-        <div className="rounded-[28px] border bg-card/75 p-6 shadow-sm backdrop-blur">
+        <div className="rounded-[28px] border bg-card/75 p-6 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="inline-flex items-center gap-2 rounded-full border bg-background/60 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                <Rocket className="h-3.5 w-3.5" />
-                Onboarding checklist
-              </div>
-              <div className="mt-3 text-lg font-medium tracking-tight">Set up your workspace once, then move fast.</div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Finish these first actions to make Louis useful immediately.
-              </div>
+              <div className="text-lg font-medium tracking-tight">Setup checklist</div>
+              <div className="mt-1 text-sm text-muted-foreground">Finish these steps once, then move faster.</div>
             </div>
 
             <div className="min-w-[180px]">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>
-                  {completedChecklistCount} of {progress.total_steps} done
+                  {progress.completed_steps} of {progress.total_steps} done
                 </span>
-                <span>{checklistPercent}%</span>
+                <span>{progress.percent}%</span>
               </div>
               <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-primary transition-all"
-                  style={{ width: `${checklistPercent}%` }}
-                />
+                <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress.percent}%` }} />
               </div>
             </div>
           </div>
@@ -581,399 +443,91 @@ export default function DashboardPage() {
               <ChecklistRow key={item.id} item={item} />
             ))}
           </div>
-
-          <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <StepCard
-              step="Step 1"
-              title="Create a bot"
-              body="Agency bots are shared across your workspace. Private bots stay personal to the user."
-              primaryHref="/app/bots"
-              primaryLabel="Go to Bots"
-              icon={<Bot className="h-5 w-5" />}
-            />
-
-            <StepCard
-              step="Step 2"
-              title="Upload documents"
-              body="SOPs, onboarding, proposals, pricing sheets — Louis grounds internal answers in uploaded content."
-              primaryHref="/app/docs"
-              primaryLabel="Go to Docs"
-              icon={<FileText className="h-5 w-5" />}
-            />
-
-            <StepCard
-              step="Step 3"
-              title={stats?.schedule_enabled ? "Open schedule" : "Unlock extraction"}
-              body={
-                stats?.schedule_enabled
-                  ? "Review your schedule, events, and tasks after extraction."
-                  : "Upgrade to unlock task and event extraction from documents."
-              }
-              primaryHref={stats?.schedule_enabled ? "/app/schedule" : "/app/billing"}
-              primaryLabel={stats?.schedule_enabled ? "Open Schedule" : "Upgrade"}
-              secondaryHref={stats?.schedule_enabled ? "/app/chat" : "/app/schedule"}
-              secondaryLabel={stats?.schedule_enabled ? "Go to Chat" : "Preview Schedule"}
-              icon={<CalendarDays className="h-5 w-5" />}
-            />
-          </div>
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl border bg-card/75 p-2 shadow-sm backdrop-blur">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setTab(t.key)}
-            className={[
-              "rounded-xl px-3 py-2 text-sm transition-all duration-200",
-              tab === t.key
-                ? "bg-accent text-foreground shadow-sm"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            ].join(" ")}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border bg-card/75 p-2 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setTab("overview")}
+          className={[
+            "rounded-xl px-3 py-2 text-sm transition",
+            tab === "overview"
+              ? "bg-accent text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          ].join(" ")}
+        >
+          Overview
+        </button>
 
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Link
-            href="/app/brain"
-            className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-          >
-            Brain
-          </Link>
-          <Link
-            href="/app/usage"
-            className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-          >
-            Usage
-          </Link>
-          <Link
-            href="/app/chat"
-            className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-          >
-            Chat
-          </Link>
-          <Link
-            href="/app/docs"
-            className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-          >
-            Docs
-          </Link>
-          <Link
-            href="/app/schedule"
-            className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-          >
-            Schedule
-          </Link>
-        </div>
+        <button
+          type="button"
+          onClick={() => setTab("notifications")}
+          className={[
+            "rounded-xl px-3 py-2 text-sm transition",
+            tab === "notifications"
+              ? "bg-accent text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          ].join(" ")}
+        >
+          Notifications
+        </button>
       </div>
 
       {tab === "overview" ? (
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-medium">Quick actions</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  Jump straight into the workflows that matter most.
-                </div>
-              </div>
-
-              <Link
-                href="/app/support"
-                className="rounded-xl border bg-background/60 px-3 py-2 text-xs backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-              >
-                Support
-              </Link>
-            </div>
+          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm">
+            <div className="text-sm font-medium">Quick actions</div>
+            <div className="mt-1 text-sm text-muted-foreground">Go straight to the pages you’ll use most.</div>
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <ActionLink
-                href="/app/brain"
-                icon={<Brain className="h-4 w-4" />}
-                title="Open Agency Brain"
-                desc="Go to the shared intelligence layer for your whole agency."
-              />
-              <ActionLink
-                href="/app/docs"
-                icon={<FileText className="h-4 w-4" />}
-                title="Upload / Manage Docs"
-                desc="Add and manage the knowledge your workspace runs on."
-              />
-              <ActionLink
-                href="/app/chat"
-                icon={<MessageSquare className="h-4 w-4" />}
-                title="Ask the Knowledge Bot"
-                desc="Get answers grounded in your internal docs."
-              />
-              <ActionLink
-                href="/app/schedule"
-                icon={<CalendarDays className="h-4 w-4" />}
-                title="View Schedule"
-                desc="See extracted events and tasks in one place."
-              />
-              <ActionLink
-                href="/app/bots"
-                icon={<Bot className="h-4 w-4" />}
-                title="Manage Bots"
-                desc="Organize shared and private assistants."
-              />
-              <ActionLink
-                href="/app/usage"
-                icon={<Shield className="h-4 w-4" />}
-                title="Usage / Limits"
-                desc="Track limits, uploads, and availability."
-              />
-              <ActionLink
-                href="/app/billing"
-                icon={<CreditCard className="h-4 w-4" />}
-                title="Billing / Upgrade"
-                desc="Unlock schedule, media, and premium workflows."
-              />
+              <QuickLink href="/app/chat" title="Chat" desc="Ask Louis a question." />
+              <QuickLink href="/app/docs" title="Documents" desc="Upload and manage docs." />
+              <QuickLink href="/app/bots" title="Bots" desc="Create and manage bots." />
+              <QuickLink href="/app/schedule" title="Schedule" desc="View tasks and events." />
+              <QuickLink href="/app/email" title="Email" desc="Open inbox and send email." />
+              <QuickLink href="/app/outreach" title="Outreach" desc="Create and run campaigns." />
             </div>
           </div>
 
-          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
-            <div className="text-sm font-medium">Recommended next moves</div>
-            <div className="mt-2 text-sm text-muted-foreground">
-              If your workspace is still early, these are the highest-impact actions.
-            </div>
+          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm">
+            <div className="text-sm font-medium">Your workspace</div>
+            <div className="mt-1 text-sm text-muted-foreground">The core pages for your daily workflow.</div>
 
-            <div className="mt-4 space-y-3">
-              <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                <div className="flex items-start gap-3">
-                  <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                    <Brain className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium">Use Agency Brain as your command center</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      Centralize docs, bots, schedule activity, and email workflows in one shared workspace view.
-                    </div>
-                    <div className="mt-3">
-                      <Link
-                        href="/app/brain"
-                        className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                      >
-                        Open Agency Brain
-                      </Link>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {!progress.uploaded_first_doc ? (
-                <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                      <FileText className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Upload a core document</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        PDFs, DOCX, and TXT files help Louis answer internal questions with stronger grounding.
-                      </div>
-                      <div className="mt-3">
-                        <Link
-                          href="/app/docs"
-                          className="inline-flex items-center justify-center rounded-xl bg-primary px-3 py-2 text-sm text-primary-foreground transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
-                        >
-                          Go to Docs
-                        </Link>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {!progress.sent_first_chat ? (
-                <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                      <MessageSquare className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Start asking questions in Chat</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Use chat for internal knowledge, utility questions, and follow-up reasoning.
-                      </div>
-                      <div className="mt-3">
-                        <Link
-                          href="/app/chat"
-                          className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                        >
-                          Go to Chat
-                        </Link>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {stats?.schedule_enabled && !progress.opened_schedule ? (
-                <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                      <CalendarDays className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Open schedule</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Review extracted tasks and events in your schedule workspace.
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Link
-                          href="/app/schedule"
-                          className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                        >
-                          Open Schedule
-                        </Link>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {!stats?.schedule_enabled ? (
-                <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                      <CalendarDays className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Turn docs into schedule items</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Paid plans can extract tasks and events directly into Schedule.
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Link
-                          href="/app/billing"
-                          className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                        >
-                          Upgrade
-                        </Link>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {stats?.email_enabled && !progress.connected_gmail ? (
-                <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                      <Mail className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Connect Gmail</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Unlock inbox summaries and email workflows by connecting Gmail.
-                      </div>
-                      <div className="mt-3">
-                        <Link
-                          href="/app/email"
-                          className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                        >
-                          Open Email
-                        </Link>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {stats?.email_enabled && progress.connected_gmail && !progress.summarized_inbox ? (
-                <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                      <Mail className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Summarize your inbox</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Run an inbox summary to finish the email onboarding flow.
-                      </div>
-                      <div className="mt-3">
-                        <Link
-                          href="/app/email"
-                          className="inline-flex items-center justify-center rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                        >
-                          Open Email
-                        </Link>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {progress.completed_steps >= progress.total_steps ? (
-                <div className="rounded-2xl border bg-background/45 p-4 transition-all duration-200 hover:-translate-y-[2px] hover:shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-primary/10 text-primary">
-                      <CheckCircle2 className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Onboarding complete</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Your workspace is set up and ready for normal daily use.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
+            <div className="mt-4 grid gap-3">
+              <QuickLink href="/app/brain" title="Agency Brain" desc="Open your shared workspace view." />
+              <QuickLink href="/app/notifications" title="Notifications" desc="Review reminders and updates." />
+              <QuickLink href="/app/billing" title="Billing" desc="Manage plan and upgrades." />
+              <QuickLink href="/app/support" title="Support" desc="Get help when you need it." />
             </div>
           </div>
         </div>
       ) : (
-        <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+        <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="inline-flex items-center gap-2 rounded-full border bg-background/60 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              <div className="inline-flex items-center gap-2 rounded-full border bg-background px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 <Bell className="h-3.5 w-3.5" />
                 Notifications
               </div>
-              <div className="mt-3 text-lg font-medium tracking-tight">Stay on top of reminders and workspace events.</div>
-              <div className="mt-2 text-sm text-muted-foreground">
-                View schedule reminders, extraction outcomes, and account notices from one place.
+              <div className="mt-3 text-lg font-medium tracking-tight">Stay on top of what matters.</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Review reminders, schedule items, and workspace notices.
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <Link
-                className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                href="/app/notifications"
-              >
-                Open
-              </Link>
-              <Link
-                className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                href="/app/schedule"
-              >
-                Schedule
-              </Link>
-              <Link
-                className="rounded-xl border bg-background/60 px-3 py-2 text-sm backdrop-blur transition-all duration-200 hover:-translate-y-[1px] hover:bg-accent"
-                href="/app/support"
-              >
-                Support
-              </Link>
-            </div>
+            <Link
+              className="rounded-xl border bg-background px-3 py-2 text-sm transition hover:bg-accent"
+              href="/app/notifications"
+            >
+              Open
+            </Link>
           </div>
 
-          <div className="mt-5 rounded-3xl border bg-background/45 p-5">
-            <div className="flex items-start gap-3">
-              <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-background/70 text-muted-foreground">
-                <Bell className="h-4 w-4" />
-              </div>
-              <div>
-                <div className="text-sm font-medium">Open the full Notifications page</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  Review reminders, extraction results, and account notices in the dedicated view.
-                </div>
-              </div>
-            </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-3">
+            <QuickLink href="/app/notifications" title="Notifications" desc="Open the full notifications page." />
+            <QuickLink href="/app/schedule" title="Schedule" desc="Review tasks and events." />
+            <QuickLink href="/app/support" title="Support" desc="Get help with your workspace." />
           </div>
         </div>
       )}
