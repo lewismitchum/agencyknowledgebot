@@ -73,6 +73,37 @@ function makeId(prefix: string) {
   return `${prefix}_${uuid}`;
 }
 
+function isValidEmail(email: string) {
+  const value = String(email || "").trim().toLowerCase();
+  if (!value) return false;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return false;
+  if (
+    value.includes("example.com") ||
+    value.includes("test.com") ||
+    value.includes("yourcompany.com") ||
+    value.includes("domain.com")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isVerifiedEnoughLead(lead: LeadRow | null) {
+  if (!lead) return false;
+
+  const email = clampString(lead.email ?? "", 240);
+  const sourceUrl = clampString(lead.source_url ?? "", 500);
+  const company = clampString(lead.company_name ?? "", 200);
+  const confidence = Number(lead.confidence);
+
+  if (!company) return false;
+  if (!isValidEmail(email)) return false;
+  if (!sourceUrl) return false;
+  if (!Number.isFinite(confidence) || confidence < 0.72) return false;
+
+  return true;
+}
+
 function normalizeLead(raw: any): LeadRow | null {
   const company_name = clampString(raw?.company_name ?? raw?.company ?? "", 200);
   if (!company_name) return null;
@@ -157,7 +188,11 @@ Rules:
 - Return up to ${limit} leads
 - Use public web information only
 - Prefer real companies over generic directories
-- If an email is not confidently available, leave it empty
+- ONLY include leads when there is a usable, real-looking email address
+- ONLY include leads when the contact/company match is strong
+- ONLY include leads when there is a credible public source URL for the contact info
+- If contact info is weak, unclear, guessed, or missing, leave that company out entirely
+- Do not include filler leads just to hit the requested count
 - confidence must be between 0 and 1
 - JSON only
 - No markdown
@@ -180,11 +215,21 @@ ${query}
 
     const parsed = extractJsonFromText(text) ?? {};
     const rawLeads = Array.isArray(parsed?.leads) ? parsed.leads : [];
-    const leads = rawLeads.map(normalizeLead).filter(Boolean).slice(0, limit) as LeadRow[];
+    const leads = rawLeads
+      .map(normalizeLead)
+      .filter(isVerifiedEnoughLead)
+      .slice(0, limit) as LeadRow[];
     const notes = clampString(parsed?.notes ?? "", 1000);
 
     if (leads.length === 0) {
-      return Response.json({ ok: false, error: "NO_LEADS_FOUND" }, { status: 404 });
+      return Response.json(
+        {
+          ok: false,
+          error: "NO_VERIFIED_LEADS_FOUND",
+          message: "No verified leads with usable contact info were found.",
+        },
+        { status: 404 }
+      );
     }
 
     const campaignId = makeId("ocmp");

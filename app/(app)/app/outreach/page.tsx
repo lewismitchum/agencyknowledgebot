@@ -184,6 +184,7 @@ export default function OutreachPage() {
   const [drafts, setDrafts] = useState<DraftPreview[]>([]);
   const [drafting, setDrafting] = useState(false);
   const [automationRunning, setAutomationRunning] = useState(false);
+  const [sending, setSending] = useState(false);
   const [draftMsg, setDraftMsg] = useState("");
   const [draftError, setDraftError] = useState("");
 
@@ -204,7 +205,7 @@ export default function OutreachPage() {
   }, [campaignLeads]);
 
   const sendableLeads = useMemo(() => {
-    return campaignLeads.filter((lead) => lead.status === "drafted" && lead.email);
+    return campaignLeads.filter((lead) => lead.status === "drafted" && !!lead.email);
   }, [campaignLeads]);
 
   async function loadBase() {
@@ -577,7 +578,7 @@ export default function OutreachPage() {
       setSelectedLeadIds(approvedLeads.map((lead) => lead.id));
       await bulkUpdateStatuses(approvedLeads, "drafted");
       setDraftMsg(
-        `Automation queued ${approvedLeads.length} approved lead${approvedLeads.length === 1 ? "" : "s"} into drafted status. Next step is wiring real send delivery.`
+        `Automation queued ${approvedLeads.length} approved lead${approvedLeads.length === 1 ? "" : "s"} into drafted status.`
       );
     } catch (e: any) {
       if (isFetchJsonError(e) && (e.status === 401 || e?.info?.status === 401)) {
@@ -616,6 +617,89 @@ export default function OutreachPage() {
     }
   }
 
+  async function onSendSelected() {
+    if (!selectedCampaignId) {
+      setDraftError("Select a campaign first.");
+      return;
+    }
+
+    if (selectedLeads.length === 0) {
+      setDraftError("Select at least one lead first.");
+      return;
+    }
+
+    const payloadLeads = selectedLeads
+      .filter((lead) => !!lead.email)
+      .map((lead) => {
+        const existingDraft = drafts.find((d) => d.leadId === lead.id);
+        const built = existingDraft || buildDraftForLead(lead);
+        return {
+          leadId: lead.id,
+          to: String(lead.email || "").trim(),
+          subject: built.subject,
+          body: built.body,
+        };
+      });
+
+    if (payloadLeads.length === 0) {
+      setDraftError("No selected leads have verified email addresses.");
+      return;
+    }
+
+    setSending(true);
+    setDraftError("");
+    setDraftMsg("");
+
+    try {
+      const j = await fetchJson<any>("/api/outreach/send", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          campaignId: selectedCampaignId,
+          confirm: true,
+          leads: payloadLeads,
+        }),
+      });
+
+      const sentIds = new Set(
+        Array.isArray(j?.sent) ? j.sent.map((x: any) => String(x?.leadId || "")) : []
+      );
+
+      const nowIso = String(j?.updatedAt || new Date().toISOString());
+
+      setCampaignLeads((cur) =>
+        cur.map((lead) =>
+          sentIds.has(lead.id)
+            ? {
+                ...lead,
+                status: "sent",
+                last_contacted_at: nowIso,
+                updated_at: nowIso,
+              }
+            : lead
+        )
+      );
+
+      await loadBase();
+
+      const sentCount = Number(j?.sentCount || 0);
+      const skippedCount = Number(j?.skippedCount || 0);
+
+      setDraftMsg(
+        `Sent ${sentCount} outreach email${sentCount === 1 ? "" : "s"}${skippedCount > 0 ? ` • Skipped ${skippedCount}` : ""}.`
+      );
+    } catch (e: any) {
+      if (isFetchJsonError(e) && (e.status === 401 || e?.info?.status === 401)) {
+        window.location.href = "/login";
+        return;
+      }
+      setDraftError(e?.message ?? "Failed to send outreach emails");
+    } finally {
+      setSending(false);
+    }
+  }
+
   if (loading) return <div className="p-6">Loading...</div>;
 
   if (gated) {
@@ -646,7 +730,7 @@ export default function OutreachPage() {
         <div>
           <h1 className="text-2xl font-semibold">Outreach</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Find leads, draft campaign emails, and automate status flow into email and spreadsheets. Plan:{" "}
+            Find leads, draft campaign emails, and send them directly from outreach. Plan:{" "}
             <span className="font-mono">{plan ?? "unknown"}</span>
           </p>
         </div>
@@ -932,7 +1016,7 @@ export default function OutreachPage() {
                 </div>
 
                 <div className="text-xs text-muted-foreground">
-                  Select leads here, then use the drafting and automation panels below.
+                  Select leads here, then use the drafting and send panels below.
                 </div>
               </>
             )}
@@ -1063,7 +1147,7 @@ export default function OutreachPage() {
               <div>
                 <div className="text-base font-semibold">Campaign automation</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  Bulk actions for outreach flow until real send delivery is wired.
+                  Bulk actions for outreach flow, including real send.
                 </div>
               </div>
 
@@ -1085,6 +1169,20 @@ export default function OutreachPage() {
                 <button
                   type="button"
                   onClick={() => {
+                    void onSendSelected();
+                  }}
+                  disabled={sending || selectedLeads.length === 0}
+                  className="rounded-xl border px-4 py-3 text-left text-sm hover:bg-muted disabled:opacity-60"
+                >
+                  <div className="font-medium">{sending ? "Sending..." : "Send selected now"}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Sends selected leads directly through the email system and marks success as sent.
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
                     void onMarkDraftedSent();
                   }}
                   disabled={automationRunning || sendableLeads.length === 0}
@@ -1092,7 +1190,7 @@ export default function OutreachPage() {
                 >
                   <div className="font-medium">Mark drafted as sent</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    Use this after delivery to sync drafted leads into sent status.
+                    Manual fallback to sync drafted leads into sent status.
                   </div>
                 </button>
 
@@ -1120,7 +1218,7 @@ export default function OutreachPage() {
                 >
                   <div className="font-medium">Approve selected</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    Marks selected leads approved so they can move into draft automation.
+                    Marks selected leads approved so they can move into draft/send automation.
                   </div>
                 </button>
 
@@ -1156,8 +1254,7 @@ export default function OutreachPage() {
               </div>
 
               <div className="rounded-2xl border bg-background/40 p-4 text-sm text-muted-foreground">
-                Real send delivery is the next backend step. This page now supports lead generation, draft previews,
-                bulk draft automation, and status sync controls.
+                Real send is now wired through outreach. Verified-email leads can be drafted and sent directly here.
               </div>
             </div>
           </div>
