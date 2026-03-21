@@ -120,6 +120,27 @@ function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
 
+function StatusPill({
+  children,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  tone?: "default" | "warning" | "info";
+}) {
+  return (
+    <span
+      className={cx(
+        "inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em]",
+        tone === "warning" && "border-amber-300 bg-amber-50 text-amber-900",
+        tone === "info" && "border-blue-200 bg-blue-50 text-blue-700",
+        tone === "default" && "border-border bg-background/70 text-muted-foreground"
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
 function ModeActionMenu({
   mode,
   setMode,
@@ -155,7 +176,10 @@ function ModeActionMenu({
 
   return (
     <div ref={wrapRef} className="relative w-full md:w-[280px]" data-tour="spreadsheets-main-action">
-      <div className="text-sm font-medium">Spreadsheet action</div>
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <span>Spreadsheet action</span>
+        <StatusPill tone="warning">Beta</StatusPill>
+      </div>
 
       <button
         type="button"
@@ -180,7 +204,10 @@ function ModeActionMenu({
             )}
           >
             <div>
-              <div className="font-medium">Generate from docs</div>
+              <div className="flex items-center gap-2 font-medium">
+                <span>Generate from docs</span>
+                <StatusPill tone="warning">Live</StatusPill>
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 Build a spreadsheet from uploaded workspace knowledge.
               </div>
@@ -199,7 +226,10 @@ function ModeActionMenu({
             )}
           >
             <div>
-              <div className="font-medium">CSV edits</div>
+              <div className="flex items-center gap-2 font-medium">
+                <span>CSV edits</span>
+                <StatusPill tone="warning">Beta</StatusPill>
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 Paste a CSV snapshot and propose safe AI edits.
               </div>
@@ -218,7 +248,10 @@ function ModeActionMenu({
             )}
           >
             <div>
-              <div className="font-medium">Generate from AI</div>
+              <div className="flex items-center gap-2 font-medium">
+                <span>Generate from AI</span>
+                <StatusPill tone="warning">Beta</StatusPill>
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 Create a starter spreadsheet from a prompt instantly.
               </div>
@@ -628,7 +661,10 @@ export default function SpreadsheetsPage() {
     <div className="mx-auto max-w-5xl space-y-6 p-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Spreadsheets</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold">Spreadsheets</h1>
+            <StatusPill tone="warning">Beta</StatusPill>
+          </div>
           <p className="mt-1 text-sm text-muted-foreground">
             Spreadsheet generation, CSV proposals, and AI spreadsheet drafting. Plan:{" "}
             <span className="font-mono">{plan ?? "unknown"}</span>
@@ -638,12 +674,27 @@ export default function SpreadsheetsPage() {
         <ModeActionMenu mode={mode} setMode={setMode} />
       </div>
 
+      <div className="rounded-2xl border bg-muted/20 px-4 py-4 text-sm text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-foreground">Current status</span>
+          <StatusPill tone="warning">Beta</StatusPill>
+          <StatusPill tone="info">Google Sheets apply coming soon</StatusPill>
+          <StatusPill tone="info">Audit trail works now</StatusPill>
+        </div>
+        <div className="mt-2">
+          Generation, CSV proposal review, CSV download, and XLSX export work now. Direct external sheet writing is still coming soon.
+        </div>
+      </div>
+
       {mode === "docs" ? (
         <div className="space-y-6">
           <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
             <div className="flex items-baseline justify-between gap-3">
               <div>
-                <div className="text-base font-semibold">Generate from docs</div>
+                <div className="flex flex-wrap items-center gap-2 text-base font-semibold">
+                  <span>Generate from docs</span>
+                  <StatusPill tone="warning">Live beta</StatusPill>
+                </div>
                 <div className="text-xs text-muted-foreground">
                   Louis will only use evidence found via file_search. If docs don’t support it, you’ll get the fallback.
                 </div>
@@ -739,7 +790,10 @@ export default function SpreadsheetsPage() {
             <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold">{genTable.title}</div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                    <span>{genTable.title}</span>
+                    <StatusPill tone="warning">Beta</StatusPill>
+                  </div>
                   <div className="text-xs text-muted-foreground">
                     {genTable.rows.length} row{genTable.rows.length === 1 ? "" : "s"} • {genTable.columns.length} col
                     {genTable.columns.length === 1 ? "" : "s"}
@@ -833,8 +887,8 @@ export default function SpreadsheetsPage() {
                 </table>
               </div>
 
-              <div className="text-xs text-muted-foreground">
-                Next: connect Google Sheets, then “Apply” will write to the sheet + keep this audit trail.
+              <div className="rounded-xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+                Google Sheets sync and direct sheet apply are coming soon. CSV/XLSX export works now.
               </div>
             </div>
           ) : null}
@@ -845,10 +899,17 @@ export default function SpreadsheetsPage() {
         <>
           <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
             <div>
-              <div className="text-base font-semibold">Propose edits to an existing CSV</div>
+              <div className="flex flex-wrap items-center gap-2 text-base font-semibold">
+                <span>Propose edits to an existing CSV</span>
+                <StatusPill tone="warning">Beta</StatusPill>
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 Audit-friendly: generate a proposal first. No external sheet writes yet.
               </div>
+            </div>
+
+            <div className="rounded-xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+              Direct Google Sheets apply is coming soon. Right now this creates proposal records and audit-safe review.
             </div>
 
             <div>
@@ -900,7 +961,10 @@ export default function SpreadsheetsPage() {
             <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
               <div className="flex items-baseline justify-between gap-3">
                 <div>
-                  <div className="text-base font-semibold">Proposed edits</div>
+                  <div className="flex flex-wrap items-center gap-2 text-base font-semibold">
+                    <span>Proposed edits</span>
+                    <StatusPill tone="warning">Beta</StatusPill>
+                  </div>
                   <div className="text-xs text-muted-foreground">
                     {proposal.updates.length} change{proposal.updates.length === 1 ? "" : "s"}
                     {proposalId ? (
@@ -962,8 +1026,8 @@ export default function SpreadsheetsPage() {
                 </table>
               </div>
 
-              <div className="text-xs text-muted-foreground">
-                Next: connect Google Sheets, then “Apply” will write to the sheet + keep this audit trail.
+              <div className="rounded-xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+                Next step coming soon: direct write-back to connected Google Sheets with the same audit trail.
               </div>
             </div>
           ) : null}
@@ -974,10 +1038,17 @@ export default function SpreadsheetsPage() {
         <div className="space-y-6">
           <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-4">
             <div>
-              <div className="text-base font-semibold">Generate from AI</div>
+              <div className="flex flex-wrap items-center gap-2 text-base font-semibold">
+                <span>Generate from AI</span>
+                <StatusPill tone="warning">Beta</StatusPill>
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 Prompt-based starter spreadsheet builder. This now uses the real AI route.
               </div>
+            </div>
+
+            <div className="rounded-xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+              AI-generated starter tables work now. Connected sheet sync and write-back are coming soon.
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
@@ -1047,7 +1118,10 @@ export default function SpreadsheetsPage() {
             <div className="rounded-3xl border bg-card p-6 shadow-sm space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold">{aiTable.title}</div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                    <span>{aiTable.title}</span>
+                    <StatusPill tone="warning">Beta</StatusPill>
+                  </div>
                   <div className="text-xs text-muted-foreground">
                     {aiTable.rows.length} row{aiTable.rows.length === 1 ? "" : "s"} • {aiTable.columns.length} col
                     {aiTable.columns.length === 1 ? "" : "s"}
@@ -1131,6 +1205,10 @@ export default function SpreadsheetsPage() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="rounded-xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+                Connected spreadsheet write-back is coming soon. Export works now.
               </div>
             </div>
           ) : null}

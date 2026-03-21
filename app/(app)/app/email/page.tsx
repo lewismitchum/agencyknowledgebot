@@ -118,6 +118,27 @@ function isNotConnectedError(e: any) {
   return false;
 }
 
+function StatusPill({
+  children,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  tone?: "default" | "warning" | "info";
+}) {
+  return (
+    <span
+      className={cx(
+        "inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em]",
+        tone === "warning" && "border-amber-300 bg-amber-50 text-amber-900",
+        tone === "info" && "border-blue-200 bg-blue-50 text-blue-700",
+        tone === "default" && "border-border bg-background/70 text-muted-foreground"
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
 function TopStat({
   icon,
   label,
@@ -1193,6 +1214,8 @@ export default function EmailPage() {
               <span className="rounded-full border bg-background/60 px-3 py-1 backdrop-blur">
                 Bot: {botId ? shortText(activeBotName, 20) : "Select bot"}
               </span>
+              <StatusPill tone="warning">Beta</StatusPill>
+              <StatusPill tone="info">Google setup required</StatusPill>
             </div>
           </div>
 
@@ -1292,6 +1315,18 @@ export default function EmailPage() {
         />
       </div>
 
+      <div className="rounded-2xl border bg-muted/20 px-4 py-4 text-sm text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-foreground">Email status</span>
+          <StatusPill tone="warning">Beta</StatusPill>
+          <StatusPill tone="info">Some flows may change</StatusPill>
+          <StatusPill tone="info">Google verification/setup required</StatusPill>
+        </div>
+        <div className="mt-2">
+          Gmail connection, inbox actions, and AI reply flows are visible now, but some parts are still being hardened.
+        </div>
+      </div>
+
       {connectHint ? (
         <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">{connectHint}</div>
       ) : null}
@@ -1308,7 +1343,10 @@ export default function EmailPage() {
                 <Sparkles className="h-3.5 w-3.5" />
                 Inbox summary
               </div>
-              <div className="mt-3 text-lg font-medium tracking-tight">AI overview of your recent inbox</div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <div className="text-lg font-medium tracking-tight">AI overview of your recent inbox</div>
+                <StatusPill tone="warning">Beta</StatusPill>
+              </div>
               <div className="mt-1 text-sm text-muted-foreground">
                 {summaryData.email ? `Mailbox: ${summaryData.email}` : "Recent mailbox activity"}
                 {typeof summaryData.threads_analyzed === "number" ? ` · ${summaryData.threads_analyzed} threads analyzed` : ""}
@@ -1343,7 +1381,10 @@ export default function EmailPage() {
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="text-sm text-amber-900">
-              <div className="font-semibold">Connect Gmail to unlock the inbox</div>
+              <div className="flex flex-wrap items-center gap-2 font-semibold">
+                <span>Connect Gmail to unlock the inbox</span>
+                <StatusPill tone="warning">Setup required</StatusPill>
+              </div>
               <div className="mt-1 text-xs">
                 Once connected, you can load threads, draft AI replies, send email, and summarize your inbox.
               </div>
@@ -1380,7 +1421,10 @@ export default function EmailPage() {
         >
           <div className="flex items-center justify-between gap-2">
             <div>
-              <div className="text-base font-semibold">Workspace tools</div>
+              <div className="flex flex-wrap items-center gap-2 text-base font-semibold">
+                <span>Workspace tools</span>
+                <StatusPill tone="warning">Beta</StatusPill>
+              </div>
               <div className="mt-1 text-[11px] text-muted-foreground">Inbox, drafts, compose, AI</div>
             </div>
             <div className="text-[11px] font-mono text-muted-foreground">{plan ?? "unknown"}</div>
@@ -1528,7 +1572,10 @@ export default function EmailPage() {
                     >
                       <PanelLeft className="h-4 w-4" />
                     </button>
-                    <div className="text-sm font-semibold">{tab === "drafts" ? "Saved drafts" : "Inbox list"}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-semibold">{tab === "drafts" ? "Saved drafts" : "Inbox list"}</div>
+                      {tab === "inbox" ? <StatusPill tone="warning">Beta</StatusPill> : null}
+                    </div>
                   </div>
 
                   <button
@@ -1719,7 +1766,10 @@ export default function EmailPage() {
                   </button>
 
                   <div>
-                    <div className="text-xl font-semibold tracking-tight">Compose</div>
+                    <div className="flex flex-wrap items-center gap-2 text-xl font-semibold tracking-tight">
+                      <span>Compose</span>
+                      <StatusPill tone="warning">Beta</StatusPill>
+                    </div>
                     <div className="mt-1 text-sm text-muted-foreground">Write and send a new email.</div>
                   </div>
                 </div>
@@ -1749,6 +1799,10 @@ export default function EmailPage() {
               </div>
 
               <div className="mt-6 space-y-4">
+                <div className="rounded-2xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Compose is available now, but send flow polish is still in progress.
+                </div>
+
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
                     <div className="text-sm font-medium">To</div>
@@ -1866,7 +1920,10 @@ export default function EmailPage() {
                   </button>
 
                   <div>
-                    <div className="text-xl font-semibold tracking-tight">Draft from docs</div>
+                    <div className="flex flex-wrap items-center gap-2 text-xl font-semibold tracking-tight">
+                      <span>Draft from docs</span>
+                      <StatusPill tone="warning">Beta</StatusPill>
+                    </div>
                     <div className="mt-1 text-sm text-muted-foreground">
                       Generate a docs-backed email draft using the selected bot.
                     </div>
@@ -1887,6 +1944,10 @@ export default function EmailPage() {
 
               <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_1fr]">
                 <div className="space-y-4">
+                  <div className="rounded-2xl border bg-muted/20 p-3 text-xs text-muted-foreground">
+                    Docs-backed drafting is live, but still being refined.
+                  </div>
+
                   <div>
                     <div className="text-sm font-medium">Tone</div>
                     <select
@@ -2086,8 +2147,9 @@ export default function EmailPage() {
                     </button>
 
                     <div>
-                      <div className="text-xl font-semibold tracking-tight">
-                        {thread?.subject || activeThread?.subject || "Inbox"}
+                      <div className="flex flex-wrap items-center gap-2 text-xl font-semibold tracking-tight">
+                        <span>{thread?.subject || activeThread?.subject || "Inbox"}</span>
+                        <StatusPill tone="warning">Beta</StatusPill>
                       </div>
                       <div className="mt-1 text-sm text-muted-foreground">
                         {activeThread?.from ? `Latest from ${activeThread.from}` : "Open a thread to read and reply."}
@@ -2192,6 +2254,8 @@ export default function EmailPage() {
                         <Sparkles className="h-4 w-4" />
                         AI reply
                       </button>
+
+                      <StatusPill tone="warning">Beta</StatusPill>
 
                       <div className="text-xs text-muted-foreground">
                         Generate a draft with AI, edit below, then confirm send.
@@ -2327,7 +2391,10 @@ export default function EmailPage() {
             <div className="flex h-full flex-col">
               <div className="flex items-center justify-between gap-2 border-b px-4 py-4">
                 <div>
-                  <div className="text-sm font-semibold">AI Assistant</div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                    <span>AI Assistant</span>
+                    <StatusPill tone="warning">Beta</StatusPill>
+                  </div>
                   <div className="mt-1 text-xs text-muted-foreground">Draft replies for the selected thread.</div>
                 </div>
                 <button
