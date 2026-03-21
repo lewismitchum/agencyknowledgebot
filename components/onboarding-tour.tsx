@@ -69,6 +69,7 @@ function findTarget(step: TourStep): HTMLElement | null {
   if (typeof document === "undefined") return null;
   const selector = getStepSelector(step);
   if (!selector) return null;
+
   try {
     return document.querySelector(selector) as HTMLElement | null;
   } catch {
@@ -88,7 +89,15 @@ function getRect(el: HTMLElement, padding: number): TourTargetRect {
 
 function isVisibleInViewport(el: HTMLElement) {
   const r = el.getBoundingClientRect();
-  return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0;
+  const style = window.getComputedStyle(el);
+  return (
+    r.width > 0 &&
+    r.height > 0 &&
+    r.bottom > 0 &&
+    r.right > 0 &&
+    style.visibility !== "hidden" &&
+    style.display !== "none"
+  );
 }
 
 export default function OnboardingTour({
@@ -115,17 +124,48 @@ export default function OnboardingTour({
   const [targetRect, setTargetRect] = useState<TourTargetRect | null>(null);
   const [targetReady, setTargetReady] = useState(false);
 
-  const pollRef = useRef<number | null>(null);
+  const observerRef = useRef<MutationObserver | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const resizeTimeoutRef = useRef<number | null>(null);
+  const bootedRef = useRef(false);
 
   const total = steps.length;
   const step = steps[index] ?? null;
 
+  const isOnCurrentStepPage = useMemo(() => {
+    if (!step || !pathname) return false;
+    return pathname === step.path || pathname.startsWith(`${step.path}/`);
+  }, [pathname, step]);
+
+  function persistIndex(nextIndex: number) {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(STORAGE_INDEX, String(nextIndex));
+  }
+
+  function cleanupWatchers() {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (resizeTimeoutRef.current) {
+      window.clearTimeout(resizeTimeoutRef.current);
+      resizeTimeoutRef.current = null;
+    }
+  }
+
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (bootedRef.current) return;
+
+    bootedRef.current = true;
+
     let cancelled = false;
 
     async function boot() {
-      if (typeof window === "undefined") return;
-
       const completedLocal = localStorage.getItem(STORAGE_COMPLETED) === "1";
       const dismissed = localStorage.getItem(STORAGE_DISMISSED) === "1";
       const hasStarted = localStorage.getItem(STORAGE_STARTED) === "1";
@@ -183,8 +223,6 @@ export default function OnboardingTour({
         window.setTimeout(() => {
           if (!cancelled) setOpen(true);
         }, 350);
-      } else {
-        setOpen(false);
       }
 
       setReady(true);
@@ -204,26 +242,17 @@ export default function OnboardingTour({
       setIndex(safeIndex);
       return;
     }
-    localStorage.setItem(STORAGE_INDEX, String(safeIndex));
+    persistIndex(safeIndex);
   }, [index, steps.length]);
 
-  const isOnCurrentStepPage = useMemo(() => {
-    if (!step || !pathname) return false;
-    return pathname === step.path || pathname.startsWith(`${step.path}/`);
-  }, [pathname, step]);
-
   useEffect(() => {
-    if (pollRef.current) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-
+    cleanupWatchers();
     setTargetRect(null);
     setTargetReady(false);
 
     if (!open || !step || !isOnCurrentStepPage) return;
 
-    function syncTarget() {
+    const syncTarget = () => {
       const el = findTarget(step);
 
       if (!el || !isVisibleInViewport(el)) {
@@ -232,29 +261,55 @@ export default function OnboardingTour({
         return;
       }
 
+      try {
+        el.scrollIntoView({
+          block: "center",
+          inline: "nearest",
+          behavior: "smooth",
+        });
+      } catch {
+        // ignore
+      }
+
       const padding = Number(step.spotlightPadding ?? 10);
       const rect = getRect(el, padding);
-      setTargetRect(rect);
-      setTargetReady(true);
-    }
-
-    const immediate = window.setTimeout(() => {
-      const el = findTarget(step);
-      if (el) {
-        try {
-          el.scrollIntoView({
-            block: "center",
-            inline: "nearest",
-            behavior: "smooth",
-          });
-        } catch {
-          // ignore
+      setTargetRect((prev) => {
+        if (
+          prev &&
+          prev.top === rect.top &&
+          prev.left === rect.left &&
+          prev.width === rect.width &&
+          prev.height === rect.height
+        ) {
+          return prev;
         }
-      }
-      window.setTimeout(syncTarget, 220);
-    }, 120);
+        return rect;
+      });
+      setTargetReady(true);
+    };
 
-    pollRef.current = window.setInterval(syncTarget, 300);
+    const startWatching = () => {
+      syncTarget();
+
+      observerRef.current = new MutationObserver(() => {
+        syncTarget();
+      });
+
+      observerRef.current.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+      });
+
+      const loop = () => {
+        syncTarget();
+        rafRef.current = window.requestAnimationFrame(loop);
+      };
+
+      rafRef.current = window.requestAnimationFrame(loop);
+    };
+
+    resizeTimeoutRef.current = window.setTimeout(startWatching, 250);
 
     const onResize = () => syncTarget();
     const onScroll = () => syncTarget();
@@ -263,11 +318,7 @@ export default function OnboardingTour({
     window.addEventListener("scroll", onScroll, true);
 
     return () => {
-      window.clearTimeout(immediate);
-      if (pollRef.current) {
-        window.clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+      cleanupWatchers();
       window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", onScroll, true);
     };
@@ -280,7 +331,7 @@ export default function OnboardingTour({
       localStorage.setItem(STORAGE_STARTED, "1");
       localStorage.removeItem(STORAGE_DISMISSED);
       localStorage.removeItem(STORAGE_COMPLETED);
-      localStorage.setItem(STORAGE_INDEX, "0");
+      persistIndex(0);
     }
 
     setStarted(true);
@@ -317,7 +368,10 @@ export default function OnboardingTour({
   function goToStep(nextIndex: number) {
     if (!steps.length) return;
     const safeIndex = Math.max(0, Math.min(nextIndex, steps.length - 1));
+    persistIndex(safeIndex);
     setIndex(safeIndex);
+    setTargetRect(null);
+    setTargetReady(false);
     router.push(steps[safeIndex].path);
   }
 
@@ -353,7 +407,7 @@ export default function OnboardingTour({
     return (
       <>
         <div
-          className="absolute bg-black/60 backdrop-blur-sm"
+          className="absolute bg-black/70 backdrop-blur-sm"
           style={{
             top: 0,
             left: 0,
@@ -362,7 +416,7 @@ export default function OnboardingTour({
           }}
         />
         <div
-          className="absolute bg-black/60 backdrop-blur-sm"
+          className="absolute bg-black/70 backdrop-blur-sm"
           style={{
             top: targetRect.top,
             left: 0,
@@ -371,7 +425,7 @@ export default function OnboardingTour({
           }}
         />
         <div
-          className="absolute bg-black/60 backdrop-blur-sm"
+          className="absolute bg-black/70 backdrop-blur-sm"
           style={{
             top: targetRect.top,
             left: targetRect.left + targetRect.width,
@@ -380,7 +434,7 @@ export default function OnboardingTour({
           }}
         />
         <div
-          className="absolute bg-black/60 backdrop-blur-sm"
+          className="absolute bg-black/70 backdrop-blur-sm"
           style={{
             top: targetRect.top + targetRect.height,
             left: 0,
@@ -389,14 +443,13 @@ export default function OnboardingTour({
           }}
         />
         <div
-          className="pointer-events-none absolute border-2 border-white/70 shadow-[0_0_0_9999px_rgba(0,0,0,0)]"
+          className="pointer-events-none absolute border-2 border-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.2)]"
           style={{
             top: targetRect.top,
             left: targetRect.left,
             width: targetRect.width,
             height: targetRect.height,
             borderRadius: radius,
-            boxShadow: "0 0 0 9999px rgba(0,0,0,0.02)",
           }}
         />
       </>
@@ -404,47 +457,54 @@ export default function OnboardingTour({
   }
 
   function getCardStyle() {
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1400;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+    const cardWidth = Math.min(420, vw - 24);
+    const cardHeight = 320;
+    const gap = 16;
+
     if (!targetRect || !step || step.placement === "center" || !isOnCurrentStepPage) {
       return {
         top: 24,
         left: "50%",
         transform: "translateX(-50%)",
-        width: "min(760px, calc(100% - 24px))",
+        width: "min(420px, calc(100% - 24px))",
       } as const;
     }
 
-    const vw = typeof window !== "undefined" ? window.innerWidth : 1400;
-    const vh = typeof window !== "undefined" ? window.innerHeight : 900;
-    const cardWidth = Math.min(420, vw - 24);
-    const gap = 16;
     const placement = step.placement || "bottom";
+    const centeredLeft = clamp(
+      targetRect.left + targetRect.width / 2 - cardWidth / 2,
+      12,
+      vw - cardWidth - 12
+    );
 
     if (placement === "bottom") {
       return {
-        top: clamp(targetRect.top + targetRect.height + gap, 12, vh - 320),
-        left: clamp(targetRect.left, 12, vw - cardWidth - 12),
+        top: clamp(targetRect.top + targetRect.height + gap, 12, vh - cardHeight - 12),
+        left: centeredLeft,
         width: cardWidth,
       } as const;
     }
 
     if (placement === "top") {
       return {
-        top: clamp(targetRect.top - 320 - gap, 12, vh - 320),
-        left: clamp(targetRect.left, 12, vw - cardWidth - 12),
+        top: clamp(targetRect.top - cardHeight - gap, 12, vh - cardHeight - 12),
+        left: centeredLeft,
         width: cardWidth,
       } as const;
     }
 
     if (placement === "left") {
       return {
-        top: clamp(targetRect.top, 12, vh - 320),
+        top: clamp(targetRect.top + targetRect.height / 2 - cardHeight / 2, 12, vh - cardHeight - 12),
         left: clamp(targetRect.left - cardWidth - gap, 12, vw - cardWidth - 12),
         width: cardWidth,
       } as const;
     }
 
     return {
-      top: clamp(targetRect.top, 12, vh - 320),
+      top: clamp(targetRect.top + targetRect.height / 2 - cardHeight / 2, 12, vh - cardHeight - 12),
       left: clamp(targetRect.left + targetRect.width + gap, 12, vw - cardWidth - 12),
       width: cardWidth,
     } as const;
@@ -473,16 +533,13 @@ export default function OnboardingTour({
       {open && step && (
         <div className="fixed inset-0 z-[80]">
           {!targetRect ? (
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={closeTour} />
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
           ) : (
             renderSpotlightCutout()
           )}
 
           <div className="pointer-events-none absolute inset-0">
-            <div
-              className="pointer-events-auto absolute"
-              style={getCardStyle()}
-            >
+            <div className="pointer-events-auto absolute" style={getCardStyle()}>
               <div className="overflow-hidden rounded-3xl border border-white/10 bg-card text-foreground shadow-[0_20px_80px_rgba(0,0,0,0.45)]">
                 <div className="border-b border-white/10 px-5 py-4">
                   <div className="flex items-start justify-between gap-4">
@@ -553,7 +610,7 @@ export default function OnboardingTour({
                             : mustFindTarget && !targetReady
                               ? "Waiting for the highlighted control to appear."
                               : targetReady
-                                ? "Follow the highlighted control on this page."
+                                ? "Follow the highlighted area on this page."
                                 : "You are on the correct page."}
                         </div>
                       </div>
