@@ -525,7 +525,7 @@ function BillingContent() {
   const showDevSwitcher = !!allowedUserId && !!meUserId && allowedUserId === meUserId && isOwner;
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8">
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8" data-tour="billing-main">
       <section className="relative overflow-hidden rounded-[32px] border bg-gradient-to-br from-background via-background to-muted/40 p-6 shadow-sm md:p-8">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_0%_0%,hsl(var(--primary)/0.10),transparent_55%),radial-gradient(700px_280px_at_100%_0%,hsl(var(--accent)/0.10),transparent_50%)]" />
 
@@ -589,35 +589,35 @@ function BillingContent() {
           </div>
 
           <div className="flex w-full flex-col gap-2 lg:w-auto lg:min-w-[280px]">
-  <Button
-    variant="outline"
-    onClick={openPortal}
-    disabled={!hasStripeCustomer || !isPaid || portalLoading}
-    title={!hasStripeCustomer ? "No Stripe customer yet" : !isPaid ? "Upgrade first" : "Manage subscription"}
-    className="h-11 rounded-2xl"
-  >
-    {portalLoading ? "Opening..." : "Manage subscription"}
-  </Button>
+            <Button
+              variant="outline"
+              onClick={openPortal}
+              disabled={!hasStripeCustomer || !isPaid || portalLoading}
+              title={!hasStripeCustomer ? "No Stripe customer yet" : !isPaid ? "Upgrade first" : "Manage subscription"}
+              className="h-11 rounded-2xl"
+            >
+              {portalLoading ? "Opening..." : "Manage subscription"}
+            </Button>
 
-  {isPaid ? (
-    <Button
-      variant="destructive"
-      onClick={openPortal}
-      disabled={!hasStripeCustomer || portalLoading}
-      title={!hasStripeCustomer ? "No Stripe customer yet for this workspace" : "Cancel subscription"}
-      className="h-11 rounded-2xl"
-    >
-      {portalLoading ? "Opening..." : "Cancel subscription"}
-    </Button>
-  ) : null}
+            {isPaid ? (
+              <Button
+                variant="destructive"
+                onClick={openPortal}
+                disabled={!hasStripeCustomer || portalLoading}
+                title={!hasStripeCustomer ? "No Stripe customer yet for this workspace" : "Cancel subscription"}
+                className="h-11 rounded-2xl"
+              >
+                {portalLoading ? "Opening..." : "Cancel subscription"}
+              </Button>
+            ) : null}
 
-  <Button asChild variant="outline" className="h-11 rounded-2xl">
-    <Link href="/pricing">
-      Full pricing details
-      <ArrowRight className="ml-2 h-4 w-4" />
-    </Link>
-  </Button>
-</div>
+            <Button asChild variant="outline" className="h-11 rounded-2xl">
+              <Link href="/pricing">
+                Full pricing details
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
+          </div>
         </div>
       </section>
 

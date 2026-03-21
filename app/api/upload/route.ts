@@ -8,6 +8,9 @@ import { getPlanLimits, hasFeature, normalizePlan } from "@/lib/plans";
 import { ensureUsageDailySchema, incrementUserUploads, getUserUsageRow } from "@/lib/usage";
 import { enforceDailyUploads, getAgencyPlan } from "@/lib/enforcement";
 import { getEffectiveTimezone, ymdInTz } from "@/lib/timezone";
+import { createScheduleTask } from "@/app/api/schedule/tasks/route";
+import { createScheduleEvent } from "@/app/api/schedule/events/route";
+import { analyzeUploadedDocument, type DocumentRouteDecision } from "@/lib/document-routing";
 
 export const runtime = "nodejs";
 
@@ -25,11 +28,11 @@ function nowIso() {
 
 function maxBytesForPlan(plan: string): number {
   const p = normalizePlan(plan);
-  if (p === "free") return 25 * 1024 * 1024; // 25MB
-  if (p === "home") return 25 * 1024 * 1024; // 25MB
-  if (p === "pro") return 100 * 1024 * 1024; // 100MB
-  if (p === "enterprise") return 250 * 1024 * 1024; // 250MB
-  return 500 * 1024 * 1024; // corporation
+  if (p === "free") return 25 * 1024 * 1024;
+  if (p === "home") return 25 * 1024 * 1024;
+  if (p === "pro") return 100 * 1024 * 1024;
+  if (p === "enterprise") return 250 * 1024 * 1024;
+  return 500 * 1024 * 1024;
 }
 
 function classifyMime(mime: string): "doc" | "image" | "video" | "other" {
@@ -49,9 +52,47 @@ function classifyMime(mime: string): "doc" | "image" | "video" | "other" {
   return "other";
 }
 
+type RouteDestination = "knowledge" | "schedule" | "spreadsheets" | "outreach" | "email" | "clarify";
+
+type RouteDecision = {
+  destination: RouteDestination;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  asks_clarification: boolean;
+  suggested_question: string | null;
+  schedule_kind?: "task" | "event" | null;
+};
+
+type AutoCreatedResult =
+  | {
+      type: "task";
+      id: string;
+      title: string;
+      due_at: string | null;
+    }
+  | {
+      type: "event";
+      id: string;
+      title: string;
+      start_at: string;
+      end_at: string | null;
+    }
+  | null;
+
+function isFileLike(v: any): v is File {
+  return v && typeof v === "object" && typeof v.name === "string" && typeof v.arrayBuffer === "function";
+}
+
+function toUiDailyUploadsLimit(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : raw == null ? null : Number(raw);
+  if (n == null || !Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  if (n >= 90000) return null;
+  return Math.floor(n);
+}
+
 async function ensureOnboardingColumns(db: Db) {
   const columns = (await db.all(`PRAGMA table_info(users)`)) as Array<{ name?: string }>;
-
   const hasUploadedFirstDoc = columns.some((c) => c?.name === "uploaded_first_doc");
 
   if (!hasUploadedFirstDoc) {
@@ -112,16 +153,89 @@ async function assertBotAccessAndGetVectorStore(db: Db, args: { bot_id: string; 
   return { ok: true as const, bot, vector_store_id: bot.vector_store_id };
 }
 
-function isFileLike(v: any): v is File {
-  return v && typeof v === "object" && typeof v.name === "string" && typeof v.arrayBuffer === "function";
+async function readUploadedFileText(fileId: string) {
+  try {
+    const content = await openai.files.content(fileId);
+    const text = await content.text();
+    return String(text || "").trim();
+  } catch {
+    return "";
+  }
 }
 
-function toUiDailyUploadsLimit(raw: unknown): number | null {
-  const n = typeof raw === "number" ? raw : raw == null ? null : Number(raw);
-  if (n == null || !Number.isFinite(n)) return null;
-  if (n <= 0) return null;
-  if (n >= 90000) return null;
-  return Math.floor(n);
+function mapDecision(decision: DocumentRouteDecision): RouteDecision {
+  return {
+    destination: decision.destination,
+    confidence: decision.confidence,
+    reason: decision.why,
+    asks_clarification: decision.asks_clarification,
+    suggested_question: decision.clarification_question,
+    schedule_kind: decision.schedule_kind,
+  };
+}
+
+async function maybeAutoCreateScheduleItems(args: {
+  db: Db;
+  agencyId: string;
+  userId: string;
+  botId: string;
+  timezone: string;
+  filename: string;
+  decision: DocumentRouteDecision;
+}) {
+  const created: AutoCreatedResult[] = [];
+
+  if (args.decision.destination !== "schedule") return created;
+  if (args.decision.confidence !== "high") return created;
+
+  for (const task of args.decision.task_candidates || []) {
+    if (!task.title) continue;
+
+    const saved = await createScheduleTask({
+      db: args.db,
+      agencyId: args.agencyId,
+      userId: args.userId,
+      botId: args.botId,
+      title: task.title,
+      dueAt: task.due_at ?? null,
+      notes: task.notes || `Auto-created from uploaded file: ${args.filename}`,
+      timezone: args.timezone,
+    });
+
+    created.push({
+      type: "task",
+      id: saved.id,
+      title: saved.title,
+      due_at: saved.due_at,
+    });
+  }
+
+  for (const event of args.decision.event_candidates || []) {
+    if (!event.title || !event.start_at) continue;
+
+    const saved = await createScheduleEvent({
+      db: args.db,
+      agencyId: args.agencyId,
+      userId: args.userId,
+      botId: args.botId,
+      title: event.title,
+      startAt: event.start_at,
+      endAt: event.end_at ?? null,
+      location: event.location ?? null,
+      notes: event.notes || `Auto-created from uploaded file: ${args.filename}`,
+      timezone: args.timezone,
+    });
+
+    created.push({
+      type: "event",
+      id: saved.id,
+      title: saved.title,
+      start_at: saved.start_at,
+      end_at: saved.end_at,
+    });
+  }
+
+  return created;
 }
 
 export async function POST(req: NextRequest) {
@@ -133,7 +247,6 @@ export async function POST(req: NextRequest) {
     await ensureUsageDailySchema(db);
     await ensureOnboardingColumns(db);
 
-    // Travel-proof: header -> users.time_zone -> agencies.timezone -> America/Chicago
     const tz = await getEffectiveTimezone(db, {
       agencyId: ctx.agencyId,
       userId: ctx.userId,
@@ -143,7 +256,6 @@ export async function POST(req: NextRequest) {
     const now = new Date();
     const dateKey = ymdInTz(now, tz);
 
-    // Source-of-truth plan from DB
     const plan = await getAgencyPlan(db, ctx.agencyId, ctx.plan);
     const planKey = normalizePlan(plan);
     const limits = getPlanLimits(planKey);
@@ -176,16 +288,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Per-user daily upload limit gate
     const uploadsGate = await enforceDailyUploads(db, ctx.agencyId, ctx.userId, dateKey, planKey, files.length);
     if (!uploadsGate.ok) {
       return Response.json({ ...uploadsGate.body, timezone: tz }, { status: uploadsGate.status });
     }
 
-    // HARD GATING: size + mime before any OpenAI calls
     for (const file of files) {
       const size = Number((file as any).size ?? 0);
-      if (!Number.isFinite(size) || size <= 0) return Response.json({ ok: false, error: "INVALID_FILE" }, { status: 400 });
+      if (!Number.isFinite(size) || size <= 0) {
+        return Response.json({ ok: false, error: "INVALID_FILE" }, { status: 400 });
+      }
 
       if (size > maxBytes) {
         return Response.json(
@@ -206,28 +318,52 @@ export async function POST(req: NextRequest) {
 
       if (kind === "image" && !allowImages) {
         return Response.json(
-          { ok: false, error: "MIME_NOT_ALLOWED", message: `Images are not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `Images are not allowed on plan '${planKey}'.`,
+            plan: planKey,
+            file: { name: file.name, type: mime, kind },
+          },
           { status: 415 }
         );
       }
 
       if (kind === "video" && !allowVideo) {
         return Response.json(
-          { ok: false, error: "MIME_NOT_ALLOWED", message: `Video is not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `Video is not allowed on plan '${planKey}'.`,
+            plan: planKey,
+            file: { name: file.name, type: mime, kind },
+          },
           { status: 415 }
         );
       }
 
       if (kind === "other" && !allowOtherBinary) {
         return Response.json(
-          { ok: false, error: "MIME_NOT_ALLOWED", message: `This file type is not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `This file type is not allowed on plan '${planKey}'.`,
+            plan: planKey,
+            file: { name: file.name, type: mime, kind },
+          },
           { status: 415 }
         );
       }
 
       if ((planKey === "free" || planKey === "home") && kind === "other") {
         return Response.json(
-          { ok: false, error: "MIME_NOT_ALLOWED", message: `This file type is not allowed on plan '${planKey}'.`, plan: planKey, file: { name: file.name, type: mime, kind } },
+          {
+            ok: false,
+            error: "MIME_NOT_ALLOWED",
+            message: `This file type is not allowed on plan '${planKey}'.`,
+            plan: planKey,
+            file: { name: file.name, type: mime, kind },
+          },
           { status: 415 }
         );
       }
@@ -236,7 +372,9 @@ export async function POST(req: NextRequest) {
     let bot_id = String(form.get("bot_id") ?? "").trim();
     if (!bot_id) {
       const fallback = await getFallbackBotId(db, ctx.agencyId, ctx.userId);
-      if (!fallback) return Response.json({ ok: false, error: "No bots found for this agency/user" }, { status: 404 });
+      if (!fallback) {
+        return Response.json({ ok: false, error: "No bots found for this agency/user" }, { status: 404 });
+      }
       bot_id = fallback;
     }
 
@@ -249,7 +387,12 @@ export async function POST(req: NextRequest) {
     if (!ensured.ok) {
       if (ensured.error === "BOT_VECTOR_STORE_MISSING") {
         return Response.json(
-          { ok: false, error: "This bot can’t accept uploads yet (vector store missing).", code: "BOT_VECTOR_STORE_MISSING", bot_id },
+          {
+            ok: false,
+            error: "This bot can’t accept uploads yet (vector store missing).",
+            code: "BOT_VECTOR_STORE_MISSING",
+            bot_id,
+          },
           { status: 409 }
         );
       }
@@ -258,7 +401,14 @@ export async function POST(req: NextRequest) {
 
     const vectorStoreId = ensured.vector_store_id;
 
-    const uploaded: Array<{ document_id: string; filename: string; openai_file_id: string }> = [];
+    const uploaded: Array<{
+      document_id: string;
+      filename: string;
+      openai_file_id: string;
+      route: RouteDecision;
+      auto_created: AutoCreatedResult[];
+      extracted_text_preview: string;
+    }> = [];
 
     for (const file of files) {
       const uploadedFile = await openai.files.create({ file, purpose: "assistants" });
@@ -299,14 +449,68 @@ export async function POST(req: NextRequest) {
         uploadedFile.id
       )) as { id: string } | undefined;
 
-      uploaded.push({ document_id: row?.id ?? "", filename: file.name, openai_file_id: uploadedFile.id });
+      const extractedText = await readUploadedFileText(uploadedFile.id);
+
+      const decision = await analyzeUploadedDocument({
+        filename: file.name,
+        mime: file.type || "",
+        text: extractedText,
+        timezone: tz,
+      });
+
+      const auto_created = await maybeAutoCreateScheduleItems({
+        db,
+        agencyId: ctx.agencyId,
+        userId: ctx.userId,
+        botId: bot_id,
+        timezone: tz,
+        filename: file.name,
+        decision,
+      });
+
+      uploaded.push({
+        document_id: row?.id ?? "",
+        filename: file.name,
+        openai_file_id: uploadedFile.id,
+        route: mapDecision(decision),
+        auto_created,
+        extracted_text_preview: extractedText.slice(0, 280),
+      });
     }
 
     await markUploadedFirstDoc(db, ctx.userId);
 
-    // Canonical per-user upload usage
     await incrementUserUploads(db, ctx.agencyId, ctx.userId, dateKey, files.length);
     const usageRow = await getUserUsageRow(db, ctx.agencyId, ctx.userId, dateKey);
+
+    const needsClarification = uploaded.some((x) => x.route.asks_clarification);
+
+    const routedCounts = uploaded.reduce<Record<RouteDestination, number>>(
+      (acc, item) => {
+        acc[item.route.destination] = (acc[item.route.destination] || 0) + 1;
+        return acc;
+      },
+      {
+        knowledge: 0,
+        schedule: 0,
+        spreadsheets: 0,
+        outreach: 0,
+        email: 0,
+        clarify: 0,
+      }
+    );
+
+    const autoCreatedSummary = uploaded.reduce(
+      (acc, item) => {
+        for (const created of item.auto_created) {
+          if (!created) continue;
+          if (created.type === "task") acc.tasks += 1;
+          if (created.type === "event") acc.events += 1;
+        }
+        return acc;
+      },
+      { tasks: 0, events: 0 }
+    );
 
     return Response.json({
       ok: true,
@@ -314,6 +518,18 @@ export async function POST(req: NextRequest) {
       uploaded,
       date: dateKey,
       timezone: tz,
+      routing: {
+        needs_clarification: needsClarification,
+        summary: {
+          knowledge: routedCounts.knowledge,
+          schedule: routedCounts.schedule,
+          spreadsheets: routedCounts.spreadsheets,
+          outreach: routedCounts.outreach,
+          email: routedCounts.email,
+          clarify: routedCounts.clarify,
+        },
+        auto_created: autoCreatedSummary,
+      },
       usage: {
         uploads_used: usageRow.uploads_count,
         daily_uploads_limit: toUiDailyUploadsLimit((limits as any)?.daily_uploads),

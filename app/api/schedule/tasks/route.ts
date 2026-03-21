@@ -127,7 +127,7 @@ function looksIsoOrOffset(s: string) {
   return false;
 }
 
-function normalizeToUtcIso(input: string, tz: string) {
+export function normalizeToUtcIso(input: string, tz: string) {
   const raw = String(input || "").trim();
   if (!raw) return "";
 
@@ -175,7 +175,7 @@ async function getFallbackBotId(db: Db, agencyId: string, userId: string) {
   return userBot?.id ?? null;
 }
 
-async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
+export async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
   const bot = (await db.get(
     `SELECT id, agency_id, owner_user_id
      FROM bots
@@ -187,6 +187,64 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
   if (!bot?.id) throw new Error("BOT_NOT_FOUND");
   if (bot.agency_id !== args.agency_id) throw new Error("FORBIDDEN_BOT");
   if (bot.owner_user_id && bot.owner_user_id !== args.user_id) throw new Error("FORBIDDEN_BOT");
+}
+
+export async function createScheduleTask(args: {
+  db: Db;
+  agencyId: string;
+  userId: string;
+  botId: string;
+  title: string;
+  dueAt?: string | null;
+  notes?: string | null;
+  timezone?: string | null;
+}) {
+  const title = String(args.title || "").trim();
+  if (!title) throw new Error("TITLE_REQUIRED");
+
+  await assertBotAccess(args.db, {
+    bot_id: args.botId,
+    agency_id: args.agencyId,
+    user_id: args.userId,
+  });
+
+  let due_at: string | null = null;
+  const dueAtRaw = String(args.dueAt || "").trim();
+
+  if (dueAtRaw) {
+    const tz = String(args.timezone || "").trim() || (await getAgencyTimezone(args.db, args.agencyId));
+    const iso = normalizeToUtcIso(dueAtRaw, tz);
+
+    if (!iso || Number.isNaN(new Date(iso).getTime())) {
+      throw new Error("BAD_DUE_AT");
+    }
+
+    due_at = iso;
+  }
+
+  const id = (await args.db.get(`SELECT lower(hex(randomblob(16))) AS id`)) as { id: string } | undefined;
+  const taskId = id?.id || "";
+
+  await args.db.run(
+    `INSERT INTO schedule_tasks (id, agency_id, bot_id, title, due_at, status, notes, created_at)
+     VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`,
+    taskId,
+    args.agencyId,
+    args.botId,
+    title,
+    due_at,
+    args.notes ?? null,
+    nowIso()
+  );
+
+  return {
+    ok: true as const,
+    id: taskId,
+    title,
+    due_at,
+    notes: args.notes ?? null,
+    status: "open" as const,
+  };
 }
 
 export async function OPTIONS() {
@@ -263,37 +321,29 @@ export async function POST(req: NextRequest) {
       bot_id = fallback;
     }
 
-    await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
+    const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
+    const userTz = getHeaderTz(req) || agencyTz;
 
-    let due_at: string | null = null;
-
-    if (due_at_raw != null && String(due_at_raw).trim()) {
-      const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
-      const userTz = getHeaderTz(req) || agencyTz;
-
-      const iso = normalizeToUtcIso(String(due_at_raw).trim(), userTz);
-      if (!iso || Number.isNaN(new Date(iso).getTime())) {
-        return Response.json({ ok: false, error: "BAD_DUE_AT" }, { status: 400 });
-      }
-      due_at = iso;
-    }
-
-    await db.run(
-      `INSERT INTO schedule_tasks (id, agency_id, bot_id, title, due_at, status, notes, created_at)
-       VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, 'open', ?, ?)`,
-      ctx.agencyId,
-      bot_id,
+    const created = await createScheduleTask({
+      db,
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      botId: bot_id,
       title,
-      due_at,
+      dueAt: due_at_raw,
       notes,
-      nowIso()
-    );
+      timezone: userTz,
+    });
 
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, task: created });
   } catch (err: any) {
     const msg = String(err?.code ?? err?.message ?? err);
     if (msg === "UNAUTHENTICATED") return Response.json({ ok: false, error: "UNAUTHENTICATED" }, { status: 401 });
     if (msg === "FORBIDDEN_NOT_ACTIVE") return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    if (msg === "TITLE_REQUIRED") return Response.json({ ok: false, error: "TITLE_REQUIRED" }, { status: 400 });
+    if (msg === "BAD_DUE_AT") return Response.json({ ok: false, error: "BAD_DUE_AT" }, { status: 400 });
+    if (msg === "BOT_NOT_FOUND") return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
+    if (msg === "FORBIDDEN_BOT") return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
 
     console.error("SCHEDULE_TASKS_POST_ERROR", err);
     return Response.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });

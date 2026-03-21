@@ -127,7 +127,7 @@ function looksIsoOrOffset(s: string) {
   return false;
 }
 
-function normalizeToUtcIso(input: string, tz: string) {
+export function normalizeToUtcIso(input: string, tz: string) {
   const raw = String(input || "").trim();
   if (!raw) return "";
 
@@ -150,7 +150,7 @@ function normalizeToUtcIso(input: string, tz: string) {
   return raw;
 }
 
-async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
+export async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string; user_id: string }) {
   const bot = (await db.get(
     `SELECT id, agency_id, owner_user_id
      FROM bots
@@ -176,6 +176,82 @@ async function assertBotAccess(db: Db, args: { bot_id: string; agency_id: string
     e.code = "FORBIDDEN_BOT";
     throw e;
   }
+}
+
+export async function createScheduleEvent(args: {
+  db: Db;
+  agencyId: string;
+  userId: string;
+  botId: string;
+  title: string;
+  startAt: string;
+  endAt?: string | null;
+  location?: string | null;
+  notes?: string | null;
+  timezone?: string | null;
+}) {
+  const title = String(args.title || "").trim();
+  const startAtRaw = String(args.startAt || "").trim();
+
+  if (!title || !startAtRaw) {
+    const e: any = new Error("MISSING_FIELDS");
+    e.code = "MISSING_FIELDS";
+    throw e;
+  }
+
+  await assertBotAccess(args.db, {
+    bot_id: args.botId,
+    agency_id: args.agencyId,
+    user_id: args.userId,
+  });
+
+  const tz = String(args.timezone || "").trim() || (await getAgencyTimezone(args.db, args.agencyId));
+
+  const start_at = normalizeToUtcIso(startAtRaw, tz);
+  if (!start_at || Number.isNaN(new Date(start_at).getTime())) {
+    const e: any = new Error("BAD_START_AT");
+    e.code = "BAD_START_AT";
+    throw e;
+  }
+
+  let end_at: string | null = null;
+  const endAtRaw = String(args.endAt || "").trim();
+  if (endAtRaw) {
+    const normalizedEnd = normalizeToUtcIso(endAtRaw, tz);
+    if (!normalizedEnd || Number.isNaN(new Date(normalizedEnd).getTime())) {
+      const e: any = new Error("BAD_END_AT");
+      e.code = "BAD_END_AT";
+      throw e;
+    }
+    end_at = normalizedEnd;
+  }
+
+  const idRow = (await args.db.get(`SELECT lower(hex(randomblob(16))) AS id`)) as { id: string } | undefined;
+  const eventId = idRow?.id || "";
+
+  await args.db.run(
+    `INSERT INTO schedule_events (id, agency_id, bot_id, title, start_at, end_at, location, notes, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    eventId,
+    args.agencyId,
+    args.botId,
+    title,
+    start_at,
+    end_at,
+    args.location ?? null,
+    args.notes ?? null,
+    nowIso()
+  );
+
+  return {
+    ok: true as const,
+    id: eventId,
+    title,
+    start_at,
+    end_at,
+    location: args.location ?? null,
+    notes: args.notes ?? null,
+  };
 }
 
 export async function OPTIONS() {
@@ -220,6 +296,12 @@ export async function GET(req: NextRequest) {
     if (code === "FORBIDDEN_NOT_ACTIVE") {
       return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
     }
+    if (code === "BOT_NOT_FOUND") {
+      return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
+    }
+    if (code === "FORBIDDEN_BOT") {
+      return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
+    }
 
     console.error("SCHEDULE_EVENTS_GET_ERROR", err);
     return Response.json({ ok: false, error: "SERVER_ERROR", message: String(err?.message ?? err) }, { status: 500 });
@@ -250,39 +332,23 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: false, error: "MISSING_FIELDS" }, { status: 400 });
     }
 
-    await assertBotAccess(db, { bot_id, agency_id: ctx.agencyId, user_id: ctx.userId });
-
     const agencyTz = await getAgencyTimezone(db, ctx.agencyId);
     const userTz = getHeaderTz(req) || agencyTz;
 
-    const start_at = normalizeToUtcIso(start_at_raw, userTz);
-    if (!start_at || Number.isNaN(new Date(start_at).getTime())) {
-      return Response.json({ ok: false, error: "BAD_START_AT" }, { status: 400 });
-    }
-
-    let end_at: string | null = null;
-    if (end_at_raw != null && String(end_at_raw).trim()) {
-      const e = normalizeToUtcIso(String(end_at_raw).trim(), userTz);
-      if (!e || Number.isNaN(new Date(e).getTime())) {
-        return Response.json({ ok: false, error: "BAD_END_AT" }, { status: 400 });
-      }
-      end_at = e;
-    }
-
-    await db.run(
-      `INSERT INTO schedule_events (id, agency_id, bot_id, title, start_at, end_at, location, notes, created_at)
-       VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ctx.agencyId,
-      bot_id,
+    const created = await createScheduleEvent({
+      db,
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      botId: bot_id,
       title,
-      start_at,
-      end_at,
+      startAt: start_at_raw,
+      endAt: end_at_raw,
       location,
       notes,
-      nowIso()
-    );
+      timezone: userTz,
+    });
 
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, event: created });
   } catch (err: any) {
     const code = String(err?.code ?? err?.message ?? err);
 
@@ -291,6 +357,21 @@ export async function POST(req: NextRequest) {
     }
     if (code === "FORBIDDEN_NOT_ACTIVE") {
       return Response.json({ ok: false, error: "FORBIDDEN_NOT_ACTIVE" }, { status: 403 });
+    }
+    if (code === "MISSING_FIELDS") {
+      return Response.json({ ok: false, error: "MISSING_FIELDS" }, { status: 400 });
+    }
+    if (code === "BAD_START_AT") {
+      return Response.json({ ok: false, error: "BAD_START_AT" }, { status: 400 });
+    }
+    if (code === "BAD_END_AT") {
+      return Response.json({ ok: false, error: "BAD_END_AT" }, { status: 400 });
+    }
+    if (code === "BOT_NOT_FOUND") {
+      return Response.json({ ok: false, error: "BOT_NOT_FOUND" }, { status: 404 });
+    }
+    if (code === "FORBIDDEN_BOT") {
+      return Response.json({ ok: false, error: "FORBIDDEN_BOT" }, { status: 403 });
     }
 
     console.error("SCHEDULE_EVENTS_POST_ERROR", err);

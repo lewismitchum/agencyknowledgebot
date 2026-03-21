@@ -154,7 +154,7 @@ function ModeActionMenu({
     mode === "docs" ? "Generate from docs" : mode === "csv" ? "CSV edits" : "Generate from AI";
 
   return (
-    <div ref={wrapRef} className="relative w-full md:w-[280px]">
+    <div ref={wrapRef} className="relative w-full md:w-[280px]" data-tour="spreadsheets-main-action">
       <div className="text-sm font-medium">Spreadsheet action</div>
 
       <button

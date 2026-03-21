@@ -1196,7 +1196,7 @@ export default function EmailPage() {
             </div>
           </div>
 
-          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[340px]">
+          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[340px]" data-tour="email-main-action">
             {!gmailConnected ? (
               <button
                 type="button"

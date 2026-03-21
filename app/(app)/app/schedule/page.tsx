@@ -745,6 +745,7 @@ export default function SchedulePage() {
             </div>
 
             <button
+              data-tour="schedule-jump-today"
               className="inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95"
               onClick={() => setAnchorDayKey(dayKeyInTz(new Date(), tz))}
               type="button"
@@ -796,6 +797,7 @@ export default function SchedulePage() {
             <div className="flex flex-col gap-2 xl:items-end">
               <div className="flex w-full flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center xl:justify-end">
                 <select
+                  data-tour="schedule-bot-selector"
                   value={botId}
                   onChange={(e) => setBotId(e.target.value)}
                   className="w-full rounded-2xl border bg-background/70 px-3 py-2 text-sm outline-none backdrop-blur focus:ring-2 focus:ring-ring lg:w-64"
@@ -808,7 +810,10 @@ export default function SchedulePage() {
                   ))}
                 </select>
 
-                <div className="flex w-full rounded-2xl border bg-background/60 p-1 backdrop-blur lg:w-auto">
+                <div
+                  data-tour="schedule-view-switch"
+                  className="flex w-full rounded-2xl border bg-background/60 p-1 backdrop-blur lg:w-auto"
+                >
                   {(["day", "week", "month"] as const).map((v) => (
                     <button
                       key={v}
@@ -873,7 +878,7 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="mt-6 min-w-0">
+          <div className="mt-6 min-w-0" data-tour="schedule-events-list">
             {loading ? (
               <div className="rounded-2xl border bg-background/45 p-6 text-sm text-muted-foreground">Loading…</div>
             ) : view === "day" ? (
@@ -918,7 +923,7 @@ export default function SchedulePage() {
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+          <div data-tour="schedule-tasks-list" className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-sm font-medium">Daily to-do</div>
@@ -1033,7 +1038,7 @@ export default function SchedulePage() {
             )}
           </div>
 
-          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
+          <div data-tour="schedule-quick-add" className="rounded-[28px] border bg-card/75 p-5 shadow-sm backdrop-blur">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-sm font-medium">Quick add</div>
@@ -1503,6 +1508,7 @@ function QuickAdd({ botId, onAdded }: { botId: string; onAdded: () => void }) {
       />
 
       <button
+        data-tour="schedule-create"
         onClick={submit}
         disabled={loading || !botId || botId === ALL_BOTS_ID}
         className="w-full rounded-2xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-all duration-200 hover:-translate-y-[1px] hover:opacity-95 disabled:opacity-60"
