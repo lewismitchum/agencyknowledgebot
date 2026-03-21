@@ -9,8 +9,6 @@ import {
   CheckCircle2,
   CreditCard,
   FileText,
-  Mail,
-  MessageSquare,
   Rocket,
   X,
 } from "lucide-react";
@@ -241,7 +239,7 @@ export default function DashboardPage() {
     if (stats.schedule_enabled && !progress.opened_schedule) {
       return {
         title: "Open schedule",
-        body: "Review tasks and events extracted from documents.",
+        body: "Review tasks and events routed from your workspace.",
         href: "/app/schedule",
         action: "Open schedule",
       };
@@ -390,7 +388,10 @@ export default function DashboardPage() {
           </div>
 
           <div className="w-full md:w-auto md:min-w-[280px]">
-            <div className="rounded-3xl border bg-background p-5">
+            <div
+              data-tour="dashboard-next-step"
+              className="rounded-3xl border bg-background p-5"
+            >
               <div className="text-sm font-medium">{hero.title}</div>
               <div className="mt-1 text-sm text-muted-foreground">{hero.body}</div>
               <div className="mt-4">
@@ -476,7 +477,10 @@ export default function DashboardPage() {
 
       {tab === "overview" ? (
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-[28px] border bg-card/75 p-5 shadow-sm">
+          <div
+            data-tour="dashboard-quick-actions"
+            className="rounded-[28px] border bg-card/75 p-5 shadow-sm"
+          >
             <div className="text-sm font-medium">Quick actions</div>
             <div className="mt-1 text-sm text-muted-foreground">Go straight to the pages you’ll use most.</div>
 

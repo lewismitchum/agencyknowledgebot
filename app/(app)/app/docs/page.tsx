@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { UpgradeGate } from "@/components/upgrade-gate";
 import { fetchJson, type FetchJsonError } from "@/lib/fetch-json";
 import {
   ArrowRight,
@@ -138,10 +137,6 @@ export default function DocsPage() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string>("");
-
-  const [extractingId, setExtractingId] = useState<string | null>(null);
-  const [extractMsg, setExtractMsg] = useState<string>("");
-  const [extractGated, setExtractGated] = useState(false);
 
   const [plan, setPlan] = useState<string | null>(null);
   const [uploadsUsed, setUploadsUsed] = useState<number>(0);
@@ -324,7 +319,6 @@ export default function DocsPage() {
     setRenameDraft(doc.filename);
     setError(null);
     setUploadMsg("");
-    setExtractMsg("");
   }
 
   function cancelRename() {
@@ -381,56 +375,6 @@ export default function DocsPage() {
     }
   }
 
-  async function onExtract(doc: DocRow) {
-    setExtractGated(false);
-    setExtractMsg("");
-    setUploadMsg("");
-    setError(null);
-
-    if (!selectedBotId) {
-      setExtractMsg("Pick a bot first.");
-      return;
-    }
-
-    setExtractingId(doc.id);
-
-    try {
-      const json = await fetchJson<any>("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          bot_id: selectedBotId,
-          document_id: doc.id,
-        }),
-      });
-
-      const events = Array.isArray(json?.events) ? json.events.length : Number(json?.events_count ?? 0);
-      const tasks = Array.isArray(json?.tasks) ? json.tasks.length : Number(json?.tasks_count ?? 0);
-
-      setExtractMsg(
-        events || tasks
-          ? `Extracted ${events} event${events === 1 ? "" : "s"} and ${tasks} task${tasks === 1 ? "" : "s"}.`
-          : "Extraction complete."
-      );
-    } catch (e: any) {
-      if (isFetchJsonError(e)) {
-        const status = getFetchJsonStatus(e);
-        if (status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        if (status === 403) {
-          setExtractGated(true);
-          return;
-        }
-      }
-      setExtractMsg(e?.message ?? "Extraction failed");
-    } finally {
-      setExtractingId(null);
-    }
-  }
-
   const uploadAccept = useMemo(() => {
     if (isProPlus) {
       return [
@@ -456,7 +400,6 @@ export default function DocsPage() {
 
   async function onUpload() {
     setUploadMsg("");
-    setExtractMsg("");
     setError(null);
 
     if (!selectedBotId) {
@@ -515,8 +458,8 @@ export default function DocsPage() {
       if (fileRef.current) fileRef.current.value = "";
       setUploadMsg(
         isDoc
-          ? "Uploaded and indexed."
-          : "Uploaded. (Media search quality may be limited until enhanced indexing is added.)"
+          ? "Uploaded. Louis will use this for knowledge and route useful information automatically."
+          : "Uploaded. Media support is available on your plan."
       );
       await loadDocs(selectedBotId);
       await refreshMe();
@@ -559,17 +502,6 @@ export default function DocsPage() {
       ? `Uploads: ${uploadsUsed} used (unlimited)`
       : `Uploads: ${uploadsUsed}/${uploadsLimit} used • ${uploadsRemaining ?? 0} left today`;
 
-  if (extractGated) {
-    return (
-      <UpgradeGate
-        title="Extraction is a paid feature"
-        message="Upgrade your plan to unlock schedule/to-do extraction from documents."
-        ctaHref="/app/billing"
-        ctaLabel="Upgrade Plan"
-      />
-    );
-  }
-
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8">
       <section className="relative overflow-hidden rounded-[32px] border bg-gradient-to-br from-background via-background to-muted/40 p-6 shadow-sm md:p-8">
@@ -585,7 +517,7 @@ export default function DocsPage() {
             <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-5xl">Documents</h1>
 
             <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
-              Documents are attached to one bot at a time. Upload files, manage knowledge, and run extraction from here.
+              Documents are attached to one bot at a time. Upload files here and Louis will use them as knowledge for that bot.
             </p>
 
             <div className="mt-5 flex flex-wrap gap-2">
@@ -698,10 +630,6 @@ export default function DocsPage() {
         </div>
       ) : null}
 
-      {extractMsg ? (
-        <div className="rounded-3xl border bg-background p-4 text-sm shadow-sm">{extractMsg}</div>
-      ) : null}
-
       <div className="grid gap-6 xl:grid-cols-[1fr_0.95fr]">
         <div className="rounded-[28px] border bg-card/80 p-5 shadow-sm" data-tour="docs-upload">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -770,9 +698,9 @@ export default function DocsPage() {
             </div>
 
             <div className="rounded-3xl border bg-background p-4 shadow-sm">
-              <div className="text-sm font-semibold">Extraction</div>
+              <div className="text-sm font-semibold">Automatic routing</div>
               <div className="mt-2 text-sm text-muted-foreground">
-                Run extraction on a document to pull schedule events and tasks into the workspace.
+                Louis should use useful document information automatically instead of making you run a separate workflow.
               </div>
             </div>
 
@@ -912,15 +840,6 @@ export default function DocsPage() {
                         Rename
                       </button>
                     ) : null}
-
-                    <button
-                      type="button"
-                      onClick={() => onExtract(doc)}
-                      disabled={extractingId === doc.id || !selectedBotId || isEditing}
-                      className="rounded-2xl border bg-background/70 px-4 py-2 text-sm transition hover:-translate-y-[1px] hover:bg-muted disabled:opacity-50"
-                    >
-                      {extractingId === doc.id ? "Extracting..." : "Extract"}
-                    </button>
 
                     <button
                       type="button"
