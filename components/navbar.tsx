@@ -25,6 +25,8 @@ import {
   ChevronLeft,
   ChevronRight,
   PanelLeft,
+  LogIn,
+  LogOut,
 } from "lucide-react";
 import { fetchJson, FetchJsonError } from "@/lib/fetch-json";
 
@@ -253,6 +255,17 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
             </div>
 
             <div className="snap-start">
+              <div data-active={starts("/app/outreach") ? "true" : "false"}>
+                <MobileTabButton
+                  label="Outreach"
+                  icon={<Target className="h-5 w-5" />}
+                  active={starts("/app/outreach")}
+                  onGo={() => router.push("/app/outreach")}
+                />
+              </div>
+            </div>
+
+            <div className="snap-start">
               <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
                 <SheetTrigger asChild>
                   <button
@@ -348,21 +361,6 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                         type="button"
                         className={[
                           "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
-                          starts("/app/outreach") ? "bg-muted" : "",
-                        ].join(" ")}
-                        onClick={() => {
-                          setMoreOpen(false);
-                          router.push("/app/outreach");
-                        }}
-                      >
-                        <Target className="h-4 w-4" />
-                        Outreach
-                      </button>
-
-                      <button
-                        type="button"
-                        className={[
-                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                           starts("/app/support") ? "bg-muted" : "",
                         ].join(" ")}
                         onClick={() => {
@@ -452,7 +450,6 @@ function DesktopSidebarLink({
 
 export default function Navbar() {
   const pathname = usePathname();
-  const router = useRouter();
   const searchParams = useSearchParams();
 
   const [me, setMe] = useState<MeResponse | null>(null);
@@ -463,7 +460,6 @@ export default function Navbar() {
   const [docs, setDocs] = useState<DocRow[]>([]);
   const [activeBotId, setActiveBotId] = useState<string>(botFromUrl);
 
-  const [docsOpen, setDocsOpen] = useState(false);
   const [loadingBots, setLoadingBots] = useState(false);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [botsError, setBotsError] = useState<string | null>(null);
@@ -497,18 +493,15 @@ export default function Navbar() {
 
   useEffect(() => {
     function onDown(e: MouseEvent) {
-      if (!docsOpen) return;
       const el = docsPanelRef.current;
       if (!el) return;
-      if (e.target instanceof Node && !el.contains(e.target)) setDocsOpen(false);
+      if (e.target instanceof Node && !el.contains(e.target)) {
+        // noop
+      }
     }
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
-  }, [docsOpen]);
-
-  useEffect(() => {
-    setDocsOpen(false);
-  }, [pathname]);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -579,7 +572,9 @@ export default function Navbar() {
         setLoadingDocs(true);
         setDocsError(null);
 
-        const j: any = await fetchJson(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, { cache: "no-store" });
+        const j: any = await fetchJson(`/api/documents?bot_id=${encodeURIComponent(activeBotId)}`, {
+          cache: "no-store",
+        });
         const list = Array.isArray(j?.documents) ? (j.documents as DocRow[]) : [];
         if (cancelled) return;
 
@@ -663,9 +658,9 @@ export default function Navbar() {
     { href: docsHref, label: activeBotLabel, icon: <FileText className="h-5 w-5" /> },
     { href: "/app/schedule", label: "Schedule", icon: <CalendarDays className="h-5 w-5" /> },
     { href: "/app/notifications", label: "Notifications", icon: <Bell className="h-5 w-5" />, badge: notifUnread },
+    { href: "/app/outreach", label: "Outreach", icon: <Target className="h-5 w-5" /> },
     { href: "/app/email", label: "Email", icon: <Mail className="h-5 w-5" /> },
     { href: "/app/spreadsheets", label: "Spreadsheets", icon: <SheetIcon className="h-5 w-5" /> },
-    { href: "/app/outreach", label: "Outreach", icon: <Target className="h-5 w-5" /> },
     { href: "/app/bots", label: "Bots", icon: <Bot className="h-5 w-5" /> },
     { href: "/app/billing", label: "Billing", icon: <CreditCard className="h-5 w-5" /> },
     { href: "/app/support", label: "Support", icon: <LifeBuoy className="h-5 w-5" /> },
@@ -764,7 +759,6 @@ export default function Navbar() {
                     active={active}
                     collapsed={collapsed}
                     badge={item.badge}
-                    onClick={() => setDocsOpen(false)}
                   />
                 );
               })}
@@ -778,7 +772,6 @@ export default function Navbar() {
                   <Link
                     href={docsHref}
                     className="text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() => setDocsOpen(false)}
                   >
                     Open
                   </Link>
@@ -821,7 +814,6 @@ export default function Navbar() {
                           href={`/app/docs?bot_id=${encodeURIComponent(activeBotId)}&doc_id=${encodeURIComponent(d.id)}`}
                           className="px-3 py-2 text-sm hover:bg-muted"
                           title={d.filename}
-                          onClick={() => setDocsOpen(false)}
                         >
                           {shortFilename(d.filename)}
                         </Link>
@@ -881,7 +873,7 @@ export default function Navbar() {
                   aria-label="Logout"
                   title="Logout"
                 >
-                  <PanelLeft className="h-4 w-4" />
+                  <LogOut className="h-4 w-4" />
                 </button>
               ) : (
                 <Link
@@ -890,7 +882,7 @@ export default function Navbar() {
                   aria-label="Login"
                   title="Login"
                 >
-                  <PanelLeft className="h-4 w-4" />
+                  <LogIn className="h-4 w-4" />
                 </Link>
               )}
             </div>
