@@ -460,15 +460,16 @@ export default function OnboardingTour({
     const vw = typeof window !== "undefined" ? window.innerWidth : 1400;
     const vh = typeof window !== "undefined" ? window.innerHeight : 900;
     const cardWidth = Math.min(420, vw - 24);
-    const cardHeight = 320;
+    const maxCardHeight = vh - 24;
     const gap = 16;
 
     if (!targetRect || !step || step.placement === "center" || !isOnCurrentStepPage) {
       return {
-        top: 24,
+        top: 12,
         left: "50%",
         transform: "translateX(-50%)",
         width: "min(420px, calc(100% - 24px))",
+        maxHeight: `calc(100vh - 24px)`,
       } as const;
     }
 
@@ -479,34 +480,41 @@ export default function OnboardingTour({
       vw - cardWidth - 12
     );
 
+    const bottomTop = targetRect.top + targetRect.height + gap;
+    const topTop = targetRect.top - maxCardHeight + targetRect.height - gap;
+
     if (placement === "bottom") {
       return {
-        top: clamp(targetRect.top + targetRect.height + gap, 12, vh - cardHeight - 12),
+        top: clamp(bottomTop, 12, vh - maxCardHeight + 12),
         left: centeredLeft,
         width: cardWidth,
+        maxHeight: `calc(100vh - 24px)`,
       } as const;
     }
 
     if (placement === "top") {
       return {
-        top: clamp(targetRect.top - cardHeight - gap, 12, vh - cardHeight - 12),
+        top: clamp(topTop, 12, vh - maxCardHeight + 12),
         left: centeredLeft,
         width: cardWidth,
+        maxHeight: `calc(100vh - 24px)`,
       } as const;
     }
 
     if (placement === "left") {
       return {
-        top: clamp(targetRect.top + targetRect.height / 2 - cardHeight / 2, 12, vh - cardHeight - 12),
+        top: 12,
         left: clamp(targetRect.left - cardWidth - gap, 12, vw - cardWidth - 12),
         width: cardWidth,
+        maxHeight: `calc(100vh - 24px)`,
       } as const;
     }
 
     return {
-      top: clamp(targetRect.top + targetRect.height / 2 - cardHeight / 2, 12, vh - cardHeight - 12),
+      top: 12,
       left: clamp(targetRect.left + targetRect.width + gap, 12, vw - cardWidth - 12),
       width: cardWidth,
+      maxHeight: `calc(100vh - 24px)`,
     } as const;
   }
 
@@ -531,7 +539,7 @@ export default function OnboardingTour({
       )}
 
       {open && step && (
-        <div className="fixed inset-0 z-[80]">
+        <div className="fixed inset-0 z-[9998]">
           {!targetRect ? (
             <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
           ) : (
@@ -539,9 +547,9 @@ export default function OnboardingTour({
           )}
 
           <div className="pointer-events-none absolute inset-0">
-            <div className="pointer-events-auto absolute" style={getCardStyle()}>
-              <div className="overflow-hidden rounded-3xl border border-white/10 bg-card text-foreground shadow-[0_20px_80px_rgba(0,0,0,0.45)]">
-                <div className="border-b border-white/10 px-5 py-4">
+            <div className="pointer-events-auto absolute z-[9999]" style={getCardStyle()}>
+              <div className="flex max-h-[calc(100vh-24px)] flex-col overflow-hidden rounded-3xl border border-white/10 bg-card text-foreground shadow-[0_20px_80px_rgba(0,0,0,0.45)]">
+                <div className="shrink-0 border-b border-white/10 px-5 py-4">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
@@ -581,7 +589,7 @@ export default function OnboardingTour({
                   </div>
                 </div>
 
-                <div className="px-5 py-5">
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
                   <div className="rounded-2xl border border-white/10 bg-background/40 p-4">
                     <div className="mb-3 text-sm font-medium text-foreground">
                       What this part does
@@ -628,40 +636,42 @@ export default function OnboardingTour({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 px-5 py-4">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={skipTour}
-                      className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
-                    >
-                      Skip for now
-                    </button>
+                <div className="shrink-0 border-t border-white/10 px-5 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={skipTour}
+                        className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                      >
+                        Skip for now
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={prevStep}
+                        disabled={index === 0}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 px-4 py-2 text-sm font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <ArrowLeft className="h-4 w-4" />
+                        Back
+                      </button>
+                    </div>
 
                     <button
                       type="button"
-                      onClick={prevStep}
-                      disabled={index === 0}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 px-4 py-2 text-sm font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={nextStep}
+                      disabled={mustFindTarget && isOnCurrentStepPage && !targetReady}
+                      className="inline-flex items-center gap-2 rounded-2xl bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <ArrowLeft className="h-4 w-4" />
-                      Back
+                      {index === total - 1 && isOnCurrentStepPage
+                        ? "Finish"
+                        : !isOnCurrentStepPage
+                          ? "Go there"
+                          : "Next"}
+                      <ArrowRight className="h-4 w-4" />
                     </button>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={nextStep}
-                    disabled={mustFindTarget && isOnCurrentStepPage && !targetReady}
-                    className="inline-flex items-center gap-2 rounded-2xl bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {index === total - 1 && isOnCurrentStepPage
-                      ? "Finish"
-                      : !isOnCurrentStepPage
-                        ? "Go there"
-                        : "Next"}
-                    <ArrowRight className="h-4 w-4" />
-                  </button>
                 </div>
               </div>
             </div>
