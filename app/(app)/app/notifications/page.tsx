@@ -238,7 +238,7 @@ export default function NotificationsPage() {
   }
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-6" data-tour="notifications-list">
       <section className="rounded-[28px] border bg-gradient-to-br from-background via-background to-muted/40 p-6 shadow-sm">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
