@@ -24,6 +24,7 @@ import {
   LogOut,
   PanelLeft,
   Settings,
+  Target,
 } from "lucide-react";
 
 type MeResponse =
@@ -406,6 +407,21 @@ function MobileNav({ activeBotId, notifUnread }: { activeBotId: string; notifUnr
                         type="button"
                         className={[
                           "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
+                          starts("/app/outreach") ? "bg-muted" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          router.push("/app/outreach");
+                        }}
+                      >
+                        <Target className="h-4 w-4" />
+                        Outreach
+                      </button>
+
+                      <button
+                        type="button"
+                        className={[
+                          "flex items-center gap-2 rounded-xl border p-3 text-left text-sm hover:bg-muted",
                           starts("/app/settings") ? "bg-muted" : "",
                         ].join(" ")}
                         onClick={() => {
@@ -609,6 +625,7 @@ export default function Navbar() {
     { href: "/app/chat", label: "Chat", icon: <MessageSquare className="h-5 w-5" /> },
     { href: docsHref, label: activeBotLabel, icon: <FileText className="h-5 w-5" /> },
     { href: "/app/schedule", label: "Schedule", icon: <CalendarDays className="h-5 w-5" /> },
+    { href: "/app/outreach", label: "Outreach", icon: <Target className="h-5 w-5" /> },
     { href: "/app/spreadsheets", label: "Spreadsheets", icon: <SheetIcon className="h-5 w-5" /> },
     { href: "/app/notifications", label: "Notifications", icon: <Bell className="h-5 w-5" />, badge: notifUnread },
     { href: "/app/email", label: "Email", icon: <Mail className="h-5 w-5" /> },
@@ -684,7 +701,7 @@ export default function Navbar() {
           </div>
 
           <div className="flex-1 overflow-y-auto px-3 py-3">
-            <div className="space-y-1">
+            <div className="space-y-1" ref={docsPanelRef}>
               {navItems.map((item) => {
                 const active =
                   item.href.startsWith("/app/docs")
