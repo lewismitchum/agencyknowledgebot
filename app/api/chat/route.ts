@@ -62,6 +62,49 @@ function looksLikeTimeQuestion(s: string) {
   return t === "what time is it" || t.includes("current time") || t.includes("time is it");
 }
 
+function looksLikePdfGenerationRequest(s: string) {
+  const t = String(s || "").trim().toLowerCase();
+  if (!t) return false;
+
+  const pdfTerms = [
+    "pdf",
+    "export pdf",
+    "make a pdf",
+    "create a pdf",
+    "generate a pdf",
+    "turn this into a pdf",
+    "save as pdf",
+    "downloadable pdf",
+  ];
+
+  return pdfTerms.some((term) => t.includes(term));
+}
+
+function sanitizePdfFilename(name: string) {
+  const safe = String(name || "")
+    .replace(/[^a-zA-Z0-9-_ ]+/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
+  return safe || "louis-chat-export";
+}
+
+function buildPdfTitleFromMessage(message: string, botName?: string | null) {
+  const raw = String(message || "").trim();
+  const cleaned = raw
+    .replace(/\b(create|make|generate|export|turn|save|download)\b/gi, "")
+    .replace(/\b(a|an|as|to|this|into|me)\b/gi, "")
+    .replace(/\bpdf\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleaned) {
+    return cleaned.length > 90 ? `${cleaned.slice(0, 90).trim()}...` : cleaned;
+  }
+
+  return botName ? `${botName} PDF` : "Louis PDF";
+}
+
 async function ensureOnboardingColumns(db: Db) {
   const columns = (await db.all(`PRAGMA table_info(users)`)) as Array<{ name?: string }>;
   const hasSentFirstChat = columns.some((c) => c?.name === "sent_first_chat");
@@ -526,7 +569,7 @@ export async function POST(req: NextRequest) {
     if (!gate.ok) return Response.json(gate.body, { status: gate.status });
 
     const bot = (await db.get(
-      `SELECT id, vector_store_id
+      `SELECT id, name, vector_store_id
        FROM bots
        WHERE id = ? AND agency_id = ?
          AND (owner_user_id IS NULL OR owner_user_id = ?)
@@ -534,7 +577,7 @@ export async function POST(req: NextRequest) {
       bot_id,
       ctx.agencyId,
       ctx.userId
-    )) as { id?: string; vector_store_id?: string | null } | undefined;
+    )) as { id?: string; name?: string | null; vector_store_id?: string | null } | undefined;
 
     if (!bot?.id) return Response.json({ error: "Bot not found" }, { status: 404 });
 
@@ -557,6 +600,7 @@ export async function POST(req: NextRequest) {
       botId: bot_id,
     });
 
+    const pdfRequested = looksLikePdfGenerationRequest(message);
     const pdfTitles = inputFiles.filter((f) => isPdfMime(f.mime_type)).map((f) => f.title);
     const docTitles = inputFiles.filter((f) => !isPdfMime(f.mime_type)).map((f) => f.title);
 
@@ -584,7 +628,11 @@ export async function POST(req: NextRequest) {
       messages: recent,
     });
 
-    let answer: string;
+    let answer = "";
+    let pdfReady = false;
+    let pdfTitle = "";
+    let pdfFilename = "";
+    let pdfText = "";
 
     if (looksLikeTimeQuestion(message)) {
       answer = timeStringInTz(now, tz);
@@ -627,6 +675,19 @@ export async function POST(req: NextRequest) {
         internal && bot.vector_store_id
           ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }]
           : [];
+
+      const pdfInstruction = pdfRequested
+        ? `
+PDF MODE:
+- The user wants a real downloadable PDF.
+- Do NOT say things like "I will create a PDF", "I can create a PDF", or "here is the finalized text I will include".
+- Instead, write ONLY the final PDF body content itself.
+- No preamble.
+- No markdown fences.
+- No commentary about downloading.
+- Make it clean and presentation-ready.
+`
+        : "";
 
       const fallbackInstruction = internal
         ? `If the question is internal/business, prefer file_search first when available.
@@ -675,6 +736,7 @@ Behavior:
 - Never fabricate internal/company-specific details.
 - ${mediaHint}
 - ${fallbackInstruction}
+${pdfInstruction}
 `.trim(),
         input: inputBlocks,
         tools: toolsAttempt1,
@@ -714,6 +776,7 @@ Behavior:
 - Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents or attached files.
 - Do NOT use this exact sentence in your reply: ${FALLBACK}
 - Be direct. No questions like "Would you like me to look it up?" — just answer.
+${pdfInstruction}
 
 ${mediaHint}
 `.trim(),
@@ -726,6 +789,14 @@ ${mediaHint}
 
           answer = modelText2 && modelText2 !== FALLBACK ? modelText2 : "Sorry — I couldn’t generate a response.";
         }
+      }
+
+      if (pdfRequested && answer && answer !== FALLBACK && !answer.toLowerCase().includes("i will create a pdf")) {
+        pdfReady = true;
+        pdfTitle = buildPdfTitleFromMessage(message, bot.name ?? null);
+        pdfFilename = sanitizePdfFilename(pdfTitle);
+        pdfText = answer;
+        answer = `Your PDF is ready. The download should start automatically.`;
       }
     }
 
@@ -812,6 +883,10 @@ ${mediaHint}
     return Response.json({
       ok: true,
       answer,
+      pdf_ready: pdfReady,
+      pdf_title: pdfTitle || undefined,
+      pdf_filename: pdfFilename || undefined,
+      pdf_text: pdfText || undefined,
       usage: {
         used: Number(usageAfter.messages_count ?? 0),
         daily_limit: dailyLimitUi,

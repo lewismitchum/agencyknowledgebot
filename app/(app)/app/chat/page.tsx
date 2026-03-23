@@ -41,6 +41,22 @@ type Attachment = {
   kind: AttachmentKind;
 };
 
+type ChatResp = {
+  ok?: boolean;
+  answer?: string;
+  text?: string;
+  bot_id?: string;
+  pdf_ready?: boolean;
+  pdf_title?: string;
+  pdf_filename?: string;
+  pdf_text?: string;
+  usage?: {
+    used?: number;
+    daily_limit?: number | null;
+  };
+  daily_remaining?: number | null;
+};
+
 class HttpError extends Error {
   status: number;
   statusText: string;
@@ -376,6 +392,49 @@ function buildExportText(messages: Msg[], botName: string) {
   return lines.join("\n").trim();
 }
 
+async function downloadPdfFromPayload(args: {
+  title: string;
+  filename: string;
+  text: string;
+  tzHeader: Record<string, string>;
+}) {
+  const res = await fetch("/api/chat/export-pdf", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...args.tzHeader },
+    body: JSON.stringify({
+      title: args.title,
+      filename: args.filename,
+      text: args.text,
+    }),
+  });
+
+  if (res.status === 401) {
+    window.location.href = "/login";
+    return;
+  }
+
+  if (!res.ok) {
+    const body = await safeJson(res);
+    throw new Error(String((body as any)?.message || (body as any)?.error || "Failed to export PDF"));
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  const blob = new Blob([arrayBuffer], { type: "application/pdf" });
+  const downloadUrl = window.URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = downloadUrl;
+  a.download = `${args.filename.replace(/[^a-zA-Z0-9-_]+/g, "-")}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  setTimeout(() => {
+    window.URL.revokeObjectURL(downloadUrl);
+  }, 1000);
+}
+
 export default function ChatPage() {
   const [email, setEmail] = useState<string | null>(null);
   const [emailVerified, setEmailVerified] = useState(false);
@@ -706,7 +765,7 @@ export default function ChatPage() {
     setAttachments((prev) => prev.filter((a) => a.document_id !== documentId));
   }
 
-    async function exportPdf() {
+  async function exportPdf() {
     if (!messages.length || exportingPdf) return;
 
     setExportingPdf(true);
@@ -716,41 +775,12 @@ export default function ChatPage() {
       const title = selectedBotName ? `${selectedBotName} Chat Export` : "Louis Chat Export";
       const text = buildExportText(messages, selectedBotName);
 
-      const res = await fetch("/api/chat/export-pdf", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json", ...tzHeader },
-        body: JSON.stringify({
-          title,
-          filename: title,
-          text,
-        }),
+      await downloadPdfFromPayload({
+        title,
+        filename: title,
+        text,
+        tzHeader,
       });
-
-      if (res.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-
-      if (!res.ok) {
-        const body = await safeJson(res);
-        throw new Error(String((body as any)?.message || (body as any)?.error || "Failed to export PDF"));
-      }
-
-      const arrayBuffer = await res.arrayBuffer();
-      const blob = new Blob([arrayBuffer], { type: "application/pdf" });
-      const downloadUrl = window.URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = `${title.replace(/[^a-zA-Z0-9-_]+/g, "-")}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-
-      setTimeout(() => {
-        window.URL.revokeObjectURL(downloadUrl);
-      }, 1000);
     } catch (e: any) {
       setAttachError(String(e?.message ?? e ?? "Failed to export PDF"));
     } finally {
@@ -774,7 +804,7 @@ export default function ChatPage() {
     setAttachError("");
 
     try {
-      const j: any = await getJson("/api/chat", {
+      const j = await getJson<ChatResp>("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...tzHeader },
         body: JSON.stringify({
@@ -789,10 +819,23 @@ export default function ChatPage() {
         return;
       }
 
-      setMessages((m: Msg[]) => [...m, { role: "assistant", text: String(j?.answer ?? j?.text ?? "") }]);
+      const assistantText = String(j?.answer ?? j?.text ?? "");
+      setMessages((m: Msg[]) => [...m, { role: "assistant", text: assistantText }]);
+
+      if (j?.pdf_ready && j.pdf_text) {
+        try {
+          await downloadPdfFromPayload({
+            title: String(j.pdf_title || "Louis PDF"),
+            filename: String(j.pdf_filename || j.pdf_title || "louis-pdf"),
+            text: String(j.pdf_text),
+            tzHeader,
+          });
+        } catch (pdfErr: any) {
+          setAttachError(String(pdfErr?.message ?? pdfErr ?? "Failed to download generated PDF"));
+        }
+      }
 
       setAttachments([]);
-
       setUsageLoaded(true);
 
       if (j?.usage && typeof j.usage === "object") {
