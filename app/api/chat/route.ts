@@ -595,6 +595,7 @@ export async function POST(req: NextRequest) {
       const hasInputFiles = inputFiles.length > 0;
       const hasPdfs = pdfTitles.length > 0;
       const hasVideos = videoTitles.length > 0;
+      const hasRollingMemory = !!String(memoryContext.compiledMemory || "").trim();
 
       const mediaHintParts: string[] = [];
 
@@ -628,9 +629,11 @@ export async function POST(req: NextRequest) {
           : [];
 
       const fallbackInstruction = internal
-        ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
-${FALLBACK}
-Do not add extra words before or after the fallback.`
+        ? `If the question is internal/business, prefer file_search first when available.
+If file_search finds relevant evidence, use it.
+If file_search does NOT find relevant evidence, you may still answer from attached images, attached PDFs/files, or rolling memory when those provide enough grounded support.
+Only reply exactly with this fallback when there is truly not enough grounded support from docs, attached inputs, or rolling memory:
+${FALLBACK}`
         : `This is NOT an internal/business question. Answer normally using general knowledge and reasoning.
 You MAY use web_search for up-to-date facts.
 Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents or attached files.
@@ -666,7 +669,8 @@ You are Louis.Ai.
 
 Behavior:
 - Use the rolling memory provided in the conversation input as persistent context.
-- If the question is internal/business related to the user's organization, use uploaded docs via file_search.
+- If the question is internal/business related to the user's organization, prefer uploaded docs via file_search first when available, but do NOT behave as docs-only.
+- You may answer internal questions from attached images, attached PDFs/files, or rolling memory when they provide enough grounded support.
 - If the question is NOT internal, answer normally using general knowledge and reasoning.
 - Never fabricate internal/company-specific details.
 - ${mediaHint}
@@ -680,14 +684,17 @@ Behavior:
         typeof resp1.output_text === "string" && resp1.output_text.trim().length > 0 ? resp1.output_text.trim() : "";
 
       const hasEvidence1 = toolsAttempt1.length > 0 ? responseHasFileSearchEvidence(resp1) : false;
+      const hasDirectGrounding = hasImages || hasInputFiles;
+      const hasAnyGrounding = hasEvidence1 || hasDirectGrounding || hasRollingMemory;
+      const modelLooksGrounded = !!modelText1 && modelText1 !== FALLBACK && !looksLikeDocAbsenceClaim(modelText1);
 
       if (internal) {
-        if (toolsAttempt1.length === 0) {
-          answer = FALLBACK;
-        } else if (!hasEvidence1) {
-          answer = FALLBACK;
-        } else {
+        if (hasEvidence1) {
           answer = modelText1 || FALLBACK;
+        } else if (hasAnyGrounding && modelLooksGrounded) {
+          answer = modelText1;
+        } else {
+          answer = FALLBACK;
         }
       } else {
         const needsRetry = looksLikeDocAbsenceClaim(modelText1) || modelText1 === FALLBACK;
@@ -784,7 +791,6 @@ ${mediaHint}
       }
 
       if (nextSummary && nextSummary.trim().length) {
-        await db.exec("BEGIN");
         try {
           await db.run(
             `UPDATE conversations
@@ -796,11 +802,7 @@ ${mediaHint}
           );
 
           await db.run(`DELETE FROM conversation_messages WHERE conversation_id = ?`, convo.id);
-
-          await db.exec("COMMIT");
-        } catch {
-          await db.exec("ROLLBACK");
-        }
+        } catch {}
       }
     }
 
