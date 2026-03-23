@@ -706,7 +706,7 @@ export default function ChatPage() {
     setAttachments((prev) => prev.filter((a) => a.document_id !== documentId));
   }
 
-  async function exportPdf() {
+    async function exportPdf() {
     if (!messages.length || exportingPdf) return;
 
     setExportingPdf(true);
@@ -737,15 +737,20 @@ export default function ChatPage() {
         throw new Error(String((body as any)?.message || (body as any)?.error || "Failed to export PDF"));
       }
 
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      const arrayBuffer = await res.arrayBuffer();
+      const blob = new Blob([arrayBuffer], { type: "application/pdf" });
+      const downloadUrl = window.URL.createObjectURL(blob);
+
       const a = document.createElement("a");
-      a.href = url;
+      a.href = downloadUrl;
       a.download = `${title.replace(/[^a-zA-Z0-9-_]+/g, "-")}.pdf`;
       document.body.appendChild(a);
       a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      setTimeout(() => {
+        window.URL.revokeObjectURL(downloadUrl);
+      }, 1000);
     } catch (e: any) {
       setAttachError(String(e?.message ?? e ?? "Failed to export PDF"));
     } finally {

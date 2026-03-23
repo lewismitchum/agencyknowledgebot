@@ -14,159 +14,167 @@ function compact(v: unknown) {
   return String(v ?? "").replace(/\r\n/g, "\n").trim();
 }
 
+function sanitizeFilename(name: string) {
+  const safe = String(name || "")
+    .replace(/[^a-zA-Z0-9-_ ]+/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+  return safe || "chat-export";
+}
+
 function escapePdfText(s: string) {
   return s.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
 }
 
-function sanitizeFilename(name: string) {
-  const safe = name.replace(/[^a-zA-Z0-9-_]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-  return safe || "chat-export";
+function wrapLine(text: string, maxChars: number) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length <= maxChars) {
+      current = next;
+    } else {
+      if (current) lines.push(current);
+      if (word.length <= maxChars) {
+        current = word;
+      } else {
+        let rest = word;
+        while (rest.length > maxChars) {
+          lines.push(rest.slice(0, maxChars));
+          rest = rest.slice(maxChars);
+        }
+        current = rest;
+      }
+    }
+  }
+
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
 }
 
 function wrapText(text: string, maxChars: number) {
-  const paragraphs = text.split("\n");
-  const lines: string[] = [];
+  const rawLines = String(text || "").split("\n");
+  const out: string[] = [];
 
-  for (const paragraph of paragraphs) {
-    if (!paragraph.trim()) {
-      lines.push("");
+  for (const raw of rawLines) {
+    if (!raw.trim()) {
+      out.push("");
       continue;
     }
-
-    const words = paragraph.split(/\s+/).filter(Boolean);
-    let current = "";
-
-    for (const word of words) {
-      const next = current ? `${current} ${word}` : word;
-      if (next.length <= maxChars) {
-        current = next;
-      } else {
-        if (current) lines.push(current);
-        if (word.length <= maxChars) {
-          current = word;
-        } else {
-          let rest = word;
-          while (rest.length > maxChars) {
-            lines.push(rest.slice(0, maxChars));
-            rest = rest.slice(maxChars);
-          }
-          current = rest;
-        }
-      }
-    }
-
-    if (current) lines.push(current);
+    out.push(...wrapLine(raw, maxChars));
   }
 
-  return lines;
+  return out;
 }
 
-function buildPdfBytes(title: string, body: string) {
+function buildPdfBuffer(title: string, body: string) {
   const pageWidth = 612;
   const pageHeight = 792;
   const marginLeft = 54;
   const marginTop = 60;
-  const lineHeight = 16;
-  const fontSize = 11;
-  const titleSize = 16;
+  const marginBottom = 54;
+  const titleFontSize = 18;
+  const bodyFontSize = 11;
+  const titleLineHeight = 24;
+  const bodyLineHeight = 16;
   const maxChars = 92;
 
-  const titleLines = wrapText(title, 60);
+  const titleLines = wrapText(title, 48);
   const bodyLines = wrapText(body, maxChars);
 
   const pages: string[][] = [];
   let currentPage: string[] = [];
-  let currentY = pageHeight - marginTop;
+  let y = pageHeight - marginTop;
 
-  function pushLine(text: string, size = fontSize) {
-    if (currentY < 54) {
+  const pushText = (text: string, fontSize: number) => {
+    const safe = escapePdfText(text);
+    currentPage.push(`BT /F1 ${fontSize} Tf 1 0 0 1 ${marginLeft} ${y} Tm (${safe}) Tj ET`);
+  };
+
+  const ensureSpace = (neededHeight: number) => {
+    if (y - neededHeight < marginBottom) {
       pages.push(currentPage);
       currentPage = [];
-      currentY = pageHeight - marginTop;
+      y = pageHeight - marginTop;
     }
-
-    currentPage.push(`BT /F1 ${size} Tf 1 0 0 1 ${marginLeft} ${currentY} Tm (${escapePdfText(text)}) Tj ET`);
-    currentY -= size === titleSize ? 22 : lineHeight;
-  }
+  };
 
   for (const line of titleLines) {
-    pushLine(line, titleSize);
+    ensureSpace(titleLineHeight);
+    pushText(line, titleFontSize);
+    y -= titleLineHeight;
   }
 
-  currentY -= 8;
+  y -= 8;
 
   for (const line of bodyLines) {
-    pushLine(line || " ", fontSize);
+    ensureSpace(bodyLineHeight);
+    pushText(line || " ", bodyFontSize);
+    y -= bodyLineHeight;
   }
 
-  if (currentPage.length) {
-    pages.push(currentPage);
+  if (currentPage.length === 0) {
+    currentPage.push(`BT /F1 ${bodyFontSize} Tf 1 0 0 1 ${marginLeft} ${pageHeight - marginTop} Tm ( ) Tj ET`);
   }
+
+  pages.push(currentPage);
 
   const objects: string[] = [];
-  const pageIds: number[] = [];
-  let objectNumber = 1;
-
-  objects.push(`1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj`);
-  objects.push(`2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj`);
-  objectNumber = 3;
-
+  const pageObjectIds: number[] = [];
   const contentObjectIds: number[] = [];
 
-  for (const pageLines of pages) {
-    const pageId = objectNumber++;
-    const contentId = objectNumber++;
-    pageIds.push(pageId);
-    contentObjectIds.push(contentId);
+  const fontObjectId = 3;
+  let nextId = 4;
 
-    const stream = pageLines.join("\n");
-    const streamLength = Buffer.byteLength(stream, "utf8");
-
-    objects.push(
-      `${pageId} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${objectNumber} 0 R >> >> /Contents ${contentId} 0 R >> endobj`
-    );
-    objects.push(`${contentId} 0 obj << /Length ${streamLength} >> stream
-${stream}
-endstream
-endobj`);
+  for (let i = 0; i < pages.length; i++) {
+    pageObjectIds.push(nextId++);
+    contentObjectIds.push(nextId++);
   }
 
-  const fontId = objectNumber++;
-  objects.push(`${fontId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj`);
+  objects[1] = `1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj`;
+  objects[2] = `2 0 obj << /Type /Pages /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageObjectIds.length} >> endobj`;
+  objects[3] = `3 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj`;
 
-  const kids = pageIds.map((id) => `${id} 0 R`).join(" ");
-  objects[1] = `2 0 obj << /Type /Pages /Kids [${kids}] /Count ${pageIds.length} >> endobj`;
+  for (let i = 0; i < pages.length; i++) {
+    const pageId = pageObjectIds[i];
+    const contentId = contentObjectIds[i];
+    const stream = pages[i].join("\n");
+    const length = Buffer.byteLength(stream, "utf8");
 
-  const fullObjects = objects.map((obj, index) => {
-    if (index >= 2 && index < 2 + pageIds.length * 2) {
-      return obj.replace(`${objectNumber - 1} 0 R`, `${fontId} 0 R`);
-    }
-    return obj;
-  });
+    objects[pageId] =
+      `${pageId} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] ` +
+      `/Resources << /Font << /F1 ${fontObjectId} 0 R >> >> /Contents ${contentId} 0 R >> endobj`;
 
-  let pdf = `%PDF-1.4\n`;
-  const offsets: number[] = [0];
+    objects[contentId] =
+      `${contentId} 0 obj << /Length ${length} >> stream\n${stream}\nendstream\nendobj`;
+  }
 
-  for (const obj of fullObjects) {
-    offsets.push(Buffer.byteLength(pdf, "utf8"));
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  offsets[0] = 0;
+
+  for (let i = 1; i < objects.length; i++) {
+    const obj = objects[i];
+    if (!obj) continue;
+    offsets[i] = Buffer.byteLength(pdf, "utf8");
     pdf += `${obj}\n`;
   }
 
-  const xrefOffset = Buffer.byteLength(pdf, "utf8");
-  pdf += `xref
-0 ${fullObjects.length + 1}
-0000000000 65535 f 
-`;
+  const maxObjectId = objects.length - 1;
+  const xrefStart = Buffer.byteLength(pdf, "utf8");
 
-  for (let i = 1; i <= fullObjects.length; i++) {
-    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n 
-`;
+  pdf += `xref\n0 ${maxObjectId + 1}\n`;
+  pdf += `0000000000 65535 f \n`;
+
+  for (let i = 1; i <= maxObjectId; i++) {
+    const offset = offsets[i] ?? 0;
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
   }
 
-  pdf += `trailer << /Size ${fullObjects.length + 1} /Root 1 0 R >>
-startxref
-${xrefOffset}
-%%EOF`;
+  pdf += `trailer << /Size ${maxObjectId + 1} /Root 1 0 R >>\n`;
+  pdf += `startxref\n${xrefStart}\n%%EOF`;
 
   return Buffer.from(pdf, "utf8");
 }
@@ -184,14 +192,17 @@ export async function POST(req: NextRequest) {
     }
 
     const filename = `${sanitizeFilename(compact(body?.filename) || title)}.pdf`;
-    const pdf = buildPdfBytes(title, text);
+    const pdfBuffer = buildPdfBuffer(title, text);
 
-    return new Response(pdf, {
+    return new Response(pdfBuffer, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "no-store",
+        "Content-Length": String(pdfBuffer.length),
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
       },
     });
   } catch (err: any) {
