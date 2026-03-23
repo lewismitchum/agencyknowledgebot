@@ -10,6 +10,7 @@ import { enforceDailyMessages, getAgencyPlan } from "@/lib/enforcement";
 import { getEffectiveTimezone, ymdInTz, timeStringInTz } from "@/lib/timezone";
 import { buildChatMemoryContext, ensureMemoryStoreSchema, updateRollingMemoriesAfterTurn } from "@/lib/chat-memory";
 import { decayScopeMemories } from "@/lib/memory-decay";
+import { getVideoContextForAttachments } from "@/lib/video-extract";
 
 export const runtime = "nodejs";
 
@@ -533,6 +534,32 @@ function looksLikeDocAbsenceClaim(text: string) {
   return badPhrases.some((p) => t.includes(p));
 }
 
+function buildVideoContextBlock(
+  rows: Array<{
+    document_id: string;
+    transcript: string;
+    frames_summary: string;
+    video_summary: string;
+    status: string;
+  }>
+) {
+  const usable = rows.filter((r) => {
+    return !!String(r.video_summary || r.transcript || r.frames_summary || "").trim();
+  });
+
+  if (!usable.length) return "";
+
+  return usable
+    .map((row, idx) => {
+      const parts: string[] = [];
+      if (row.video_summary) parts.push(`Summary: ${row.video_summary}`);
+      if (row.frames_summary) parts.push(`Frames: ${row.frames_summary}`);
+      if (row.transcript) parts.push(`Transcript: ${row.transcript}`);
+      return `[VIDEO CONTEXT ${idx + 1}]\nStatus: ${row.status || "unknown"}\n${parts.join("\n")}`;
+    })
+    .join("\n\n");
+}
+
 export async function GET() {
   return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405 });
 }
@@ -594,6 +621,14 @@ export async function POST(req: NextRequest) {
       ids: rawAttach,
     });
 
+    const videoContextRows = await getVideoContextForAttachments(db, {
+      agencyId: ctx.agencyId,
+      botId: bot_id,
+      documentIds: rawAttach,
+    });
+
+    const videoContextBlock = buildVideoContextBlock(videoContextRows);
+
     const convo = await getOrCreateConversation(db, {
       agencyId: ctx.agencyId,
       userId: ctx.userId,
@@ -609,6 +644,7 @@ export async function POST(req: NextRequest) {
     if (pdfTitles.length) attachLines.push(`PDFs: ${pdfTitles.join(", ")}`);
     if (docTitles.length) attachLines.push(`Files: ${docTitles.join(", ")}`);
     if (videoTitles.length) attachLines.push(`Videos: ${videoTitles.join(", ")}`);
+    if (videoContextBlock) attachLines.push(`Video extraction: available`);
 
     const attachNote = attachLines.length ? `\n\n[Attachments]\n${attachLines.join("\n")}\n` : "";
 
@@ -623,10 +659,18 @@ export async function POST(req: NextRequest) {
       conversationSummary: convo.summary,
     });
 
-    const openaiInputText = buildMemoryInput({
+    let openaiInputText = buildMemoryInput({
       compiledMemory: memoryContext.compiledMemory,
       messages: recent,
     });
+
+    if (videoContextBlock) {
+      openaiInputText += `
+
+[EXTRACTED VIDEO CONTEXT — USE WHEN RELEVANT]
+${videoContextBlock}
+`;
+    }
 
     let answer = "";
     let pdfReady = false;
@@ -643,6 +687,7 @@ export async function POST(req: NextRequest) {
       const hasInputFiles = inputFiles.length > 0;
       const hasPdfs = pdfTitles.length > 0;
       const hasVideos = videoTitles.length > 0;
+      const hasVideoContext = !!videoContextBlock.trim();
       const hasRollingMemory = !!String(memoryContext.compiledMemory || "").trim();
 
       const mediaHintParts: string[] = [];
@@ -659,14 +704,18 @@ export async function POST(req: NextRequest) {
         mediaHintParts.push("The user attached one or more files. Read them directly when relevant.");
       }
 
-      if (hasVideos) {
+      if (hasVideos && hasVideoContext) {
         mediaHintParts.push(
-          "The user attached one or more videos. Direct video reasoning is not enabled in this route yet, so be honest about that and use any attached docs, images, filenames, or surrounding context."
+          "The user attached one or more videos and extracted video context is available below. Use the video transcript, frame summary, and video summary as grounded support."
+        );
+      } else if (hasVideos) {
+        mediaHintParts.push(
+          "The user attached one or more videos. Direct raw video reasoning is not enabled, so be honest about that and use any extracted video context if present, plus filenames and surrounding context."
         );
       }
 
       if (!mediaHintParts.length) {
-        mediaHintParts.push("If the user asks about the contents of an image, PDF, or video file, be honest about limitations.");
+        mediaHintParts.push("If the user asks about the contents of an image, PDF, file, or video, be honest about limitations.");
       }
 
       const mediaHint = mediaHintParts.join(" ");
@@ -692,8 +741,8 @@ PDF MODE:
       const fallbackInstruction = internal
         ? `If the question is internal/business, prefer file_search first when available.
 If file_search finds relevant evidence, use it.
-If file_search does NOT find relevant evidence, you may still answer from attached images, attached PDFs/files, or rolling memory when those provide enough grounded support.
-Only reply exactly with this fallback when there is truly not enough grounded support from docs, attached inputs, or rolling memory:
+If file_search does NOT find relevant evidence, you may still answer from attached images, attached PDFs/files, extracted video context, or rolling memory when those provide enough grounded support.
+Only reply exactly with this fallback when there is truly not enough grounded support from docs, attached inputs, extracted video context, or rolling memory:
 ${FALLBACK}`
         : `This is NOT an internal/business question. Answer normally using general knowledge and reasoning.
 You MAY use web_search for up-to-date facts.
@@ -731,7 +780,7 @@ You are Louis.Ai.
 Behavior:
 - Use the rolling memory provided in the conversation input as persistent context.
 - If the question is internal/business related to the user's organization, prefer uploaded docs via file_search first when available, but do NOT behave as docs-only.
-- You may answer internal questions from attached images, attached PDFs/files, or rolling memory when they provide enough grounded support.
+- You may answer internal questions from attached images, attached PDFs/files, extracted video context, or rolling memory when they provide enough grounded support.
 - If the question is NOT internal, answer normally using general knowledge and reasoning.
 - Never fabricate internal/company-specific details.
 - ${mediaHint}
@@ -746,7 +795,7 @@ ${pdfInstruction}
         typeof resp1.output_text === "string" && resp1.output_text.trim().length > 0 ? resp1.output_text.trim() : "";
 
       const hasEvidence1 = toolsAttempt1.length > 0 ? responseHasFileSearchEvidence(resp1) : false;
-      const hasDirectGrounding = hasImages || hasInputFiles;
+      const hasDirectGrounding = hasImages || hasInputFiles || hasVideoContext;
       const hasAnyGrounding = hasEvidence1 || hasDirectGrounding || hasRollingMemory;
       const modelLooksGrounded = !!modelText1 && modelText1 !== FALLBACK && !looksLikeDocAbsenceClaim(modelText1);
 
