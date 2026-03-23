@@ -327,30 +327,23 @@ export async function updateRollingMemoriesAfterTurn(db: Db, args: {
     nextUser = compact(user.content);
   }
 
-  await db.exec("BEGIN");
-  try {
-    await db.run(
-      `UPDATE memory_store
-       SET content = ?, last_used_at = ?, last_updated_at = ?
-       WHERE id = ?`,
-      nextAgency,
-      nowIso(),
-      nowIso(),
-      agency.id
-    );
+  await db.run(
+    `UPDATE memory_store
+     SET content = ?, last_used_at = ?, last_updated_at = ?
+     WHERE id = ?`,
+    nextAgency,
+    nowIso(),
+    nowIso(),
+    agency.id
+  );
 
-    await db.run(
-      `UPDATE memory_store
-       SET content = ?, last_used_at = ?, last_updated_at = ?
-       WHERE id = ?`,
-      nextUser,
-      nowIso(),
-      nowIso(),
-      user.id
-    );
-
-    await db.exec("COMMIT");
-  } catch {
-    await db.exec("ROLLBACK");
-  }
+  await db.run(
+    `UPDATE memory_store
+     SET content = ?, last_used_at = ?, last_updated_at = ?
+     WHERE id = ?`,
+    nextUser,
+    nowIso(),
+    nowIso(),
+    user.id
+  );
 }
