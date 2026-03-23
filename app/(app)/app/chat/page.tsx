@@ -6,12 +6,15 @@ import {
   Bot,
   Clock3,
   FileText,
+  Film,
+  ImageIcon,
   MessageSquare,
   Paperclip,
   Plus,
   Send,
   ShieldCheck,
   Sparkles,
+  Download,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -30,9 +33,12 @@ type UploadResp = {
   message?: string;
 };
 
+type AttachmentKind = "image" | "video" | "pdf" | "file";
+
 type Attachment = {
   document_id: string;
   filename: string;
+  kind: AttachmentKind;
 };
 
 class HttpError extends Error {
@@ -326,6 +332,50 @@ function TopPill({
   );
 }
 
+function getAttachmentKind(filename: string): AttachmentKind {
+  const lower = String(filename || "").toLowerCase().trim();
+  if (/\.(png|jpg|jpeg|gif|webp|bmp|svg|heic)$/.test(lower)) return "image";
+  if (/\.(mp4|mov|avi|mkv|webm|m4v)$/.test(lower)) return "video";
+  if (/\.pdf$/.test(lower)) return "pdf";
+  return "file";
+}
+
+function attachmentKindLabel(kind: AttachmentKind) {
+  if (kind === "image") return "Image";
+  if (kind === "video") return "Video";
+  if (kind === "pdf") return "PDF";
+  return "File";
+}
+
+function attachmentKindIcon(kind: AttachmentKind) {
+  if (kind === "image") return <ImageIcon className="h-3.5 w-3.5" />;
+  if (kind === "video") return <Film className="h-3.5 w-3.5" />;
+  if (kind === "pdf") return <FileText className="h-3.5 w-3.5" />;
+  return <Paperclip className="h-3.5 w-3.5" />;
+}
+
+function attachmentTone(kind: AttachmentKind) {
+  if (kind === "image") return "bg-blue-50 border-blue-200 text-blue-700";
+  if (kind === "video") return "bg-purple-50 border-purple-200 text-purple-700";
+  if (kind === "pdf") return "bg-amber-50 border-amber-200 text-amber-700";
+  return "bg-muted border-border text-foreground";
+}
+
+function buildExportText(messages: Msg[], botName: string) {
+  const lines: string[] = [];
+  if (botName) lines.push(`Bot: ${botName}`);
+  lines.push(`Exported: ${new Date().toLocaleString()}`);
+  lines.push("");
+
+  for (const m of messages) {
+    lines.push(`${m.role === "user" ? "User" : "Louis"}:`);
+    lines.push(m.text || "");
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
 export default function ChatPage() {
   const [email, setEmail] = useState<string | null>(null);
   const [emailVerified, setEmailVerified] = useState(false);
@@ -356,6 +406,7 @@ export default function ChatPage() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [attachError, setAttachError] = useState("");
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -370,6 +421,15 @@ export default function ChatPage() {
     const tz = String(clientTimezone || "").trim() || "America/Chicago";
     return { "X-User-Timezone": tz };
   }, [clientTimezone]);
+
+  const attachmentStats = useMemo(() => {
+    return {
+      images: attachments.filter((a) => a.kind === "image").length,
+      videos: attachments.filter((a) => a.kind === "video").length,
+      pdfs: attachments.filter((a) => a.kind === "pdf").length,
+      files: attachments.filter((a) => a.kind === "file").length,
+    };
+  }, [attachments]);
 
   useEffect(() => {
     const initialFromUrl = getBotIdFromUrl();
@@ -613,10 +673,14 @@ export default function ChatPage() {
 
       const rows = Array.isArray(j.uploaded) ? j.uploaded : [];
       const next: Attachment[] = rows
-        .map((x) => ({
-          document_id: String(x?.document_id || "").trim(),
-          filename: String(x?.filename || "file").trim(),
-        }))
+        .map((x) => {
+          const filename = String(x?.filename || "file").trim();
+          return {
+            document_id: String(x?.document_id || "").trim(),
+            filename,
+            kind: getAttachmentKind(filename),
+          };
+        })
         .filter((x) => x.document_id);
 
       if (next.length) {
@@ -642,6 +706,53 @@ export default function ChatPage() {
     setAttachments((prev) => prev.filter((a) => a.document_id !== documentId));
   }
 
+  async function exportPdf() {
+    if (!messages.length || exportingPdf) return;
+
+    setExportingPdf(true);
+    setAttachError("");
+
+    try {
+      const title = selectedBotName ? `${selectedBotName} Chat Export` : "Louis Chat Export";
+      const text = buildExportText(messages, selectedBotName);
+
+      const res = await fetch("/api/chat/export-pdf", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...tzHeader },
+        body: JSON.stringify({
+          title,
+          filename: title,
+          text,
+        }),
+      });
+
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+
+      if (!res.ok) {
+        const body = await safeJson(res);
+        throw new Error(String((body as any)?.message || (body as any)?.error || "Failed to export PDF"));
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${title.replace(/[^a-zA-Z0-9-_]+/g, "-")}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setAttachError(String(e?.message ?? e ?? "Failed to export PDF"));
+    } finally {
+      setExportingPdf(false);
+    }
+  }
+
   async function send() {
     if (!selectedBotId) return;
     if (!input.trim() || loading) return;
@@ -660,7 +771,7 @@ export default function ChatPage() {
     try {
       const j: any = await getJson("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...tzHeader },
         body: JSON.stringify({
           message: userMsg,
           bot_id: selectedBotId,
@@ -741,7 +852,7 @@ export default function ChatPage() {
     try {
       await getJson("/api/conversation/reset", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...tzHeader },
         body: JSON.stringify({ bot_id: selectedBotId }),
       });
     } catch (e: any) {
@@ -877,7 +988,7 @@ export default function ChatPage() {
             </div>
           </div>
 
-          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[280px]">
+          <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[320px]">
             <div className="rounded-2xl border bg-background/60 p-3 backdrop-blur">
               <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Active bot</div>
               <div className="mt-2 flex items-center gap-2 text-sm font-medium">
@@ -890,6 +1001,15 @@ export default function ChatPage() {
               <Button variant="outline" className="flex-1 rounded-2xl" onClick={newChat} disabled={!selectedBotId}>
                 <Plus className="mr-2 h-4 w-4" />
                 New chat
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1 rounded-2xl"
+                onClick={exportPdf}
+                disabled={!messages.length || exportingPdf}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                {exportingPdf ? "Exporting…" : "Export PDF"}
               </Button>
               <Button asChild variant="outline" className="flex-1 rounded-2xl">
                 <Link href="/app/bots">Manage bots</Link>
@@ -932,7 +1052,8 @@ export default function ChatPage() {
             <div>
               <CardTitle className="text-xl tracking-tight">Workspace chat</CardTitle>
               <CardDescription className="mt-1">
-                Ask internal questions, attach docs, and keep conversation history tied to the selected bot.
+                Ask internal questions, attach images, PDFs, files, or videos, and keep conversation history tied to
+                the selected bot.
               </CardDescription>
             </div>
 
@@ -973,7 +1094,7 @@ export default function ChatPage() {
                   </div>
                   <div className="mt-2 text-sm text-muted-foreground">
                     {selectedBotId
-                      ? "Ask anything. Louis will use your docs when relevant."
+                      ? "Ask anything. Louis can use images, PDFs, and your uploaded docs when relevant."
                       : "Choose a bot above, then start chatting with your workspace knowledge."}
                   </div>
                 </div>
@@ -1037,24 +1158,66 @@ export default function ChatPage() {
                 className="rounded-full"
                 onClick={openFilePicker}
                 disabled={!selectedBotId || uploadingAttachments || dailyBlocked}
-                title="Attach files (images/videos/docs)"
+                title="Attach images, videos, PDFs, and files"
               >
                 <Paperclip className="mr-2 h-4 w-4" />
                 {uploadingAttachments ? "Uploading…" : "Attach"}
               </Button>
 
+              <Badge variant="outline" className="rounded-full">
+                {attachments.length} attached
+              </Badge>
+
+              {attachmentStats.images > 0 ? (
+                <Badge variant="outline" className="rounded-full gap-1">
+                  <ImageIcon className="h-3.5 w-3.5" />
+                  {attachmentStats.images} image{attachmentStats.images === 1 ? "" : "s"}
+                </Badge>
+              ) : null}
+
+              {attachmentStats.pdfs > 0 ? (
+                <Badge variant="outline" className="rounded-full gap-1">
+                  <FileText className="h-3.5 w-3.5" />
+                  {attachmentStats.pdfs} PDF{attachmentStats.pdfs === 1 ? "" : "s"}
+                </Badge>
+              ) : null}
+
+              {attachmentStats.videos > 0 ? (
+                <Badge variant="outline" className="rounded-full gap-1">
+                  <Film className="h-3.5 w-3.5" />
+                  {attachmentStats.videos} video{attachmentStats.videos === 1 ? "" : "s"}
+                </Badge>
+              ) : null}
+
+              {attachmentStats.files > 0 ? (
+                <Badge variant="outline" className="rounded-full gap-1">
+                  <Paperclip className="h-3.5 w-3.5" />
+                  {attachmentStats.files} file{attachmentStats.files === 1 ? "" : "s"}
+                </Badge>
+              ) : null}
+            </div>
+
+            <div className="mt-3 rounded-2xl border bg-background/60 p-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                Attachment preview
+              </div>
+
               {attachments.length ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  {attachments.slice(0, 8).map((a) => (
+                  {attachments.slice(0, 12).map((a) => (
                     <span
                       key={a.document_id}
-                      className="inline-flex items-center gap-2 rounded-full border bg-background/60 px-3 py-1 text-xs backdrop-blur"
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs backdrop-blur ${attachmentTone(
+                        a.kind
+                      )}`}
                       title={a.document_id}
                     >
+                      {attachmentKindIcon(a.kind)}
+                      <span className="font-medium">{attachmentKindLabel(a.kind)}</span>
                       <span className="max-w-[220px] truncate">{a.filename || "file"}</span>
                       <button
                         type="button"
-                        className="rounded-full border px-2 py-0.5 text-[11px] hover:bg-muted"
+                        className="rounded-full border px-2 py-0.5 text-[11px] hover:bg-white/50"
                         onClick={() => removeAttachment(a.document_id)}
                         aria-label="Remove attachment"
                       >
@@ -1062,16 +1225,25 @@ export default function ChatPage() {
                       </button>
                     </span>
                   ))}
-                  {attachments.length > 8 ? (
-                    <span className="text-xs text-muted-foreground">+{attachments.length - 8} more</span>
+                  {attachments.length > 12 ? (
+                    <span className="text-xs text-muted-foreground">+{attachments.length - 12} more</span>
                   ) : null}
                 </div>
               ) : (
-                <span className="text-xs text-muted-foreground">No attachments</span>
+                <div className="text-xs text-muted-foreground">
+                  No attachments selected. Add images, PDFs, files, or videos above.
+                </div>
               )}
             </div>
 
             {attachError ? <div className="mt-3 text-xs text-destructive">{attachError}</div> : null}
+
+            {attachmentStats.videos > 0 ? (
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                Videos can be attached and tracked in chat now. Full direct video understanding is not fully enabled yet,
+                so Louis may answer using filenames, surrounding context, and any related docs/images.
+              </div>
+            ) : null}
 
             <div className="mt-4 grid gap-3">
               <div data-tour="chat-input">
@@ -1084,8 +1256,8 @@ export default function ChatPage() {
                       : dailyBlocked
                         ? "Daily limit reached…"
                         : docsEmpty
-                          ? "Ask anything… (Upload docs for internal answers)"
-                          : "Ask a question… (Ctrl/⌘ + Enter to send)"
+                          ? "Ask anything… (Upload docs for stronger internal answers)"
+                          : "Ask a question about your docs, PDFs, images, or workflow… (Ctrl/⌘ + Enter to send)"
                   }
                   disabled={!selectedBotId || dailyBlocked || uploadingAttachments}
                   className="min-h-[130px] rounded-[24px] border bg-background/70 px-4 py-3 text-sm shadow-sm backdrop-blur"
@@ -1099,13 +1271,28 @@ export default function ChatPage() {
                 <div className="text-xs text-muted-foreground">
                   {dailyBlocked
                     ? `Daily limit reached. Resets in ${formatCountdown(dailyResetsInSeconds)}.`
-                    : "Louis prioritizes your uploaded docs for internal answers."}
+                    : attachments.length
+                      ? `Ready to send with ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}.`
+                      : "Louis prioritizes your uploaded docs for internal answers."}
                 </div>
 
-                <Button data-tour="chat-send" onClick={send} disabled={!canSend} className="rounded-2xl px-5">
-                  <Send className="mr-2 h-4 w-4" />
-                  {loading ? "Sending…" : uploadingAttachments ? "Uploading…" : dailyBlocked ? "Daily limit reached" : "Send"}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={exportPdf}
+                    disabled={!messages.length || exportingPdf}
+                    className="rounded-2xl px-5"
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    {exportingPdf ? "Exporting…" : "Export PDF"}
+                  </Button>
+
+                  <Button data-tour="chat-send" onClick={send} disabled={!canSend} className="rounded-2xl px-5">
+                    <Send className="mr-2 h-4 w-4" />
+                    {loading ? "Sending…" : uploadingAttachments ? "Uploading…" : dailyBlocked ? "Daily limit reached" : "Send"}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
