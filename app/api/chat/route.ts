@@ -8,6 +8,8 @@ import { ensureSchema } from "@/lib/schema";
 import { ensureUsageDailySchema, incrementUserMessages, getUserUsageRow } from "@/lib/usage";
 import { enforceDailyMessages, getAgencyPlan } from "@/lib/enforcement";
 import { getEffectiveTimezone, ymdInTz, timeStringInTz } from "@/lib/timezone";
+import { buildChatMemoryContext, ensureMemoryStoreSchema, updateRollingMemoriesAfterTurn } from "@/lib/chat-memory";
+import { decayScopeMemories } from "@/lib/memory-decay";
 
 export const runtime = "nodejs";
 
@@ -16,7 +18,6 @@ const FALLBACK = "I don’t have that information in the docs yet.";
 type ChatBody = {
   bot_id?: string;
   message?: string;
-
   attachments?: string[];
   attachment_ids?: string[];
   document_ids?: string[];
@@ -52,7 +53,6 @@ function looksLikeTimeQuestion(s: string) {
 
 async function ensureOnboardingColumns(db: Db) {
   const columns = (await db.all(`PRAGMA table_info(users)`)) as Array<{ name?: string }>;
-
   const hasSentFirstChat = columns.some((c) => c?.name === "sent_first_chat");
 
   if (!hasSentFirstChat) {
@@ -133,14 +133,9 @@ async function loadRecentMessages(db: Db, convoId: string, limit: number) {
   }));
 }
 
-/**
- * Internal/business question detection (stricter).
- * Goal: only treat as "internal" when it plausibly depends on the user's org/client/process/docs.
- */
 function looksInternalBusinessQuestion(message: string) {
   const t = message.trim().toLowerCase();
 
-  // Expand general homes so ordinary “what are X” questions never become internal.
   const generalStarters = [
     "what time",
     "what day",
@@ -226,9 +221,6 @@ function looksInternalBusinessQuestion(message: string) {
   return internalHints.some((h) => t.includes(h));
 }
 
-/**
- * Robust evidence detection (file_search results / citations / annotations)
- */
 function responseHasFileSearchEvidence(resp: any) {
   const seen = new Set<any>();
 
@@ -313,17 +305,20 @@ function toUiDailyLimit(raw: unknown): number | null {
   return Math.floor(n);
 }
 
-function buildMemoryInput(args: { priorSummary: string | null; messages: Array<{ role: string; content: string }> }) {
+function buildMemoryInput(args: {
+  compiledMemory: string;
+  messages: Array<{ role: string; content: string }>;
+}) {
   const parts: string[] = [];
 
-  if (args.priorSummary && args.priorSummary.trim().length) {
+  if (args.compiledMemory && args.compiledMemory.trim().length) {
     parts.push(
-      `[SYSTEM MEMORY — DO NOT IGNORE]
+      `[ROLLING MEMORY — DO NOT IGNORE]
 
-This is the persistent memory summary of the conversation so far.
-Treat it as authoritative context.
+This is the persistent rolling memory context for Louis.Ai.
+Treat it as authoritative unless the latest evidence clearly overrides it.
 
-${args.priorSummary.trim()}
+${args.compiledMemory.trim()}
 `
     );
   }
@@ -438,9 +433,11 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await requireActiveMember(req);
     const db: Db = await getDb();
+
     await ensureSchema(db);
     await ensureUsageDailySchema(db);
     await ensureOnboardingColumns(db);
+    await ensureMemoryStoreSchema(db);
 
     const tz = await getEffectiveTimezone(db, {
       agencyId: ctx.agencyId,
@@ -477,10 +474,10 @@ export async function POST(req: NextRequest) {
     if (!bot?.id) return Response.json({ error: "Bot not found" }, { status: 404 });
 
     const rawAttach =
-      (Array.isArray(body?.attachments) ? body!.attachments : null) ??
-      (Array.isArray(body?.attachment_ids) ? body!.attachment_ids : null) ??
-      (Array.isArray(body?.document_ids) ? body!.document_ids : null) ??
-      (Array.isArray(body?.file_ids) ? body!.file_ids : null) ??
+      (Array.isArray(body?.attachments) ? body.attachments : null) ??
+      (Array.isArray(body?.attachment_ids) ? body.attachment_ids : null) ??
+      (Array.isArray(body?.document_ids) ? body.document_ids : null) ??
+      (Array.isArray(body?.file_ids) ? body.file_ids : null) ??
       [];
 
     const { images: imageFiles, videos: videoTitles } = await resolveAttachments(db, {
@@ -507,7 +504,18 @@ export async function POST(req: NextRequest) {
     await insertMessage(db, convo.id, "user", message + attachNote);
 
     const recent = await loadRecentMessages(db, convo.id, 20);
-    const openaiInputText = buildMemoryInput({ priorSummary: convo.summary, messages: recent });
+
+    const memoryContext = await buildChatMemoryContext(db, {
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      botId: bot_id,
+      conversationSummary: convo.summary,
+    });
+
+    const openaiInputText = buildMemoryInput({
+      compiledMemory: memoryContext.compiledMemory,
+      messages: recent,
+    });
 
     let answer: string;
 
@@ -523,10 +531,10 @@ export async function POST(req: NextRequest) {
         ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
         : "If the user asks about the contents of an image/video file, be honest about limitations.";
 
-      // Tools strategy:
-      // - Internal: use file_search (docs-first)
-      // - Non-internal: first attempt WITHOUT any tools (fast + avoids doc-mention bias)
-      const toolsAttempt1 = internal && bot.vector_store_id ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }] : [];
+      const toolsAttempt1 =
+        internal && bot.vector_store_id
+          ? [{ type: "file_search" as const, vector_store_ids: [bot.vector_store_id] }]
+          : [];
 
       const fallbackInstruction = internal
         ? `If (and only if) the question is internal/business AND file_search found no relevant evidence, reply exactly:
@@ -556,6 +564,7 @@ Do NOT use this exact sentence in your reply: ${FALLBACK}`;
 You are Louis.Ai.
 
 Behavior:
+- Use the rolling memory provided in the conversation input as persistent context.
 - If the question is internal/business related to the user's organization, use uploaded docs via file_search.
 - If the question is NOT internal, answer normally using general knowledge and reasoning.
 - Never fabricate internal/company-specific details.
@@ -576,7 +585,6 @@ ${
 
       const hasEvidence1 = toolsAttempt1.length > 0 ? responseHasFileSearchEvidence(resp1) : false;
 
-      // Internal fallback gating stays strict
       if (internal) {
         if (toolsAttempt1.length === 0) {
           answer = FALLBACK;
@@ -586,7 +594,6 @@ ${
           answer = modelText1 || FALLBACK;
         }
       } else {
-        // Non-internal: if attempt1 looks like "doc-absence" / weak / empty, retry with web_search
         const needsRetry = looksLikeDocAbsenceClaim(modelText1) || modelText1 === FALLBACK;
 
         if (!needsRetry) {
@@ -598,6 +605,7 @@ ${
 You are Louis.Ai.
 
 Behavior:
+- Use the rolling memory provided in the conversation input as persistent context.
 - This is NOT an internal/business question. Answer normally using general knowledge and reasoning.
 - You MAY use web_search for up-to-date facts.
 - Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents.
@@ -620,6 +628,25 @@ ${mediaHint}
 
     await insertMessage(db, convo.id, "assistant", answer);
     await markSentFirstChat(db, ctx.userId);
+
+    await updateRollingMemoriesAfterTurn(db, {
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      botId: bot_id,
+      userMessage: message + attachNote,
+      assistantMessage: answer,
+      conversationSummary: convo.summary ?? null,
+    });
+
+    await decayScopeMemories(db, {
+      agencyId: ctx.agencyId,
+      userId: ctx.userId,
+      botId: bot_id,
+      agencyStaleAfterDays: 21,
+      userStaleAfterDays: 14,
+      agencyMaxLen: 5500,
+      userMaxLen: 4500,
+    });
 
     await incrementUserMessages(db, ctx.agencyId, ctx.userId, dateKey, 1);
     const usageAfter = await getUserUsageRow(db, ctx.agencyId, ctx.userId, dateKey);
@@ -648,7 +675,10 @@ ${mediaHint}
 
     if (currentCount >= threshold) {
       const msgsForSummary = await loadRecentMessages(db, convo.id, 200);
-      const memoryInput = buildMemoryInput({ priorSummary: convoRow?.summary ?? null, messages: msgsForSummary });
+      const memoryInput = buildMemoryInput({
+        compiledMemory: memoryContext.compiledMemory,
+        messages: msgsForSummary,
+      });
 
       let nextSummary = "";
       try {
