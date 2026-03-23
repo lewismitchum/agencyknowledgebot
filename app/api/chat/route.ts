@@ -24,6 +24,17 @@ type ChatBody = {
   file_ids?: string[];
 };
 
+type ResolvedImage = {
+  openai_file_id: string;
+  title: string;
+};
+
+type ResolvedInputFile = {
+  openai_file_id: string;
+  title: string;
+  mime_type: string;
+};
+
 function summarizeThresholdForPlan(plan: string | null) {
   const p = String(plan ?? "free").toLowerCase();
   if (p === "free") return 20;
@@ -359,21 +370,51 @@ ${input}
   return text.slice(0, 4000);
 }
 
+function isPdfMime(mime: string) {
+  return mime === "application/pdf";
+}
+
+function isImageMime(mime: string) {
+  return mime.startsWith("image/");
+}
+
+function isVideoMime(mime: string) {
+  return mime.startsWith("video/");
+}
+
+function isDirectInputFileMime(mime: string) {
+  return (
+    isPdfMime(mime) ||
+    mime === "text/plain" ||
+    mime === "text/markdown" ||
+    mime === "application/json" ||
+    mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mime === "application/msword" ||
+    mime === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+    mime === "application/vnd.ms-powerpoint"
+  );
+}
+
 async function resolveAttachments(db: Db, args: { agencyId: string; botId: string; ids: string[] }) {
   const unique = Array.from(
     new Set(
       (args.ids || [])
         .map((x) => String(x || "").trim())
         .filter(Boolean)
-        .slice(0, 6)
+        .slice(0, 8)
     )
   );
 
   if (!unique.length) {
-    return { images: [] as Array<{ openai_file_id: string; title: string }>, videos: [] as string[] };
+    return {
+      images: [] as ResolvedImage[],
+      inputFiles: [] as ResolvedInputFile[],
+      videos: [] as string[],
+    };
   }
 
-  const images: Array<{ openai_file_id: string; title: string }> = [];
+  const images: ResolvedImage[] = [];
+  const inputFiles: ResolvedInputFile[] = [];
   const videos: string[] = [];
 
   for (const id of unique) {
@@ -389,19 +430,43 @@ async function resolveAttachments(db: Db, args: { agencyId: string; botId: strin
       args.botId,
       id,
       id
-    )) as { id?: string; title?: string | null; mime_type?: string | null; openai_file_id?: string | null } | undefined;
+    )) as
+      | {
+          id?: string;
+          title?: string | null;
+          mime_type?: string | null;
+          openai_file_id?: string | null;
+        }
+      | undefined;
 
     if (!row?.openai_file_id) continue;
 
     const mime = String(row.mime_type ?? "").toLowerCase();
-    if (mime.startsWith("image/")) {
-      images.push({ openai_file_id: String(row.openai_file_id), title: String(row.title ?? "image") });
-    } else if (mime.startsWith("video/")) {
-      videos.push(String(row.title ?? "video"));
+    const title = String(row.title ?? "file");
+
+    if (isImageMime(mime)) {
+      images.push({
+        openai_file_id: String(row.openai_file_id),
+        title,
+      });
+      continue;
+    }
+
+    if (isVideoMime(mime)) {
+      videos.push(title);
+      continue;
+    }
+
+    if (isDirectInputFileMime(mime)) {
+      inputFiles.push({
+        openai_file_id: String(row.openai_file_id),
+        title,
+        mime_type: mime,
+      });
     }
   }
 
-  return { images, videos };
+  return { images, inputFiles, videos };
 }
 
 function looksLikeDocAbsenceClaim(text: string) {
@@ -480,7 +545,7 @@ export async function POST(req: NextRequest) {
       (Array.isArray(body?.file_ids) ? body.file_ids : null) ??
       [];
 
-    const { images: imageFiles, videos: videoTitles } = await resolveAttachments(db, {
+    const { images: imageFiles, inputFiles, videos: videoTitles } = await resolveAttachments(db, {
       agencyId: ctx.agencyId,
       botId: bot_id,
       ids: rawAttach,
@@ -492,14 +557,16 @@ export async function POST(req: NextRequest) {
       botId: bot_id,
     });
 
-    const attachNote =
-      imageFiles.length || videoTitles.length
-        ? `\n\n[Attachments]\n${
-            imageFiles.length ? `Images: ${imageFiles.map((x) => x.title).join(", ")}` : ""
-          }${imageFiles.length && videoTitles.length ? "\n" : ""}${
-            videoTitles.length ? `Videos: ${videoTitles.join(", ")}` : ""
-          }\n`
-        : "";
+    const pdfTitles = inputFiles.filter((f) => isPdfMime(f.mime_type)).map((f) => f.title);
+    const docTitles = inputFiles.filter((f) => !isPdfMime(f.mime_type)).map((f) => f.title);
+
+    const attachLines: string[] = [];
+    if (imageFiles.length) attachLines.push(`Images: ${imageFiles.map((x) => x.title).join(", ")}`);
+    if (pdfTitles.length) attachLines.push(`PDFs: ${pdfTitles.join(", ")}`);
+    if (docTitles.length) attachLines.push(`Files: ${docTitles.join(", ")}`);
+    if (videoTitles.length) attachLines.push(`Videos: ${videoTitles.join(", ")}`);
+
+    const attachNote = attachLines.length ? `\n\n[Attachments]\n${attachLines.join("\n")}\n` : "";
 
     await insertMessage(db, convo.id, "user", message + attachNote);
 
@@ -525,11 +592,35 @@ export async function POST(req: NextRequest) {
       const internal = looksInternalBusinessQuestion(message);
 
       const hasImages = imageFiles.length > 0;
+      const hasInputFiles = inputFiles.length > 0;
+      const hasPdfs = pdfTitles.length > 0;
       const hasVideos = videoTitles.length > 0;
 
-      const mediaHint = hasImages
-        ? "The user attached one or more images. If image understanding is not available, be honest and rely on docs via file_search."
-        : "If the user asks about the contents of an image/video file, be honest about limitations.";
+      const mediaHintParts: string[] = [];
+
+      if (hasImages) {
+        mediaHintParts.push("The user attached one or more images. Analyze them directly when relevant.");
+      }
+
+      if (hasPdfs) {
+        mediaHintParts.push("The user attached one or more PDFs. Read them directly when relevant.");
+      }
+
+      if (hasInputFiles && !hasPdfs) {
+        mediaHintParts.push("The user attached one or more files. Read them directly when relevant.");
+      }
+
+      if (hasVideos) {
+        mediaHintParts.push(
+          "The user attached one or more videos. Direct video reasoning is not enabled in this route yet, so be honest about that and use any attached docs, images, filenames, or surrounding context."
+        );
+      }
+
+      if (!mediaHintParts.length) {
+        mediaHintParts.push("If the user asks about the contents of an image, PDF, or video file, be honest about limitations.");
+      }
+
+      const mediaHint = mediaHintParts.join(" ");
 
       const toolsAttempt1 =
         internal && bot.vector_store_id
@@ -542,19 +633,29 @@ ${FALLBACK}
 Do not add extra words before or after the fallback.`
         : `This is NOT an internal/business question. Answer normally using general knowledge and reasoning.
 You MAY use web_search for up-to-date facts.
-Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents.
+Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents or attached files.
 Do NOT use this exact sentence in your reply: ${FALLBACK}`;
+
+      const inputContent: any[] = [{ type: "input_text", text: openaiInputText }];
+
+      for (const img of imageFiles) {
+        inputContent.push({
+          type: "input_image",
+          image_file_id: img.openai_file_id,
+        });
+      }
+
+      for (const file of inputFiles) {
+        inputContent.push({
+          type: "input_file",
+          file_id: file.openai_file_id,
+        });
+      }
 
       const inputBlocks: any[] = [
         {
           role: "user",
-          content: [
-            { type: "input_text", text: openaiInputText },
-            ...imageFiles.map((img) => ({
-              type: "input_image",
-              image_file_id: img.openai_file_id,
-            })),
-          ],
+          content: inputContent,
         },
       ];
 
@@ -570,11 +671,6 @@ Behavior:
 - Never fabricate internal/company-specific details.
 - ${mediaHint}
 - ${fallbackInstruction}
-${
-  hasVideos
-    ? "\nNote: The user attached video(s). Video understanding is not available yet unless transcript/frame data is provided."
-    : ""
-}
 `.trim(),
         input: inputBlocks,
         tools: toolsAttempt1,
@@ -608,7 +704,7 @@ Behavior:
 - Use the rolling memory provided in the conversation input as persistent context.
 - This is NOT an internal/business question. Answer normally using general knowledge and reasoning.
 - You MAY use web_search for up-to-date facts.
-- Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents.
+- Do NOT mention uploaded documents/files unless the user explicitly asked about their uploaded documents or attached files.
 - Do NOT use this exact sentence in your reply: ${FALLBACK}
 - Be direct. No questions like "Would you like me to look it up?" — just answer.
 
